@@ -4,6 +4,10 @@
 #include <cstdint>
 #include <span>
 
+#define GPU_DEFINE_HANDLE(object) \
+    struct object##_T; \
+    using object = object##_T*;
+
 // Vector types
 struct uvec2 { uint32_t x, y; };
 struct uvec3 { uint32_t x, y, z; };
@@ -17,13 +21,13 @@ using Span = std::span<T>;
 using ByteSpan = Span<uint8_t>;
 
 // Opaque handles
-struct GpuPipeline;
-struct GpuTexture;
-struct GpuDepthStencilState;
-struct GpuBlendState;
-struct GpuQueue;
-struct GpuCommandBuffer;
-struct GpuSemaphore;
+GPU_DEFINE_HANDLE(GpuPipeline)
+GPU_DEFINE_HANDLE(GpuTexture)
+GPU_DEFINE_HANDLE(GpuDepthStencilState)
+GPU_DEFINE_HANDLE(GpuBlendState)
+GPU_DEFINE_HANDLE(GpuQueue)
+GPU_DEFINE_HANDLE(GpuCommandBuffer)
+GPU_DEFINE_HANDLE(GpuSemaphore)
 
 // Enums
 enum MEMORY { MEMORY_DEFAULT, MEMORY_GPU, MEMORY_READBACK };
