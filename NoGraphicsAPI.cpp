@@ -25,6 +25,7 @@ struct Allocation
     VkImage image = VK_NULL_HANDLE;
     VkDeviceSize size = 0;
     VkDeviceAddress address = 0;
+    void* ptr = nullptr;
 };
 
 struct Vulkan
@@ -44,7 +45,6 @@ struct Vulkan
     VkPhysicalDeviceMemoryProperties memoryProperties = {};
 
     // Allocation tracking
-    std::map<void*, Allocation> mappedAllocations;
     std::vector<Allocation> allocations;
 
     // Pipelines
@@ -124,7 +124,34 @@ struct Vulkan
         return {};
     }
 
-    Allocation createAllocation(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties)
+    Allocation findAllocation(void* ptr)
+    {
+        for (auto& buffer : allocations)
+        {
+            if (ptr >= buffer.ptr && ptr < (static_cast<uint8_t*>(buffer.ptr) + buffer.size))
+            {    
+                return buffer;
+            }
+        }
+
+        return {};
+    }
+
+    void freeAllocation(Allocation& alloc)
+    {
+        if (alloc.ptr)
+        {
+            dispatchTable.unmapMemory(alloc.memory);
+        }
+
+        dispatchTable.freeMemory(alloc.memory, nullptr);
+        dispatchTable.destroyBuffer(alloc.buffer, nullptr);
+
+        allocations.erase(std::remove_if(allocations.begin(), allocations.end(),
+            [alloc](const Allocation& b) { return b.buffer == alloc.buffer; }), allocations.end());
+    }
+
+    Allocation createAllocation(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkDeviceSize alignment)
     {
         Allocation alloc = { .size = size };
 
@@ -139,6 +166,9 @@ struct Vulkan
         VkMemoryRequirements memRequirements = {};
         dispatchTable.getBufferMemoryRequirements(alloc.buffer, &memRequirements);
 
+        alignment = std::max(alignment, memRequirements.alignment);
+        VkDeviceSize alignedSize = (memRequirements.size + alignment - 1) & ~(alignment - 1);
+
         VkMemoryAllocateFlagsInfo allocateFlagsInfo = {};
         allocateFlagsInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
         allocateFlagsInfo.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT_KHR;
@@ -146,7 +176,7 @@ struct Vulkan
         VkMemoryAllocateInfo allocInfo = {};
         allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocInfo.pNext = &allocateFlagsInfo;
-        allocInfo.allocationSize = memRequirements.size;
+        allocInfo.allocationSize = alignedSize;
         allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties);
 
         dispatchTable.allocateMemory(&allocInfo, nullptr, &alloc.memory);
@@ -156,6 +186,16 @@ struct Vulkan
         addressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
         addressInfo.buffer = alloc.buffer;
         alloc.address = dispatchTable.getBufferDeviceAddress(&addressInfo);
+
+        VkDeviceSize offset = (alignment - (alloc.address % alignment)) % alignment;
+        alloc.address += offset;
+
+        if (properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+        {
+            dispatchTable.mapMemory(alloc.memory, 0, alignedSize, 0, &alloc.ptr);
+            alloc.ptr = static_cast<uint8_t*>(alloc.ptr) + offset;
+        }
+
         allocations.push_back(alloc);
 
         return alloc;
@@ -199,111 +239,37 @@ static Vulkan vulkan;
 
 void* gpuMalloc(size_t bytes, MEMORY memory)
 {
+    return gpuMalloc(bytes, GPU_DEFAULT_ALIGNMENT, memory);
+}
+
+void* gpuMalloc(size_t bytes, size_t align, MEMORY memory)
+{
     switch (memory)
     {
     case MEMORY_DEFAULT: // DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT
     {
-        // VkBufferCreateInfo bufferInfo = {};
-        // bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        // bufferInfo.size = bytes;
-        // bufferInfo.usage = 
-        //     VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | 
-        //     VK_BUFFER_USAGE_TRANSFER_SRC_BIT | 
-        //     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | 
-        //     VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-        // bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        // bufferInfo.queueFamilyIndexCount = 0;
-        // vkCreateBuffer(vulkan.device, &bufferInfo, nullptr, &alloc.buffer);
-
-        // VkMemoryRequirements memRequirements = {};
-        // vulkan.dispatchTable.getBufferMemoryRequirements(alloc.buffer, &memRequirements);
-
-        // VkMemoryAllocateFlagsInfo allocateFlagsInfo = {};
-        // allocateFlagsInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
-        // allocateFlagsInfo.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT_KHR;
-
-        // VkMemoryAllocateInfo allocInfo = {};
-        // allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        // allocInfo.pNext = &allocateFlagsInfo;
-        // allocInfo.allocationSize = memRequirements.size;
-        // allocInfo.memoryTypeIndex = vulkan.findMemoryType(memRequirements.memoryTypeBits, 
-        //     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | 
-        //     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | 
-        //     VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-        // vulkan.dispatchTable.allocateMemory(&allocInfo, nullptr, &alloc.memory);
-        // vulkan.dispatchTable.bindBufferMemory(alloc.buffer, alloc.memory, 0);
-
-       
-
-        // alloc.address = deviceAddress;
-        // alloc.size = bytes;
-        // vulkan.allocations.push_back(alloc);
-
         auto usage = 
             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | 
-            VK_BUFFER_USAGE_TRANSFER_SRC_BIT | 
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | 
-            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+            VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
+            VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT |
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+            VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
 
         auto properties = 
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | 
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | 
             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
-        auto alloc = vulkan.createAllocation(bytes, usage, properties);
-
-        void* ptr;
-        vulkan.dispatchTable.mapMemory(alloc.memory, 0, bytes, 0, &ptr);
-        vulkan.mappedAllocations[ptr] = alloc;
-
-        return ptr;        
+        auto alloc = vulkan.createAllocation(bytes, usage, properties, align);
+        return alloc.ptr;        
     }
     case MEMORY_GPU: // DEVICE_LOCAL
     {
-        // VkBufferCreateInfo bufferInfo = {};
-        // bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        // bufferInfo.size = bytes;
-        // bufferInfo.usage = 
-        //     VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | 
-        //     VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-        //     VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-        //     VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
-        //     VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT |
-        //     VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
-        //     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-        //     VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-        //     VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
-        //     VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
-        // bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        // bufferInfo.queueFamilyIndexCount = 0;
-        // vkCreateBuffer(vulkan.device, &bufferInfo, nullptr, &alloc.buffer);
-
-        // VkMemoryRequirements memRequirements = {};
-        // vulkan.dispatchTable.getBufferMemoryRequirements(alloc.buffer, &memRequirements);
-
-        // VkMemoryAllocateFlagsInfo allocateFlagsInfo = {};
-        // allocateFlagsInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
-        // allocateFlagsInfo.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT_KHR;
-
-        // VkMemoryAllocateInfo allocInfo = {};
-        // allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        // allocInfo.pNext = &allocateFlagsInfo;
-        // allocInfo.allocationSize = memRequirements.size;
-        // allocInfo.memoryTypeIndex = vulkan.findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-        // vulkan.dispatchTable.allocateMemory(&allocInfo, nullptr, &alloc.memory);
-        // vulkan.dispatchTable.bindBufferMemory(alloc.buffer, alloc.memory, 0);
-
-        // VkBufferDeviceAddressInfo addressInfo = {};
-        // addressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
-        // addressInfo.buffer = alloc.buffer;
-        // VkDeviceAddress deviceAddress = vulkan.dispatchTable.getBufferDeviceAddress(&addressInfo);
-
-        // alloc.address = deviceAddress;
-        // alloc.size = bytes;
-        // vulkan.allocations.push_back(alloc);
-
         auto usage = 
             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | 
             VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
@@ -317,52 +283,11 @@ void* gpuMalloc(size_t bytes, MEMORY memory)
             VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
 
         auto properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-
-        auto alloc = vulkan.createAllocation(bytes, usage, properties);
-
+        auto alloc = vulkan.createAllocation(bytes, usage, properties, align);
         return reinterpret_cast<void*>(alloc.address);
     }
     case MEMORY_READBACK: // HOST_VISIBLE | HOST_COHERENT | HOST_CACHED
     {
-        // VkBufferCreateInfo bufferInfo = {};
-        // bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        // bufferInfo.size = bytes;
-        // bufferInfo.usage = 
-        //     VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | 
-        //     VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        // bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        // bufferInfo.queueFamilyIndexCount = 0;
-        // vkCreateBuffer(vulkan.device, &bufferInfo, nullptr, &alloc.buffer);
-
-        // VkMemoryRequirements memRequirements = {};
-        // vulkan.dispatchTable.getBufferMemoryRequirements(alloc.buffer, &memRequirements);
-
-        // VkMemoryAllocateFlagsInfo allocateFlagsInfo = {};
-        // allocateFlagsInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
-        // allocateFlagsInfo.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT_KHR;
-
-        // VkMemoryAllocateInfo allocInfo = {};
-        // allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        // allocInfo.pNext = &allocateFlagsInfo;
-        // allocInfo.allocationSize = memRequirements.size;
-        // allocInfo.memoryTypeIndex = vulkan.findMemoryType(memRequirements.memoryTypeBits, 
-        //     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | 
-        //     VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
-        //     VK_MEMORY_PROPERTY_HOST_CACHED_BIT
-        // );
-
-        // vulkan.dispatchTable.allocateMemory(&allocInfo, nullptr, &alloc.memory);
-        // vulkan.dispatchTable.bindBufferMemory(alloc.buffer, alloc.memory, 0);
-
-        // VkBufferDeviceAddressInfo addressInfo = {};
-        // addressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
-        // addressInfo.buffer = alloc.buffer;
-        // VkDeviceAddress deviceAddress = vulkan.dispatchTable.getBufferDeviceAddress(&addressInfo);
-
-        // alloc.address = deviceAddress;
-        // alloc.size = bytes;
-        // vulkan.allocations.push_back(alloc);
-
         auto usage = 
             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | 
             VK_BUFFER_USAGE_TRANSFER_DST_BIT;
@@ -372,57 +297,32 @@ void* gpuMalloc(size_t bytes, MEMORY memory)
             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
             VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
 
-        auto alloc = vulkan.createAllocation(bytes, usage, properties);
-
-        void* ptr;
-        vulkan.dispatchTable.mapMemory(alloc.memory, 0, bytes, 0, &ptr);
-        vulkan.mappedAllocations[ptr] = alloc;
-
-        return ptr;    
+        auto alloc = vulkan.createAllocation(bytes, usage, properties, align);
+        return alloc.ptr;    
     }
     };
 
     return nullptr;
 }
 
-void* gpuMalloc(size_t bytes, size_t align, MEMORY memory)
-{
-    return nullptr;
-}
-
 void gpuFree(void *ptr)
 {
-    if (vulkan.mappedAllocations.find(ptr) != vulkan.mappedAllocations.end())
+    for (auto& alloc : vulkan.allocations)
     {
-        Allocation alloc = vulkan.mappedAllocations[ptr];
-        vulkan.dispatchTable.unmapMemory(alloc.memory);
-        vulkan.dispatchTable.freeMemory(alloc.memory, nullptr);
-        vulkan.dispatchTable.destroyBuffer(alloc.buffer, nullptr);
-        vulkan.mappedAllocations.erase(ptr);
-
-        vulkan.allocations.erase(std::remove_if(vulkan.allocations.begin(), vulkan.allocations.end(),
-            [alloc](const Allocation& b) { return b.buffer == alloc.buffer; }), vulkan.allocations.end());
-
-        return;
-    } 
-
-    Allocation alloc = vulkan.findAllocation(reinterpret_cast<VkDeviceAddress>(ptr));
-    if (alloc.buffer != VK_NULL_HANDLE)
-    {
-        vulkan.dispatchTable.freeMemory(alloc.memory, nullptr);
-        vulkan.dispatchTable.destroyBuffer(alloc.buffer, nullptr);
-
-        vulkan.allocations.erase(std::remove_if(vulkan.allocations.begin(), vulkan.allocations.end(),
-            [alloc](const Allocation& b) { return b.buffer == alloc.buffer; }), vulkan.allocations.end());
+        if (alloc.ptr == ptr || reinterpret_cast<VkDeviceAddress>(ptr) == alloc.address)
+        {
+            vulkan.freeAllocation(alloc);
+            return;
+        }
     }
 }
 
 void* gpuHostToDevicePointer(void *ptr)
 {
-    if (vulkan.mappedAllocations.find(ptr) != vulkan.mappedAllocations.end())
+    Allocation alloc = vulkan.findAllocation(ptr);
+    if (alloc.buffer != VK_NULL_HANDLE)
     {
-        Allocation alloc = vulkan.mappedAllocations[ptr];
-        return reinterpret_cast<void*>(alloc.address);
+        return reinterpret_cast<void*>(alloc.address + (static_cast<uint8_t*>(ptr) - static_cast<uint8_t*>(alloc.ptr)));
     }
     return nullptr;
 }
@@ -449,8 +349,8 @@ GpuTexture gpuCreateTexture(GpuTextureDesc desc, void* ptrGpu)
 
     alloc.image = vulkan.createImage(desc);
 
-    // TODO: correct the offset
-    vulkan.dispatchTable.bindImageMemory(alloc.image, alloc.memory, 0);
+    VkDeviceSize offset = reinterpret_cast<VkDeviceAddress>(ptrGpu) - alloc.address;
+    vulkan.dispatchTable.bindImageMemory(alloc.image, alloc.memory, offset);
 
     return new GpuTexture_T { desc };
 }

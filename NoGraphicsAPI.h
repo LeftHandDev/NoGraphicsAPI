@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <span>
 
+#define GPU_DEFAULT_ALIGNMENT 16
+
 #define GPU_DEFINE_HANDLE(object) \
     struct object##_T; \
     using object = object##_T*;
