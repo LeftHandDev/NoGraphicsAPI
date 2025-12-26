@@ -237,6 +237,19 @@ struct Vulkan
 
 static Vulkan vulkan;
 
+VkPipelineStageFlagBits gpuStageToVkStage(STAGE stage)
+{
+    switch (stage)
+    {
+    case STAGE_TRANSFER: return VK_PIPELINE_STAGE_TRANSFER_BIT;
+    case STAGE_COMPUTE: return VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    case STAGE_RASTER_COLOR_OUT: return VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    case STAGE_PIXEL_SHADER: return VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    case STAGE_VERTEX_SHADER: return VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+    default: return VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    }
+}
+
 void* gpuMalloc(size_t bytes, MEMORY memory)
 {
     return gpuMalloc(bytes, GPU_DEFAULT_ALIGNMENT, memory);
@@ -626,18 +639,32 @@ void gpuCopyFromTexture(GpuCommandBuffer cb, void* destGpu, void* srcGpu, GpuTex
 
 void gpuSetActiveTextureHeapPtr(GpuCommandBuffer cb, void *ptrGpu)
 {
+    // TODO: Implement texture heaps
 }
 
 void gpuBarrier(GpuCommandBuffer cb, STAGE before, STAGE after, HAZARD_FLAGS hazards)
 {
+    // TODO: Handle hazards
+
+    vulkan.dispatchTable.cmdPipelineBarrier(
+        cb->commandBuffer,
+        gpuStageToVkStage(before),
+        gpuStageToVkStage(after),
+        0,
+        0, nullptr,
+        0, nullptr,
+        0, nullptr
+    );
 }
 
 void gpuSignalAfter(GpuCommandBuffer cb, STAGE before, void *ptrGpu, uint64_t value, SIGNAL signal)
 {
+    // TODO: Implement signaling
 }
 
 void gpuWaitBefore(GpuCommandBuffer cb, STAGE after, void *ptrGpu, uint64_t value, OP op, HAZARD_FLAGS hazards, uint64_t mask)
 {
+    // TODO: Implement waiting
 }
 
 void gpuSetPipeline(GpuCommandBuffer cb, GpuPipeline pipeline)
@@ -697,6 +724,43 @@ void gpuDispatch(GpuCommandBuffer cb, void* dataGpu, uint3 gridDimensions)
 
 void gpuDispatchIndirect(GpuCommandBuffer cb, void* dataGpu, void* gridDimensionsGpu)
 {
+    Allocation data = vulkan.findAllocation(reinterpret_cast<VkDeviceAddress>(dataGpu));
+    if (data.buffer != VK_NULL_HANDLE)
+    {
+        VkDescriptorBufferInfo bufferInfo = {};
+        bufferInfo.buffer = data.buffer;
+        bufferInfo.offset = reinterpret_cast<VkDeviceAddress>(dataGpu) - data.address;
+        bufferInfo.range = data.size - bufferInfo.offset;
+
+        VkWriteDescriptorSet writeDescriptorSet = {};
+        writeDescriptorSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writeDescriptorSet.dstBinding = 0;
+        writeDescriptorSet.dstArrayElement = 0;
+        writeDescriptorSet.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        writeDescriptorSet.descriptorCount = 1;
+        writeDescriptorSet.pBufferInfo = &bufferInfo;
+        
+        vulkan.dispatchTable.cmdPushDescriptorSet(
+            cb->commandBuffer,
+            vulkan.currentPipeline->bindPoint,
+            vulkan.currentPipeline->layout,
+            0,
+            1,
+            &writeDescriptorSet
+        );
+    }
+
+    Allocation grid = vulkan.findAllocation(reinterpret_cast<VkDeviceAddress>(gridDimensionsGpu));
+    if (grid.buffer == VK_NULL_HANDLE)
+    {
+        return;
+    }
+
+    vulkan.dispatchTable.cmdDispatchIndirect(
+        cb->commandBuffer, 
+        grid.buffer, 
+        reinterpret_cast<VkDeviceAddress>(gridDimensionsGpu) - grid.address
+    );
 }
 
 void gpuBeginRenderPass(GpuCommandBuffer cb, GpuRenderPassDesc desc)
