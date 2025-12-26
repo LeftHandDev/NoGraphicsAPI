@@ -9,9 +9,9 @@
     using object = object##_T*;
 
 // Vector types
-struct uvec2 { uint32_t x, y; };
-struct uvec3 { uint32_t x, y, z; };
-struct uvec4 { uint32_t x, y, z, w; };
+struct uint2 { uint32_t x, y; };
+struct uint3 { uint32_t x, y, z; };
+struct uint4 { uint32_t x, y, z, w; };
 
 // Use standard library span
 template<typename T>
@@ -103,7 +103,7 @@ struct GpuRasterDesc
 struct GpuTextureDesc
 { 
     TEXTURE type = TEXTURE_2D;
-    uvec3 dimensions;
+    uint3 dimensions;
     uint32_t mipCount = 1;
     uint32_t layerCount = 1;
     uint32_t sampleCount = 1;
@@ -155,8 +155,9 @@ void gpuFreeBlendState(GpuBlendState state);
 
 // Queue
 GpuQueue gpuCreateQueue(/* DEVICE & QUEUE CREATION DETAILS OMITTED */);
+void gpuFreeQueue(GpuQueue queue);
 GpuCommandBuffer gpuStartCommandRecording(GpuQueue queue);
-void gpuSubmit(GpuQueue queue, Span<GpuCommandBuffer> commandBuffers);
+void gpuSubmit(GpuQueue queue, Span<GpuCommandBuffer> commandBuffers, GpuSemaphore semaphore, uint64_t value);
 
 // Semaphores
 GpuSemaphore gpuCreateSemaphore(uint64_t initValue);
@@ -164,7 +165,7 @@ void gpuWaitSemaphore(GpuSemaphore sema, uint64_t value);
 void gpuDestroySemaphore(GpuSemaphore sema);
 
 // Commands
-void gpuMemCpy(GpuCommandBuffer cb, void* destGpu, void* srcGpu);
+void gpuMemCpy(GpuCommandBuffer cb, void* destGpu, void* srcGpu, uint64_t size);
 void gpuCopyToTexture(GpuCommandBuffer cb, void* destGpu, void* srcGpu, GpuTexture texture);
 void gpuCopyFromTexture(GpuCommandBuffer cb, void* destGpu, void* srcGpu, GpuTexture texture);
 
@@ -178,7 +179,7 @@ void gpuSetPipeline(GpuCommandBuffer cb, GpuPipeline pipeline);
 void gpuSetDepthStencilState(GpuCommandBuffer cb, GpuDepthStencilState state);
 void gpuSetBlendState(GpuCommandBuffer cb, GpuBlendState state); 
 
-void gpuDispatch(GpuCommandBuffer cb, void* dataGpu, uvec3 gridDimensions);
+void gpuDispatch(GpuCommandBuffer cb, void* dataGpu, uint3 gridDimensions);
 void gpuDispatchIndirect(GpuCommandBuffer cb, void* dataGpu, void* gridDimensionsGpu);
 
 void gpuBeginRenderPass(GpuCommandBuffer cb, GpuRenderPassDesc desc);
@@ -188,7 +189,7 @@ void gpuDrawIndexedInstanced(GpuCommandBuffer cb, void* vertexDataGpu, void* pix
 void gpuDrawIndexedInstancedIndirect(GpuCommandBuffer cb, void* vertexDataGpu, void* pixelDataGpu, void* indicesGpu, void* argsGpu);
 void gpuDrawIndexedInstancedIndirectMulti(GpuCommandBuffer cb, void* dataVxGpu, uint32_t vxStride, void* dataPxGpu, uint32_t pxStride, void* argsGpu, void* drawCountGpu);
 
-void gpuDrawMeshlets(GpuCommandBuffer cb, void* meshletDataGpu, void* pixelDataGpu, uvec3 dim);
+void gpuDrawMeshlets(GpuCommandBuffer cb, void* meshletDataGpu, void* pixelDataGpu, uint3 dim);
 void gpuDrawMeshletsIndirect(GpuCommandBuffer cb, void* meshletDataGpu, void* pixelDataGpu, void *dimGpu);
 
 #endif // NO_GRAPHICS_API_H
