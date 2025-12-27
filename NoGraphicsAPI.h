@@ -157,7 +157,6 @@ void gpuFreeBlendState(GpuBlendState state);
 
 // Queue
 GpuQueue gpuCreateQueue(/* DEVICE & QUEUE CREATION DETAILS OMITTED */);
-void gpuFreeQueue(GpuQueue queue);
 GpuCommandBuffer gpuStartCommandRecording(GpuQueue queue);
 void gpuSubmit(GpuQueue queue, Span<GpuCommandBuffer> commandBuffers, GpuSemaphore semaphore, uint64_t value);
 

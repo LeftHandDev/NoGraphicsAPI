@@ -47,7 +47,8 @@ struct Vulkan
     // Allocation tracking
     std::vector<Allocation> allocations;
 
-    // Pipelines
+    // Opaque handles
+    GpuQueue graphicsQueue = nullptr;
     GpuPipeline currentPipeline = nullptr;
 
     Vulkan()
@@ -88,12 +89,15 @@ struct Vulkan
         poolInfo.queueFamilyIndex = device.get_queue_index(vkb::QueueType::graphics).value();
         poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
         dispatchTable.createCommandPool(&poolInfo, nullptr, &commandPool);
+
+        graphicsQueue = new GpuQueue_T{ device.get_queue(vkb::QueueType::graphics).value() };
     }
 
     ~Vulkan()
     {
         dispatchTable.deviceWaitIdle();
         dispatchTable.destroyCommandPool(commandPool, nullptr);
+        delete graphicsQueue;
         vkb::destroy_device(device);
         vkb::destroy_instance(instance);
     }
@@ -462,12 +466,7 @@ void gpuFreeBlendState(GpuBlendState state)
 
 GpuQueue gpuCreateQueue()
 {
-    return new GpuQueue_T { vulkan.device.get_queue(vkb::QueueType::graphics).value() };
-}
-
-void gpuFreeQueue(GpuQueue queue)
-{
-    delete queue;
+    return vulkan.graphicsQueue;
 }
 
 GpuCommandBuffer gpuStartCommandRecording(GpuQueue queue)
