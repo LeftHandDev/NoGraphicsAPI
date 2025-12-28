@@ -1,5 +1,5 @@
 #include "NoGraphicsAPI.h"
-#include "VkBootstrap.h"
+#include "External/VkBootstrap.h"
 
 #include <map>
 #include <vector>
@@ -10,8 +10,14 @@ struct GpuPipeline_T
     VkPipelineLayout layout; 
     VkDescriptorSetLayout setLayout; 
     VkPipelineBindPoint bindPoint;
+    
 };
-struct GpuTexture_T { GpuTextureDesc desc; };
+struct GpuTexture_T 
+{ 
+    GpuTextureDesc desc = {}; 
+    VkImage image = VK_NULL_HANDLE; 
+    VkImageView view = VK_NULL_HANDLE; 
+};
 struct GpuDepthStencilState_T {  };
 struct GpuBlendState_T { };
 struct GpuQueue_T { VkQueue queue; };
@@ -22,7 +28,6 @@ struct Allocation
 {
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
-    VkImage image = VK_NULL_HANDLE;
     VkDeviceSize size = 0;
     VkDeviceAddress address = 0;
     void* ptr = nullptr;
@@ -38,18 +43,27 @@ struct Vulkan
     vkb::DispatchTable dispatchTable;
 
     // Vulkan objects
-    VkCommandPool commandPool;
+    VkCommandPool commandPool = VK_NULL_HANDLE;
     std::map<std::pair<VkSemaphore, uint64_t>, std::vector<VkCommandBuffer>> submittedCommandBuffers;
+    VkSampler defaultSampler = VK_NULL_HANDLE;
 
     // Vulkan structs
     VkPhysicalDeviceMemoryProperties memoryProperties = {};
+    VkPhysicalDeviceProperties2 physicalDeviceProperties2 = {};
+    VkPhysicalDeviceDescriptorBufferPropertiesEXT descriptorBufferProperties = {};
 
     // Allocation tracking
     std::vector<Allocation> allocations;
 
     // Opaque handles
     GpuQueue graphicsQueue = nullptr;
-    GpuPipeline currentPipeline = nullptr;
+    std::map<GpuCommandBuffer, GpuPipeline> currentPipeline;
+
+    // Buffer descriptor sets
+    VkDeviceSize descriptorSetLayoutSize = 0;
+    VkDeviceSize descriptorSetLayoutOffset = 0;
+    VkDeviceSize rwDescriptorSetLayoutSize = 0;
+    VkDeviceSize rwDescriptorSetLayoutOffset = 0;
 
     Vulkan()
     {
@@ -62,25 +76,37 @@ struct Vulkan
 
         vkb::PhysicalDeviceSelector deviceSelector{ instance };
         auto physicalDeviceRet = deviceSelector.add_required_extensions({
-            VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME
+            VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME,
         }).defer_surface_initialization().select();
         physicalDevice = physicalDeviceRet.value();
 
-        VkPhysicalDeviceVulkan14Features physicalDeviceVulkan14Features = {};
-        physicalDeviceVulkan14Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES;
-        physicalDeviceVulkan14Features.pushDescriptor = VK_TRUE;
+        VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptorBufferFeatures = {};
+        descriptorBufferFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT;
+        descriptorBufferFeatures.descriptorBuffer = VK_TRUE;
+
+        // VkPhysicalDeviceVulkan14Features physicalDeviceVulkan14Features = {};
+        // physicalDeviceVulkan14Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES;
+        // physicalDeviceVulkan14Features.pushDescriptor = VK_TRUE;
 
         VkPhysicalDeviceVulkan12Features physicalDeviceVulkan12Features = {};
         physicalDeviceVulkan12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
-        physicalDeviceVulkan12Features.pNext = &physicalDeviceVulkan14Features;
+        // physicalDeviceVulkan12Features.pNext = &physicalDeviceVulkan14Features;
         physicalDeviceVulkan12Features.timelineSemaphore = VK_TRUE;
         physicalDeviceVulkan12Features.bufferDeviceAddress = VK_TRUE;
+        physicalDeviceVulkan12Features.runtimeDescriptorArray = VK_TRUE;
 
         physicalDevice.enable_extension_features_if_present(physicalDeviceVulkan12Features);
         instanceDispatchTable.getPhysicalDeviceMemoryProperties(physicalDevice, &memoryProperties);
 
+        descriptorBufferProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT;
+        physicalDeviceProperties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+        physicalDeviceProperties2.pNext = &descriptorBufferProperties;
+        instanceDispatchTable.getPhysicalDeviceProperties2(physicalDevice, &physicalDeviceProperties2);
+
+        descriptorBufferProperties.descriptorBufferOffsetAlignment;
+
         vkb::DeviceBuilder deviceBuilder{ physicalDevice };
-        auto deviceRet = deviceBuilder.build();
+        auto deviceRet = deviceBuilder.add_pNext(&descriptorBufferFeatures).build();
         device = deviceRet.value();
         dispatchTable = device.make_table();
 
@@ -91,12 +117,25 @@ struct Vulkan
         dispatchTable.createCommandPool(&poolInfo, nullptr, &commandPool);
 
         graphicsQueue = new GpuQueue_T{ device.get_queue(vkb::QueueType::graphics).value() };
+
+        VkSamplerCreateInfo samplerInfo{};
+        samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        samplerInfo.magFilter = VK_FILTER_LINEAR;
+        samplerInfo.minFilter = VK_FILTER_LINEAR;
+        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+        samplerInfo.unnormalizedCoordinates = VK_FALSE;
+\
+        dispatchTable.createSampler(&samplerInfo, nullptr, &defaultSampler);
     }
 
     ~Vulkan()
     {
         dispatchTable.deviceWaitIdle();
         dispatchTable.destroyCommandPool(commandPool, nullptr);
+        dispatchTable.destroySampler(defaultSampler, nullptr);
         delete graphicsQueue;
         vkb::destroy_device(device);
         vkb::destroy_instance(instance);
@@ -141,7 +180,7 @@ struct Vulkan
         return {};
     }
 
-    void freeAllocation(Allocation& alloc)
+    void freeAllocation(Allocation alloc)
     {
         if (alloc.ptr)
         {
@@ -227,6 +266,7 @@ struct Vulkan
                         desc.usage == USAGE_STORAGE ? VK_IMAGE_USAGE_STORAGE_BIT :
                         desc.usage == USAGE_COLOR_ATTACHMENT ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT :
                         desc.usage == USAGE_DEPTH_STENCIL_ATTACHMENT ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_FLAG_BITS_MAX_ENUM;
+        imageInfo.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
@@ -275,7 +315,8 @@ void* gpuMalloc(size_t bytes, size_t align, MEMORY memory)
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
             VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
-            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | 
+            VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
 
         auto properties = 
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | 
@@ -364,22 +405,90 @@ GpuTexture gpuCreateTexture(GpuTextureDesc desc, void* ptrGpu)
         return nullptr;
     }
 
-    alloc.image = vulkan.createImage(desc);
+    VkImage image = vulkan.createImage(desc);
 
     VkDeviceSize offset = reinterpret_cast<VkDeviceAddress>(ptrGpu) - alloc.address;
-    vulkan.dispatchTable.bindImageMemory(alloc.image, alloc.memory, offset);
+    vulkan.dispatchTable.bindImageMemory(image, alloc.memory, offset);
 
-    return new GpuTexture_T { desc };
+    VkImageViewCreateInfo viewInfo = {};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = image;
+    viewInfo.viewType = desc.type == TEXTURE_1D ? VK_IMAGE_VIEW_TYPE_1D :
+                        desc.type == TEXTURE_2D ? VK_IMAGE_VIEW_TYPE_2D :
+                        desc.type == TEXTURE_3D ? VK_IMAGE_VIEW_TYPE_3D : VK_IMAGE_VIEW_TYPE_MAX_ENUM;
+    viewInfo.format = desc.format == FORMAT_RGBA8_UNORM ? VK_FORMAT_R8G8B8A8_UNORM :
+                    desc.format == FORMAT_D32_FLOAT ? VK_FORMAT_D32_SFLOAT :
+                    desc.format == FORMAT_RG11B10_FLOAT ? VK_FORMAT_B10G11R11_UFLOAT_PACK32 :
+                    desc.format == FORMAT_RGB10_A2_UNORM ? VK_FORMAT_A2B10G10R10_UNORM_PACK32 : VK_FORMAT_UNDEFINED;
+    viewInfo.subresourceRange.aspectMask = desc.usage == USAGE_DEPTH_STENCIL_ATTACHMENT ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = desc.mipCount;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = desc.layerCount;
+
+    VkImageView imageView;
+    vulkan.dispatchTable.createImageView(&viewInfo, nullptr, &imageView);
+
+    return new GpuTexture_T { desc, image, imageView};
 }
 
-GpuTextureDescriptor gpuTextureViewDescriptor(GpuTexture texture, GpuViewDesc desc)
+void gpuDestroyTexture(GpuTexture texture)
 {
-    return {};
+    if (texture == nullptr)
+    {
+        return;
+    }
+
+    vulkan.dispatchTable.destroyImageView(texture->view, nullptr);
+    vulkan.dispatchTable.destroyImage(texture->image, nullptr);
+    delete texture;
 }
 
-GpuTextureDescriptor gpuRWTextureViewDescriptor(GpuTexture texture, GpuViewDesc desc)
+GpuTextureDescriptorHeapDesc gpuTextureDescriptorHeapDesc()
 {
-    return {};
+    return { 
+        {
+            vulkan.descriptorBufferProperties.combinedImageSamplerDescriptorSize,
+            vulkan.descriptorBufferProperties.descriptorBufferOffsetAlignment,
+            vulkan.descriptorSetLayoutOffset
+        },
+        {
+            vulkan.descriptorBufferProperties.storageImageDescriptorSize,
+            vulkan.descriptorBufferProperties.descriptorBufferOffsetAlignment,
+            vulkan.rwDescriptorSetLayoutOffset
+        },
+        vulkan.descriptorBufferProperties.storageImageDescriptorSize * 1024 + vulkan.rwDescriptorSetLayoutOffset
+    };
+}
+
+void gpuTextureViewDescriptor(GpuTexture texture, GpuViewDesc desc, void* descriptor)
+{
+    VkDescriptorImageInfo imageInfo = {};
+    imageInfo.sampler = vulkan.defaultSampler;
+    imageInfo.imageView = texture->view;
+    imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+    VkDescriptorGetInfoEXT descriptorGetInfo = {};
+    descriptorGetInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT;
+    descriptorGetInfo.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    descriptorGetInfo.data.pCombinedImageSampler = &imageInfo;
+
+    vulkan.dispatchTable.getDescriptorEXT(&descriptorGetInfo, vulkan.descriptorBufferProperties.combinedImageSamplerDescriptorSize, descriptor);
+}
+
+void gpuRWTextureViewDescriptor(GpuTexture texture, GpuViewDesc desc, void* descriptor)
+{
+    VkDescriptorImageInfo imageInfo = {};
+    imageInfo.sampler = VK_NULL_HANDLE;
+    imageInfo.imageView = texture->view;
+    imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+    VkDescriptorGetInfoEXT descriptorGetInfo = {};
+    descriptorGetInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT;
+    descriptorGetInfo.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    descriptorGetInfo.data.pStorageImage = &imageInfo;
+
+    vulkan.dispatchTable.getDescriptorEXT(&descriptorGetInfo, vulkan.descriptorBufferProperties.storageImageDescriptorSize, descriptor);
 }
 
 GpuPipeline gpuCreateComputePipeline(ByteSpan computeIR)
@@ -391,31 +500,79 @@ GpuPipeline gpuCreateComputePipeline(ByteSpan computeIR)
     VkShaderModule shaderModule;
     vulkan.dispatchTable.createShaderModule(&shaderModuleCreateInfo, nullptr, &shaderModule);
 
-    VkDescriptorSetLayoutBinding binding = {};
-    binding.binding = 0;
-    binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    binding.descriptorCount = 1;
-    binding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    binding.pImmutableSamplers = nullptr;
+    VkDescriptorSetLayoutBinding bindings[2] = {};
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[0].descriptorCount = 1024;
+    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    bindings[1].descriptorCount = 1024;
+    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
 
     VkDescriptorSetLayoutCreateInfo descriptorSetLayoutCreateInfo = {};
     descriptorSetLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    descriptorSetLayoutCreateInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT;
-    descriptorSetLayoutCreateInfo.bindingCount = 1;
-    descriptorSetLayoutCreateInfo.pBindings = &binding;
+    descriptorSetLayoutCreateInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+    descriptorSetLayoutCreateInfo.bindingCount = 2;
+    descriptorSetLayoutCreateInfo.pBindings = bindings;
     VkDescriptorSetLayout descriptorSetLayout;
     vulkan.dispatchTable.createDescriptorSetLayout(&descriptorSetLayoutCreateInfo, nullptr, &descriptorSetLayout);
+
+    // DESCRIPTOR BUFFER SIZES AND OFFSETS
+    VkDeviceSize descriptorSetLayoutSize = 0;
+    vulkan.dispatchTable.getDescriptorSetLayoutSizeEXT(descriptorSetLayout, &descriptorSetLayoutSize);
+    if (vulkan.descriptorSetLayoutSize != 0)
+    {
+        assert(vulkan.descriptorSetLayoutSize == descriptorSetLayoutSize);
+    }
+    vulkan.descriptorSetLayoutSize = descriptorSetLayoutSize;
+
+    VkDeviceSize descriptorSetLayoutOffset = 0;
+    vulkan.dispatchTable.getDescriptorSetLayoutBindingOffsetEXT(descriptorSetLayout, 0, &descriptorSetLayoutOffset);
+    if (vulkan.descriptorSetLayoutOffset != 0)
+    {
+        assert(vulkan.descriptorSetLayoutOffset == descriptorSetLayoutOffset);
+    }
+    vulkan.descriptorSetLayoutOffset = descriptorSetLayoutOffset;
+
+    VkDeviceSize rwDescriptorSetLayoutSize = 0;
+    vulkan.dispatchTable.getDescriptorSetLayoutSizeEXT(descriptorSetLayout, &rwDescriptorSetLayoutSize);
+    if (vulkan.rwDescriptorSetLayoutSize != 0)
+    {
+        assert(vulkan.rwDescriptorSetLayoutSize == rwDescriptorSetLayoutSize);
+    }
+    vulkan.rwDescriptorSetLayoutSize = rwDescriptorSetLayoutSize;
+
+    VkDeviceSize rwDescriptorSetLayoutOffset = 0;
+    vulkan.dispatchTable.getDescriptorSetLayoutBindingOffsetEXT(descriptorSetLayout, 1, &rwDescriptorSetLayoutOffset);
+    if (vulkan.rwDescriptorSetLayoutOffset != 0)
+    {
+        assert(vulkan.rwDescriptorSetLayoutOffset == rwDescriptorSetLayoutOffset);
+    }
+    vulkan.rwDescriptorSetLayoutOffset = rwDescriptorSetLayoutOffset;
+    // END DESCRIPTOR BUFFER SIZES AND OFFSETS
+
+    VkPushConstantRange pushConstantRange = {};
+    pushConstantRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pushConstantRange.offset = 0;
+    pushConstantRange.size = sizeof(VkDeviceAddress);
 
     VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {};
     pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pipelineLayoutCreateInfo.setLayoutCount = 1;
     pipelineLayoutCreateInfo.pSetLayouts = &descriptorSetLayout;
+    pipelineLayoutCreateInfo.pushConstantRangeCount = 1;
+    pipelineLayoutCreateInfo.pPushConstantRanges = &pushConstantRange;
+
     VkPipelineLayout pipelineLayout;
     vulkan.dispatchTable.createPipelineLayout(&pipelineLayoutCreateInfo, nullptr, &pipelineLayout);
 
     VkComputePipelineCreateInfo pipelineCreateInfo = {};
     pipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     pipelineCreateInfo.layout = pipelineLayout;
+    pipelineCreateInfo.flags = VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
     pipelineCreateInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     pipelineCreateInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     pipelineCreateInfo.stage.module = shaderModule;
@@ -517,6 +674,7 @@ void gpuSubmit(GpuQueue queue, Span<GpuCommandBuffer> commandBuffers, GpuSemapho
 
     for (auto cb : commandBuffers)
     {
+        vulkan.currentPipeline.erase(cb);
         delete cb; // Frees the wrapper, but not the actual VkCommandBuffer
     }
 }
@@ -538,7 +696,7 @@ GpuSemaphore gpuCreateSemaphore(uint64_t initValue)
     return new GpuSemaphore_T { semaphore };
 }
 
-void gpuWaitSemaphore(GpuSemaphore sema, uint64_t value)
+void gpuWaitSemaphore(GpuSemaphore sema, uint64_t value, uint64_t timeout)
 {
     VkSemaphoreWaitInfo waitInfo = {};
     waitInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
@@ -546,7 +704,7 @@ void gpuWaitSemaphore(GpuSemaphore sema, uint64_t value)
     waitInfo.pSemaphores = &sema->semaphore;
     waitInfo.pValues = &value;
 
-    vulkan.dispatchTable.waitSemaphores(&waitInfo, UINT64_MAX);
+    vulkan.dispatchTable.waitSemaphores(&waitInfo, timeout);
 
     // Free command buffers for this semaphore, and any earlier values if they exist
     for (size_t i = value; i > 0; i--)
@@ -593,10 +751,35 @@ void gpuCopyToTexture(GpuCommandBuffer cb, void* destGpu, void* srcGpu, GpuTextu
     Allocation src = vulkan.findAllocation(reinterpret_cast<VkDeviceAddress>(srcGpu));
     Allocation dst = vulkan.findAllocation(reinterpret_cast<VkDeviceAddress>(destGpu));
 
-    if (src.buffer == VK_NULL_HANDLE || dst.image == VK_NULL_HANDLE)
+    if (src.buffer == VK_NULL_HANDLE || texture == nullptr)
     {
         return;
     }
+
+    VkImageMemoryBarrier barrier = {};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = texture->image;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.srcAccessMask = VK_ACCESS_NONE;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+    vulkan.dispatchTable.cmdPipelineBarrier(
+        cb->commandBuffer,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0,
+        0, nullptr,
+        0, nullptr,
+        1, &barrier
+    );
 
     VkBufferImageCopy region = {};
     region.bufferOffset = reinterpret_cast<VkDeviceAddress>(srcGpu) - src.address;
@@ -609,7 +792,25 @@ void gpuCopyToTexture(GpuCommandBuffer cb, void* destGpu, void* srcGpu, GpuTextu
     region.imageOffset = { 0, 0, 0 };
     region.imageExtent = { texture->desc.dimensions.x, texture->desc.dimensions.y, texture->desc.dimensions.z };
 
-    vulkan.dispatchTable.cmdCopyBufferToImage(cb->commandBuffer, src.buffer, dst.image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+    vulkan.dispatchTable.cmdCopyBufferToImage(cb->commandBuffer, src.buffer, texture->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = 
+        texture->desc.usage & VK_IMAGE_USAGE_STORAGE_BIT 
+            ? VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT
+            : VK_ACCESS_SHADER_READ_BIT;
+
+    vulkan.dispatchTable.cmdPipelineBarrier(
+        cb->commandBuffer,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0,
+        0, nullptr,
+        0, nullptr,
+        1, &barrier
+    );    
 }
 
 void gpuCopyFromTexture(GpuCommandBuffer cb, void* destGpu, void* srcGpu, GpuTexture texture)
@@ -617,10 +818,35 @@ void gpuCopyFromTexture(GpuCommandBuffer cb, void* destGpu, void* srcGpu, GpuTex
     Allocation src = vulkan.findAllocation(reinterpret_cast<VkDeviceAddress>(srcGpu));
     Allocation dst = vulkan.findAllocation(reinterpret_cast<VkDeviceAddress>(destGpu));
 
-    if (dst.buffer == VK_NULL_HANDLE || src.image == VK_NULL_HANDLE)
+    if (dst.buffer == VK_NULL_HANDLE || texture == nullptr)
     {
         return;
     }
+
+    VkImageMemoryBarrier barrier = {};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = texture->image;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.srcAccessMask = VK_ACCESS_NONE;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    
+    vulkan.dispatchTable.cmdPipelineBarrier(
+        cb->commandBuffer,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0,
+        0, nullptr,
+        0, nullptr,
+        1, &barrier
+    );
 
     VkBufferImageCopy region = {};
     region.bufferOffset = reinterpret_cast<VkDeviceAddress>(destGpu) - dst.address;
@@ -633,12 +859,55 @@ void gpuCopyFromTexture(GpuCommandBuffer cb, void* destGpu, void* srcGpu, GpuTex
     region.imageOffset = { 0, 0, 0 };
     region.imageExtent = { texture->desc.dimensions.x, texture->desc.dimensions.y, texture->desc.dimensions.z };
 
-    vulkan.dispatchTable.cmdCopyImageToBuffer(cb->commandBuffer, src.image, VK_IMAGE_LAYOUT_GENERAL, dst.buffer, 1, &region);
+    vulkan.dispatchTable.cmdCopyImageToBuffer(cb->commandBuffer, texture->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst.buffer, 1, &region);
+
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    barrier.dstAccessMask = VK_ACCESS_NONE;
+
+    vulkan.dispatchTable.cmdPipelineBarrier(
+        cb->commandBuffer,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        0,
+        0, nullptr,
+        0, nullptr,
+        1, &barrier
+    );
 }
 
 void gpuSetActiveTextureHeapPtr(GpuCommandBuffer cb, void *ptrGpu)
 {
-    // TODO: Implement texture heaps
+    auto alloc = vulkan.findAllocation(reinterpret_cast<VkDeviceAddress>(ptrGpu));
+    if (alloc.buffer == VK_NULL_HANDLE)
+    {
+        return;
+    }
+
+    VkDescriptorBufferBindingInfoEXT bufferBindingInfo = {};
+    bufferBindingInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT;
+    bufferBindingInfo.address = reinterpret_cast<VkDeviceAddress>(ptrGpu);
+    bufferBindingInfo.usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
+
+    vulkan.dispatchTable.cmdBindDescriptorBuffersEXT(
+        cb->commandBuffer,
+        1,
+        &bufferBindingInfo
+    );
+
+    uint32_t index = 0;
+    VkDeviceSize offset = reinterpret_cast<VkDeviceAddress>(ptrGpu) - alloc.address;
+
+    vulkan.dispatchTable.cmdSetDescriptorBufferOffsetsEXT(
+        cb->commandBuffer,
+        vulkan.currentPipeline[cb]->bindPoint,
+        vulkan.currentPipeline[cb]->layout,
+        0,
+        1,
+        &index,
+        &offset
+    );
 }
 
 void gpuBarrier(GpuCommandBuffer cb, STAGE before, STAGE after, HAZARD_FLAGS hazards)
@@ -658,12 +927,12 @@ void gpuBarrier(GpuCommandBuffer cb, STAGE before, STAGE after, HAZARD_FLAGS haz
 
 void gpuSignalAfter(GpuCommandBuffer cb, STAGE before, void *ptrGpu, uint64_t value, SIGNAL signal)
 {
-    // TODO: Implement signaling
+    
 }
 
 void gpuWaitBefore(GpuCommandBuffer cb, STAGE after, void *ptrGpu, uint64_t value, OP op, HAZARD_FLAGS hazards, uint64_t mask)
 {
-    // TODO: Implement waiting
+    
 }
 
 void gpuSetPipeline(GpuCommandBuffer cb, GpuPipeline pipeline)
@@ -674,7 +943,7 @@ void gpuSetPipeline(GpuCommandBuffer cb, GpuPipeline pipeline)
         pipeline->pipeline
     );
 
-    vulkan.currentPipeline = pipeline;
+    vulkan.currentPipeline[cb] = pipeline;
 }
 
 void gpuSetDepthStencilState(GpuCommandBuffer cb, GpuDepthStencilState state)
@@ -687,31 +956,15 @@ void gpuSetBlendState(GpuCommandBuffer cb, GpuBlendState state)
 
 void gpuDispatch(GpuCommandBuffer cb, void* dataGpu, uint3 gridDimensions)
 {
-    Allocation alloc = vulkan.findAllocation(reinterpret_cast<VkDeviceAddress>(dataGpu));
-    if (alloc.buffer != VK_NULL_HANDLE)
-    {
-        VkDescriptorBufferInfo bufferInfo = {};
-        bufferInfo.buffer = alloc.buffer;
-        bufferInfo.offset = reinterpret_cast<VkDeviceAddress>(dataGpu) - alloc.address;
-        bufferInfo.range = alloc.size - bufferInfo.offset;
-
-        VkWriteDescriptorSet writeDescriptorSet = {};
-        writeDescriptorSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writeDescriptorSet.dstBinding = 0;
-        writeDescriptorSet.dstArrayElement = 0;
-        writeDescriptorSet.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        writeDescriptorSet.descriptorCount = 1;
-        writeDescriptorSet.pBufferInfo = &bufferInfo;
-        
-        vulkan.dispatchTable.cmdPushDescriptorSetKHR(
-            cb->commandBuffer,
-            vulkan.currentPipeline->bindPoint,
-            vulkan.currentPipeline->layout,
-            0,
-            1,
-            &writeDescriptorSet
-        );
-    }
+    VkDeviceAddress address = reinterpret_cast<VkDeviceAddress>(dataGpu);
+    vulkan.dispatchTable.cmdPushConstants(
+        cb->commandBuffer,
+        vulkan.currentPipeline[cb]->layout,
+        VK_SHADER_STAGE_COMPUTE_BIT,
+        0,
+        sizeof(VkDeviceAddress),
+        &address
+    );
 
     vulkan.dispatchTable.cmdDispatch(
         cb->commandBuffer, 
@@ -723,31 +976,15 @@ void gpuDispatch(GpuCommandBuffer cb, void* dataGpu, uint3 gridDimensions)
 
 void gpuDispatchIndirect(GpuCommandBuffer cb, void* dataGpu, void* gridDimensionsGpu)
 {
-    Allocation data = vulkan.findAllocation(reinterpret_cast<VkDeviceAddress>(dataGpu));
-    if (data.buffer != VK_NULL_HANDLE)
-    {
-        VkDescriptorBufferInfo bufferInfo = {};
-        bufferInfo.buffer = data.buffer;
-        bufferInfo.offset = reinterpret_cast<VkDeviceAddress>(dataGpu) - data.address;
-        bufferInfo.range = data.size - bufferInfo.offset;
-
-        VkWriteDescriptorSet writeDescriptorSet = {};
-        writeDescriptorSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writeDescriptorSet.dstBinding = 0;
-        writeDescriptorSet.dstArrayElement = 0;
-        writeDescriptorSet.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        writeDescriptorSet.descriptorCount = 1;
-        writeDescriptorSet.pBufferInfo = &bufferInfo;
-        
-        vulkan.dispatchTable.cmdPushDescriptorSet(
-            cb->commandBuffer,
-            vulkan.currentPipeline->bindPoint,
-            vulkan.currentPipeline->layout,
-            0,
-            1,
-            &writeDescriptorSet
-        );
-    }
+    VkDeviceAddress address = reinterpret_cast<VkDeviceAddress>(dataGpu);
+    vulkan.dispatchTable.cmdPushConstants(
+        cb->commandBuffer,
+        vulkan.currentPipeline[cb]->layout,
+        VK_SHADER_STAGE_COMPUTE_BIT,
+        0,
+        sizeof(VkDeviceAddress),
+        &address
+    );
 
     Allocation grid = vulkan.findAllocation(reinterpret_cast<VkDeviceAddress>(gridDimensionsGpu));
     if (grid.buffer == VK_NULL_HANDLE)
@@ -779,20 +1016,167 @@ void gpuEndRenderPass(GpuCommandBuffer cb)
 
 void gpuDrawIndexedInstanced(GpuCommandBuffer cb, void* vertexDataGpu, void* pixelDataGpu, void* indicesGpu, uint32_t indexCount, uint32_t instanceCount)
 {
+    VkDeviceAddress vertexAddress = reinterpret_cast<VkDeviceAddress>(vertexDataGpu);
+    vulkan.dispatchTable.cmdPushConstants(
+        cb->commandBuffer,
+        vulkan.currentPipeline[cb]->layout,
+        VK_SHADER_STAGE_VERTEX_BIT,
+        0,
+        sizeof(VkDeviceAddress),
+        &vertexAddress
+    );
+
+    VkDeviceAddress pixelAddress = reinterpret_cast<VkDeviceAddress>(pixelDataGpu);
+    vulkan.dispatchTable.cmdPushConstants(
+        cb->commandBuffer,
+        vulkan.currentPipeline[cb]->layout,
+        VK_SHADER_STAGE_FRAGMENT_BIT,
+        sizeof(VkDeviceAddress),
+        sizeof(VkDeviceAddress),
+        &pixelAddress
+    );
+
+    Allocation indexAlloc = vulkan.findAllocation(reinterpret_cast<VkDeviceAddress>(indicesGpu));
+    if (indexAlloc.buffer == VK_NULL_HANDLE)
+    {
+        return;
+    }
+
+    vulkan.dispatchTable.cmdBindIndexBuffer(
+        cb->commandBuffer,
+        indexAlloc.buffer,
+        reinterpret_cast<VkDeviceAddress>(indicesGpu) - indexAlloc.address,
+        VK_INDEX_TYPE_UINT32
+    );
+
+    vulkan.dispatchTable.cmdDrawIndexed(
+        cb->commandBuffer,
+        indexCount,
+        instanceCount,
+        0,
+        0,
+        0
+    );
 }
 
 void gpuDrawIndexedInstancedIndirect(GpuCommandBuffer cb, void* vertexDataGpu, void* pixelDataGpu, void* indicesGpu, void* argsGpu)
 {
+    VkDeviceAddress vertexAddress = reinterpret_cast<VkDeviceAddress>(vertexDataGpu);
+    vulkan.dispatchTable.cmdPushConstants(
+        cb->commandBuffer,
+        vulkan.currentPipeline[cb]->layout,
+        VK_SHADER_STAGE_VERTEX_BIT,
+        0,
+        sizeof(VkDeviceAddress),
+        &vertexAddress
+    );
+
+    VkDeviceAddress pixelAddress = reinterpret_cast<VkDeviceAddress>(pixelDataGpu);
+    vulkan.dispatchTable.cmdPushConstants(
+        cb->commandBuffer,
+        vulkan.currentPipeline[cb]->layout,
+        VK_SHADER_STAGE_FRAGMENT_BIT,
+        sizeof(VkDeviceAddress),
+        sizeof(VkDeviceAddress),
+        &pixelAddress
+    );
+
+    Allocation indexAlloc = vulkan.findAllocation(reinterpret_cast<VkDeviceAddress>(indicesGpu));
+    if (indexAlloc.buffer == VK_NULL_HANDLE)
+    {
+        return;
+    }
+
+    vulkan.dispatchTable.cmdBindIndexBuffer(
+        cb->commandBuffer,
+        indexAlloc.buffer,
+        reinterpret_cast<VkDeviceAddress>(indicesGpu) - indexAlloc.address,
+        VK_INDEX_TYPE_UINT32
+    );
+
+    Allocation argsAlloc = vulkan.findAllocation(reinterpret_cast<VkDeviceAddress>(argsGpu));
+    if (argsAlloc.buffer == VK_NULL_HANDLE)
+    {
+        return;
+    }
+
+    vulkan.dispatchTable.cmdDrawIndexedIndirect(
+        cb->commandBuffer,
+        argsAlloc.buffer,
+        reinterpret_cast<VkDeviceAddress>(argsGpu) - argsAlloc.address,
+        1,
+        0
+    );
 }
 
 void gpuDrawIndexedInstancedIndirectMulti(GpuCommandBuffer cb, void* dataVxGpu, uint32_t vxStride, void* dataPxGpu, uint32_t pxStride, void* argsGpu, void* drawCountGpu)
 {
+    // TODO
 }
 
 void gpuDrawMeshlets(GpuCommandBuffer cb, void* meshletDataGpu, void* pixelDataGpu, uint3 dim)
 {
+    VkDeviceAddress meshletAddress = reinterpret_cast<VkDeviceAddress>(meshletDataGpu);
+    vulkan.dispatchTable.cmdPushConstants(
+        cb->commandBuffer,
+        vulkan.currentPipeline[cb]->layout,
+        VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT,
+        0,
+        sizeof(VkDeviceAddress),
+        &meshletAddress
+    );
+
+    VkDeviceAddress pixelAddress = reinterpret_cast<VkDeviceAddress>(pixelDataGpu);
+    vulkan.dispatchTable.cmdPushConstants(
+        cb->commandBuffer,
+        vulkan.currentPipeline[cb]->layout,
+        VK_SHADER_STAGE_FRAGMENT_BIT,
+        sizeof(VkDeviceAddress),
+        sizeof(VkDeviceAddress),
+        &pixelAddress
+    );
+    
+    vulkan.dispatchTable.cmdDrawMeshTasksEXT(
+        cb->commandBuffer,
+        dim.x,
+        dim.y,
+        dim.z
+    );
 }
 
 void gpuDrawMeshletsIndirect(GpuCommandBuffer cb, void* meshletDataGpu, void* pixelDataGpu, void *dimGpu)
 {
+    VkDeviceAddress meshletAddress = reinterpret_cast<VkDeviceAddress>(meshletDataGpu);
+    vulkan.dispatchTable.cmdPushConstants(
+        cb->commandBuffer,
+        vulkan.currentPipeline[cb]->layout,
+        VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT,
+        0,
+        sizeof(VkDeviceAddress),
+        &meshletAddress
+    );
+
+    VkDeviceAddress pixelAddress = reinterpret_cast<VkDeviceAddress>(pixelDataGpu);
+    vulkan.dispatchTable.cmdPushConstants(
+        cb->commandBuffer,
+        vulkan.currentPipeline[cb]->layout,
+        VK_SHADER_STAGE_FRAGMENT_BIT,
+        sizeof(VkDeviceAddress),
+        sizeof(VkDeviceAddress),
+        &pixelAddress
+    );
+
+    Allocation dimAlloc = vulkan.findAllocation(reinterpret_cast<VkDeviceAddress>(dimGpu));
+    if (dimAlloc.buffer == VK_NULL_HANDLE)
+    {
+        return;
+    }
+
+    vulkan.dispatchTable.cmdDrawMeshTasksIndirectEXT(
+        cb->commandBuffer,
+        dimAlloc.buffer,
+        reinterpret_cast<VkDeviceAddress>(dimGpu) - dimAlloc.address,
+        1,
+        0
+    );
 }

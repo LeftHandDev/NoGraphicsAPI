@@ -11,9 +11,13 @@
     using object = object##_T*;
 
 // Vector types
-struct uint2 { uint32_t x, y; };
-struct uint3 { uint32_t x, y, z; };
-struct uint4 { uint32_t x, y, z, w; };
+using uint = uint32_t;
+using uint2 = struct { uint x, y; };
+using uint3 = struct { uint x, y, z; };
+using uint4 = struct { uint x, y, z, w; };
+using float2 = struct { float x, y; };
+using float3 = struct { float x, y, z; };
+using float4 = struct { float x, y, z, w; };
 
 // Use standard library span
 template<typename T>
@@ -129,7 +133,8 @@ struct GpuRenderPassDesc
 };
 
 struct GpuTextureSizeAlign { size_t size; size_t align; };
-struct GpuTextureDescriptor { uint64_t data[4]; };
+struct GpuTextureDescriptorSizeAlignOffset { size_t size; size_t align; size_t offset; };
+struct GpuTextureDescriptorHeapDesc { GpuTextureDescriptorSizeAlignOffset textureDesc; GpuTextureDescriptorSizeAlignOffset rwTextureDesc; size_t heapSize; };
 
 // Memory
 void* gpuMalloc(size_t bytes, MEMORY memory = MEMORY_DEFAULT);
@@ -140,8 +145,10 @@ void* gpuHostToDevicePointer(void *ptr);
 // Textures
 GpuTextureSizeAlign gpuTextureSizeAlign(GpuTextureDesc desc);
 GpuTexture gpuCreateTexture(GpuTextureDesc desc, void* ptrGpu);
-GpuTextureDescriptor gpuTextureViewDescriptor(GpuTexture texture, GpuViewDesc desc);
-GpuTextureDescriptor gpuRWTextureViewDescriptor(GpuTexture texture, GpuViewDesc desc);
+void gpuDestroyTexture(GpuTexture texture);
+GpuTextureDescriptorHeapDesc gpuTextureDescriptorHeapDesc();
+void gpuTextureViewDescriptor(GpuTexture texture, GpuViewDesc desc, void* descriptor);
+void gpuRWTextureViewDescriptor(GpuTexture texture, GpuViewDesc desc, void* descriptor);
 
 // Pipelines
 GpuPipeline gpuCreateComputePipeline(ByteSpan computeIR);
@@ -162,7 +169,7 @@ void gpuSubmit(GpuQueue queue, Span<GpuCommandBuffer> commandBuffers, GpuSemapho
 
 // Semaphores
 GpuSemaphore gpuCreateSemaphore(uint64_t initValue);
-void gpuWaitSemaphore(GpuSemaphore sema, uint64_t value);
+void gpuWaitSemaphore(GpuSemaphore sema, uint64_t value, uint64_t timeout = UINT64_MAX);
 void gpuDestroySemaphore(GpuSemaphore sema);
 
 // Commands
