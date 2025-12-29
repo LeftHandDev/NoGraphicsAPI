@@ -1,5 +1,4 @@
 #include "NoGraphicsAPI.h"
-
 #include "Shaders/Compute.h"
 #include "Shaders/Blur.h"
 
@@ -8,6 +7,8 @@
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "External/stb_image_write.h"
+
+#include <SDL3/SDL.h>
 
 #include <iostream>
 #include <filesystem>
@@ -330,14 +331,38 @@ void test_image_blur()
     data.free();
 }
 
+void test_sdl_window()
+{
+    auto window = SDL_CreateWindow("Test Window", 1920, 1080, SDL_WINDOW_VULKAN);
+    auto surface = SDL_Gpu_CreateSurface(window);
+    bool exit = false;
+
+    while (!exit)
+    {
+        SDL_Event event;
+        while (SDL_PollEvent(&event))
+        {
+            if (event.type == SDL_EVENT_QUIT)
+            {
+                exit = true;
+                break;
+            }
+        }
+    }
+    
+    SDL_Gpu_DestroySurface(surface);
+    SDL_DestroyWindow(window);
+}
+
 int main()
 {
     // test_upload_download();
     // test_upload_download_barrier();
     // test_compute_shader();
-    test_image_blur();
+    // test_image_blur();
+    // test_upload_download_image();
 
-    test_upload_download_image();
+    test_sdl_window();
 
     return 0;
 }

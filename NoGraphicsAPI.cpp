@@ -1,3 +1,4 @@
+#define GPU_EXPOSE_INTERNAL
 #include "NoGraphicsAPI.h"
 #include "External/VkBootstrap.h"
 
@@ -23,6 +24,16 @@ struct GpuBlendState_T { };
 struct GpuQueue_T { VkQueue queue; };
 struct GpuCommandBuffer_T { VkCommandBuffer commandBuffer; };
 struct GpuSemaphore_T { VkSemaphore semaphore; };
+#ifdef GPU_SURFACE_EXTENSION
+struct GpuSwapchain_T { VkSwapchainKHR swapchain = VK_NULL_HANDLE; };
+#endif // GPU_SURFACE_EXTENSION
+#ifdef GPU_RAY_TRACING_EXTENSION
+struct GpuAccelerationStructure_T 
+{ 
+    VkAccelerationStructureKHR as = VK_NULL_HANDLE; 
+    VkAccelerationStructureBuildGeometryInfoKHR buildInfo = {}; 
+};
+#endif // GPU_RAY_TRACING_EXTENSION
 
 struct Allocation
 {
@@ -1180,3 +1191,67 @@ void gpuDrawMeshletsIndirect(GpuCommandBuffer cb, void* meshletDataGpu, void* pi
         0
     );
 }
+
+void* gpuVulkanInstance()
+{
+    return vulkan.instance.instance;
+}
+
+#ifdef GPU_SURFACE_EXTENSION
+GpuSwapchain gpuCreateSwapchain(GpuSurface surface, GpuQueue queue, Span<FORMAT> formats, uint32_t width, uint32_t height, uint32_t bufferCount)
+{
+    return new GpuSwapchain_T {};
+}
+
+void gpuDestroySwapchain(GpuSwapchain swapchain)
+{
+}
+
+uint gpuSwapchainImageIndex(GpuSwapchain swapchain)
+{
+    return uint();
+}
+
+GpuTexture gpuSwapchainImage(GpuSwapchain swapchain, uint index)
+{
+    return new GpuTexture_T {};
+}
+
+void gpuPresent(GpuSwapchain swapchain)
+{
+}
+#endif // GPU_SURFACE_EXTENSION
+
+#ifdef GPU_RAY_TRACING_EXTENSION
+GpuAccelerationStructureSizes gpuAccelerationStructureSizes(GpuAccelerationStructureBlasDesc desc)
+{
+    return GpuAccelerationStructureSizes();
+}
+
+GpuAccelerationStructureSizes gpuAccelerationStructureSizes(GpuAccelerationStructureTlasDesc desc)
+{
+    return GpuAccelerationStructureSizes();
+}
+
+GpuAccelerationStructure gpuCreateAccelerationStructure(GpuAccelerationStructureBlasDesc desc, void *ptrGpu)
+{
+    return new GpuAccelerationStructure_T {};
+}
+
+GpuAccelerationStructure gpuCreateAccelerationStructure(GpuAccelerationStructureTlasDesc desc, void *ptrGpu)
+{
+    return new GpuAccelerationStructure_T {};
+}
+
+void gpuBuildAccelerationStructure(GpuCommandBuffer cb, GpuAccelerationStructure tlas, Span<GpuAccelerationStructure> instances, void *scratchGpu)
+{
+}
+
+void gpuUpdateAccelerationStructure(GpuCommandBuffer cb, GpuAccelerationStructure tlas, Span<GpuAccelerationStructure> instances, void *scratchGpu)
+{
+}
+
+void gpuDestroyAccelerationStructure(GpuAccelerationStructure as)
+{
+}
+#endif // GPU_RAY_TRACING_EXTENSION

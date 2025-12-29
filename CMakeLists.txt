@@ -10,9 +10,11 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(Vulkan REQUIRED)
+find_package(SDL3 CONFIG QUIET)
 
 add_executable(NoGraphicsAPI
     External/VkBootstrap.cpp
+    Config.cpp
     NoGraphicsAPI.cpp
     Main.cpp
 )
@@ -22,4 +24,20 @@ if(TARGET Vulkan::Vulkan)
 else()
     target_include_directories(NoGraphicsAPI PRIVATE ${Vulkan_INCLUDE_DIRS})
     target_link_libraries(NoGraphicsAPI PRIVATE ${Vulkan_LIBRARIES})
+endif()
+
+# Prefer SDL3 CMake package; fall back to the Vulkan SDK copy via the env var
+if(TARGET SDL3::SDL3)
+    target_link_libraries(NoGraphicsAPI PRIVATE SDL3::SDL3)
+else()
+    if(NOT DEFINED VULKAN_SDK AND DEFINED ENV{VULKAN_SDK})
+        set(VULKAN_SDK $ENV{VULKAN_SDK})
+    endif()
+
+    if(NOT DEFINED VULKAN_SDK)
+        message(FATAL_ERROR "SDL3 package not found and VULKAN_SDK env var is not set")
+    endif()
+
+    target_include_directories(NoGraphicsAPI PRIVATE "${VULKAN_SDK}/Include/SDL3")
+    target_link_libraries(NoGraphicsAPI PRIVATE "${VULKAN_SDK}/Lib/SDL3.lib")
 endif()
