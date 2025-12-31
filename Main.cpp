@@ -319,6 +319,13 @@ void test_sdl_window()
     auto surface = SDL_Gpu_CreateSurface(window);
     bool exit = false;
 
+    const uint FRAMES_IN_FLIGHT = 2;
+
+    auto queue = gpuCreateQueue();
+    auto swapchain = gpuCreateSwapchain(surface, FRAMES_IN_FLIGHT);
+    auto semaphore = gpuCreateSemaphore(0);
+    uint64_t nextFrame = 1;
+
     while (!exit)
     {
         SDL_Event event;
@@ -330,6 +337,16 @@ void test_sdl_window()
                 break;
             }
         }
+
+        if (nextFrame > FRAMES_IN_FLIGHT)
+        {
+            gpuWaitSemaphore(semaphore, nextFrame - FRAMES_IN_FLIGHT);
+        }
+
+        auto commandBuffer = gpuStartCommandRecording(queue);
+        auto image = gpuSwapchainImage(swapchain);
+        gpuSubmit(queue, Span<GpuCommandBuffer>(&commandBuffer, 1), semaphore, nextFrame);
+        gpuPresent(swapchain, semaphore, nextFrame++);
     }
     
     SDL_Gpu_DestroySurface(surface);
@@ -341,10 +358,10 @@ int main()
     // test_upload_download();
     // test_upload_download_barrier();
     // test_compute_shader();
-    test_image_blur();
+    // test_image_blur();
     // test_upload_download_image();
 
-    // test_sdl_window();
+    test_sdl_window();
 
     return 0;
 }

@@ -29,7 +29,14 @@ struct GpuQueue_T { VkQueue queue; };
 struct GpuCommandBuffer_T { VkCommandBuffer commandBuffer; };
 struct GpuSemaphore_T { VkSemaphore semaphore; };
 #ifdef GPU_SURFACE_EXTENSION
-struct GpuSwapchain_T { VkSwapchainKHR swapchain = VK_NULL_HANDLE; VkQueue presentQueue; uint32_t index = 0; };
+struct GpuSwapchain_T 
+{ 
+    VkSwapchainKHR swapchain = VK_NULL_HANDLE; 
+    VkQueue presentQueue = VK_NULL_HANDLE;
+    uint32_t imageIndex = 0; 
+    std::vector<VkImage> images;
+    std::vector<VkSemaphore> presentSemaphores;
+};
 #endif // GPU_SURFACE_EXTENSION
 #ifdef GPU_RAY_TRACING_EXTENSION
 struct GpuAccelerationStructure_T 
@@ -61,6 +68,7 @@ struct Vulkan
     VkCommandPool commandPool = VK_NULL_HANDLE;
     std::map<std::pair<VkSemaphore, uint64_t>, std::vector<VkCommandBuffer>> submittedCommandBuffers;
     VkSampler defaultSampler = VK_NULL_HANDLE;
+    VkFence acquireFence = VK_NULL_HANDLE;
 
     // Vulkan structs
     VkPhysicalDeviceMemoryProperties memoryProperties = {};
@@ -126,18 +134,18 @@ struct Vulkan
         descriptorBufferFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT;
         descriptorBufferFeatures.descriptorBuffer = VK_TRUE;
 
+        VkPhysicalDeviceVulkan13Features physicalDeviceVulkan13Features = {};
+        physicalDeviceVulkan13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+        physicalDeviceVulkan13Features.synchronization2 = VK_TRUE;
+
         VkPhysicalDeviceVulkan12Features physicalDeviceVulkan12Features = {};
         physicalDeviceVulkan12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
         physicalDeviceVulkan12Features.timelineSemaphore = VK_TRUE;
         physicalDeviceVulkan12Features.bufferDeviceAddress = VK_TRUE;
         physicalDeviceVulkan12Features.runtimeDescriptorArray = VK_TRUE;
 
-        VkPhysicalDeviceRobustness2FeaturesKHR robustness2Features = {};
-        robustness2Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_KHR;
-        robustness2Features.nullDescriptor = VK_TRUE;
-
         bool result = physicalDevice.enable_extension_features_if_present(physicalDeviceVulkan12Features);
-        result = physicalDevice.enable_extension_features_if_present(robustness2Features);
+        result = physicalDevice.enable_extension_features_if_present(physicalDeviceVulkan13Features) && result;
         instanceDispatchTable.getPhysicalDeviceMemoryProperties(physicalDevice, &memoryProperties);
 
         descriptorBufferProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT;
@@ -171,6 +179,10 @@ struct Vulkan
         samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
         samplerInfo.unnormalizedCoordinates = VK_FALSE;
         dispatchTable.createSampler(&samplerInfo, nullptr, &defaultSampler);
+
+        VkFenceCreateInfo fenceInfo = {};
+        fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        dispatchTable.createFence(&fenceInfo, nullptr, &acquireFence);
     }
 
     ~Vulkan()
@@ -758,7 +770,7 @@ void gpuSubmit(GpuQueue queue, Span<GpuCommandBuffer> commandBuffers, GpuSemapho
     submitInfo.pSignalSemaphores = &semaphore->semaphore;
 
     vulkan.dispatchTable.queueSubmit(queue->queue, 1, &submitInfo, VK_NULL_HANDLE);
-    
+
     vulkan.submittedCommandBuffers[{ semaphore->semaphore, value }] = vkCommandBuffers;
 
     for (auto cb : commandBuffers)
@@ -1303,32 +1315,96 @@ GpuSwapchain gpuCreateSwapchain(GpuSurface surface, uint32_t images)
     auto builder = vkb::SwapchainBuilder{vulkan.device, surf->surface}.set_desired_min_image_count(images);
     vulkan.device.surface = surf->surface;
     auto presentQueue = new GpuQueue_T{ vulkan.device.get_queue(vkb::QueueType::present).value() };
-    return new GpuSwapchain_T { builder.build().value(), presentQueue->queue };
+    auto swapchain = builder.build().value();
+
+    std::vector<VkImage> swapchainImages = swapchain.get_images().value();
+    std::vector<VkSemaphore> presentSemaphores;
+
+    for (size_t i = 0; i < swapchainImages.size(); i++)
+    {
+        VkSemaphoreCreateInfo semaphoreInfo = {};
+        semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        VkSemaphore presentSemaphore;
+        vulkan.dispatchTable.createSemaphore(&semaphoreInfo, nullptr, &presentSemaphore);
+        presentSemaphores.push_back(presentSemaphore);
+    }
+
+    return new GpuSwapchain_T { 
+        swapchain.swapchain, 
+        presentQueue->queue, 
+        0, 
+        swapchainImages, 
+        presentSemaphores
+    };
 }
 
 void gpuDestroySwapchain(GpuSwapchain swapchain)
 {
     vulkan.dispatchTable.destroySwapchainKHR(swapchain->swapchain, nullptr);
+    for (auto sema : swapchain->presentSemaphores)
+    {
+        vulkan.dispatchTable.destroySemaphore(sema, nullptr);
+    }
     delete swapchain;
 }
 
-uint gpuSwapchainImageIndex(GpuSwapchain swapchain)
+GpuTexture gpuSwapchainImage(GpuSwapchain swapchain)
 {
-    return swapchain->index;
+    vulkan.dispatchTable.resetFences(1, &vulkan.acquireFence);
+
+    vulkan.dispatchTable.acquireNextImageKHR(
+        swapchain->swapchain,
+        UINT64_MAX,
+        VK_NULL_HANDLE,
+        vulkan.acquireFence,
+        &swapchain->imageIndex
+    );
+
+    vulkan.dispatchTable.waitForFences(1, &vulkan.acquireFence, VK_TRUE, UINT64_MAX);
+
+    return new GpuTexture_T {
+        GpuTextureDesc{}, // TODO: populate texture description
+        swapchain->images[swapchain->imageIndex],
+        nullptr,
+    };
 }
 
-GpuTexture gpuSwapchainImage(GpuSwapchain swapchain, uint index)
+void gpuPresent(GpuSwapchain swapchain, GpuSemaphore sema, uint64_t value)
 {
-    return new GpuTexture_T {};
-}
+    VkSemaphoreSubmitInfo waitInfo = {};
+    waitInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+    waitInfo.semaphore = sema->semaphore;
+    waitInfo.value = value;
 
-void gpuPresent(GpuSwapchain swapchain)
-{
+    VkSemaphoreSubmitInfo signalInfo = {};
+    signalInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+    signalInfo.semaphore = swapchain->presentSemaphores[swapchain->imageIndex];
+    signalInfo.value = 0;
+
+    VkSubmitInfo2 submitInfo = {};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+    submitInfo.waitSemaphoreInfoCount = 1;
+    submitInfo.pWaitSemaphoreInfos = &waitInfo;
+    submitInfo.signalSemaphoreInfoCount = 1;
+    submitInfo.pSignalSemaphoreInfos = &signalInfo;
+    submitInfo.commandBufferInfoCount = 0;
+    submitInfo.pCommandBufferInfos = nullptr;
+
+    // Converts the timeline semaphore to a binary semaphore so we can present
+    vulkan.dispatchTable.queueSubmit2(
+        swapchain->presentQueue,
+        1,
+        &submitInfo,
+        VK_NULL_HANDLE
+    );
+
     VkPresentInfoKHR presentInfo = {};
     presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
     presentInfo.swapchainCount = 1;
     presentInfo.pSwapchains = &swapchain->swapchain;
-    presentInfo.pImageIndices = &swapchain->index;
+    presentInfo.pImageIndices = &swapchain->imageIndex;
+    presentInfo.waitSemaphoreCount = 1;
+    presentInfo.pWaitSemaphores = &swapchain->presentSemaphores[swapchain->imageIndex];
 
     vulkan.dispatchTable.queuePresentKHR(
         swapchain->presentQueue,

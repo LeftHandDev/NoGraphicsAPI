@@ -268,10 +268,9 @@ void gpuDrawMeshletsIndirect(GpuCommandBuffer cb, void* meshletDataGpu, void* pi
 GpuSwapchain gpuCreateSwapchain(GpuSurface surface, uint32_t images);
 void gpuDestroySwapchain(GpuSwapchain swapchain);
 
-uint gpuSwapchainImageIndex(GpuSwapchain swapchain);
-GpuTexture gpuSwapchainImage(GpuSwapchain swapchain, uint index);
+GpuTexture gpuSwapchainImage(GpuSwapchain swapchain);
 
-void gpuPresent(GpuSwapchain swapchain);
+void gpuPresent(GpuSwapchain swapchain, GpuSemaphore sema, uint64_t value);
 #endif // GPU_SURFACE_EXTENSION
 
 #ifdef GPU_RAY_TRACING_EXTENSION
