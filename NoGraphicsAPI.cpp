@@ -21,7 +21,7 @@ struct GpuTexture_T
 { 
     GpuTextureDesc desc = {}; 
     VkImage image = VK_NULL_HANDLE; 
-    VkImageView view = VK_NULL_HANDLE; 
+    VkImageView view = VK_NULL_HANDLE;
 };
 struct GpuDepthStencilState_T {  };
 struct GpuBlendState_T { };
@@ -34,6 +34,7 @@ struct GpuSwapchain_T
     VkSwapchainKHR swapchain = VK_NULL_HANDLE; 
     VkQueue presentQueue = VK_NULL_HANDLE;
     uint32_t imageIndex = 0; 
+    GpuTextureDesc desc = {};
     std::vector<VkImage> images;
     std::vector<VkSemaphore> presentSemaphores;
 };
@@ -45,6 +46,99 @@ struct GpuAccelerationStructure_T
     VkAccelerationStructureBuildGeometryInfoKHR buildInfo = {}; 
 };
 #endif // GPU_RAY_TRACING_EXTENSION
+
+VkPipelineStageFlagBits gpuStageToVkStage(STAGE stage)
+{
+    switch (stage)
+    {
+    case STAGE_TRANSFER: return VK_PIPELINE_STAGE_TRANSFER_BIT;
+    case STAGE_COMPUTE: return VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    case STAGE_RASTER_COLOR_OUT: return VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    case STAGE_PIXEL_SHADER: return VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    case STAGE_VERTEX_SHADER: return VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+    default: return VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    }
+}
+
+FORMAT gpuVkFormatToGpuFormat(VkFormat format)
+{
+    switch (format)
+    {
+    case VK_FORMAT_R8G8B8A8_UNORM: return FORMAT_RGBA8_UNORM;
+    case VK_FORMAT_B8G8R8A8_SRGB: return FORMAT_BGRA8_SRGB;
+    case VK_FORMAT_D32_SFLOAT: return FORMAT_D32_FLOAT;
+    case VK_FORMAT_B10G11R11_UFLOAT_PACK32: return FORMAT_RG11B10_FLOAT;
+    case VK_FORMAT_A2B10G10R10_UNORM_PACK32: return FORMAT_RGB10_A2_UNORM;
+    default: return FORMAT_NONE;
+    }
+}
+
+VkFormat gpuFormatToVkFormat(FORMAT format)
+{
+    switch (format)
+    {
+    case FORMAT_RGBA8_UNORM: return VK_FORMAT_R8G8B8A8_UNORM;
+    case FORMAT_BGRA8_SRGB: return VK_FORMAT_B8G8R8A8_SRGB;
+    case FORMAT_D32_FLOAT: return VK_FORMAT_D32_SFLOAT;
+    case FORMAT_RG11B10_FLOAT: return VK_FORMAT_B10G11R11_UFLOAT_PACK32;
+    case FORMAT_RGB10_A2_UNORM: return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+    default: return VK_FORMAT_UNDEFINED;
+    }
+}
+
+USAGE_FLAGS gpuVkUsageToGpuUsage(VkImageUsageFlags usage)
+{
+    uint32_t result = 0;
+    if (usage & VK_IMAGE_USAGE_SAMPLED_BIT)
+    {
+        result = static_cast<uint32_t>(USAGE_SAMPLED) | result;
+    }
+    if (usage & VK_IMAGE_USAGE_STORAGE_BIT)
+    {
+        result = static_cast<uint32_t>(USAGE_STORAGE) | result;
+    }
+    if (usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)
+    {
+        result = static_cast<uint32_t>(USAGE_COLOR_ATTACHMENT) | result;
+    }
+    if (usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)
+    {
+        result = static_cast<uint32_t>(USAGE_DEPTH_STENCIL_ATTACHMENT) | result;
+    }
+    if (usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT)
+    {
+        result = static_cast<uint32_t>(USAGE_TRANSFER_DST) | result;
+    }
+
+    return static_cast<USAGE_FLAGS>(result);
+}
+
+VkImageUsageFlagBits gpuGpuUsageToVkUsage(USAGE_FLAGS usage)
+{
+    uint32_t result = 0;
+    if (usage & USAGE_SAMPLED)
+    {
+        result = static_cast<uint32_t>(VK_IMAGE_USAGE_SAMPLED_BIT) | result;
+    }
+    if (usage & USAGE_STORAGE)
+    {
+        result = static_cast<uint32_t>(VK_IMAGE_USAGE_STORAGE_BIT) | result;
+    }
+    if (usage & USAGE_COLOR_ATTACHMENT)
+    {
+        result = static_cast<uint32_t>(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) | result;
+    }
+    if (usage & USAGE_DEPTH_STENCIL_ATTACHMENT)
+    {
+        result = static_cast<uint32_t>(VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) | result;
+    }
+    if (usage & USAGE_TRANSFER_DST)
+    {
+        result = static_cast<uint32_t>(VK_IMAGE_USAGE_TRANSFER_DST_BIT) | result;
+    }
+
+    return static_cast<VkImageUsageFlagBits>(result);
+}
 
 struct Allocation
 {
@@ -241,8 +335,8 @@ struct Vulkan
             dispatchTable.unmapMemory(alloc.memory);
         }
 
-        dispatchTable.freeMemory(alloc.memory, nullptr);
         dispatchTable.destroyBuffer(alloc.buffer, nullptr);
+        dispatchTable.freeMemory(alloc.memory, nullptr);
 
         allocations.erase(std::remove_if(allocations.begin(), allocations.end(),
             [alloc](const Allocation& b) { return b.buffer == alloc.buffer; }), allocations.end());
@@ -311,16 +405,9 @@ struct Vulkan
         imageInfo.mipLevels = desc.mipCount;
         imageInfo.arrayLayers = desc.layerCount;
         imageInfo.samples = static_cast<VkSampleCountFlagBits>(desc.sampleCount);
-        imageInfo.format = desc.format == FORMAT_RGBA8_UNORM ? VK_FORMAT_R8G8B8A8_UNORM :
-                        desc.format == FORMAT_D32_FLOAT ? VK_FORMAT_D32_SFLOAT :
-                        desc.format == FORMAT_RG11B10_FLOAT ? VK_FORMAT_B10G11R11_UFLOAT_PACK32 :
-                        desc.format == FORMAT_RGB10_A2_UNORM ? VK_FORMAT_A2B10G10R10_UNORM_PACK32 : VK_FORMAT_UNDEFINED;
+        imageInfo.format = gpuFormatToVkFormat(desc.format);
         imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-        imageInfo.usage = desc.usage == USAGE_SAMPLED ? VK_IMAGE_USAGE_SAMPLED_BIT :
-                        desc.usage == USAGE_STORAGE ? VK_IMAGE_USAGE_STORAGE_BIT :
-                        desc.usage == USAGE_COLOR_ATTACHMENT ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT :
-                        desc.usage == USAGE_DEPTH_STENCIL_ATTACHMENT ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_FLAG_BITS_MAX_ENUM;
-        imageInfo.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        imageInfo.usage = gpuGpuUsageToVkUsage(desc.usage);
         imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
@@ -334,19 +421,6 @@ struct Vulkan
 };
 
 static Vulkan vulkan;
-
-VkPipelineStageFlagBits gpuStageToVkStage(STAGE stage)
-{
-    switch (stage)
-    {
-    case STAGE_TRANSFER: return VK_PIPELINE_STAGE_TRANSFER_BIT;
-    case STAGE_COMPUTE: return VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-    case STAGE_RASTER_COLOR_OUT: return VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    case STAGE_PIXEL_SHADER: return VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    case STAGE_VERTEX_SHADER: return VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
-    default: return VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-    }
-}
 
 void* gpuVulkanInstance()
 {
@@ -488,17 +562,14 @@ GpuTexture gpuCreateTexture(GpuTextureDesc desc, void* ptrGpu)
     viewInfo.viewType = desc.type == TEXTURE_1D ? VK_IMAGE_VIEW_TYPE_1D :
                         desc.type == TEXTURE_2D ? VK_IMAGE_VIEW_TYPE_2D :
                         desc.type == TEXTURE_3D ? VK_IMAGE_VIEW_TYPE_3D : VK_IMAGE_VIEW_TYPE_MAX_ENUM;
-    viewInfo.format = desc.format == FORMAT_RGBA8_UNORM ? VK_FORMAT_R8G8B8A8_UNORM :
-                    desc.format == FORMAT_D32_FLOAT ? VK_FORMAT_D32_SFLOAT :
-                    desc.format == FORMAT_RG11B10_FLOAT ? VK_FORMAT_B10G11R11_UFLOAT_PACK32 :
-                    desc.format == FORMAT_RGB10_A2_UNORM ? VK_FORMAT_A2B10G10R10_UNORM_PACK32 : VK_FORMAT_UNDEFINED;
+    viewInfo.format = gpuFormatToVkFormat(desc.format);
     viewInfo.subresourceRange.aspectMask = desc.usage == USAGE_DEPTH_STENCIL_ATTACHMENT ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
     viewInfo.subresourceRange.baseMipLevel = 0;
     viewInfo.subresourceRange.levelCount = desc.mipCount;
     viewInfo.subresourceRange.baseArrayLayer = 0;
     viewInfo.subresourceRange.layerCount = desc.layerCount;
 
-    VkImageView imageView;
+    VkImageView imageView = VK_NULL_HANDLE;
     vulkan.dispatchTable.createImageView(&viewInfo, nullptr, &imageView);
 
     return new GpuTexture_T { desc, image, imageView};
@@ -847,10 +918,9 @@ void gpuMemCpy(GpuCommandBuffer cb, void* destGpu, void* srcGpu, uint64_t size)
     vulkan.dispatchTable.cmdCopyBuffer(cb->commandBuffer, src.buffer, dst.buffer, 1, &copyRegion);
 }
 
-void gpuCopyToTexture(GpuCommandBuffer cb, void* destGpu, void* srcGpu, GpuTexture texture)
+void gpuCopyToTexture(GpuCommandBuffer cb, void* srcGpu, GpuTexture texture)
 {
     Allocation src = vulkan.findAllocation(reinterpret_cast<VkDeviceAddress>(srcGpu));
-    Allocation dst = vulkan.findAllocation(reinterpret_cast<VkDeviceAddress>(destGpu));
 
     if (src.buffer == VK_NULL_HANDLE || texture == nullptr)
     {
@@ -914,9 +984,8 @@ void gpuCopyToTexture(GpuCommandBuffer cb, void* destGpu, void* srcGpu, GpuTextu
     );    
 }
 
-void gpuCopyFromTexture(GpuCommandBuffer cb, void* destGpu, void* srcGpu, GpuTexture texture)
+void gpuCopyFromTexture(GpuCommandBuffer cb, void* destGpu, GpuTexture texture)
 {
-    Allocation src = vulkan.findAllocation(reinterpret_cast<VkDeviceAddress>(srcGpu));
     Allocation dst = vulkan.findAllocation(reinterpret_cast<VkDeviceAddress>(destGpu));
 
     if (dst.buffer == VK_NULL_HANDLE || texture == nullptr)
@@ -975,6 +1044,97 @@ void gpuCopyFromTexture(GpuCommandBuffer cb, void* destGpu, void* srcGpu, GpuTex
         0, nullptr,
         0, nullptr,
         1, &barrier
+    );
+}
+
+void gpuBlitTexture(GpuCommandBuffer cb, GpuTexture destTexture, GpuTexture srcTexture)
+{
+    if (destTexture == nullptr || srcTexture == nullptr)
+    {
+        return;
+    }
+
+    VkImageMemoryBarrier barriers[2] = {};
+    barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barriers[0].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barriers[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[0].image = srcTexture->image;
+    barriers[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barriers[0].subresourceRange.baseMipLevel = 0;
+    barriers[0].subresourceRange.levelCount = 1;
+    barriers[0].subresourceRange.baseArrayLayer = 0;
+    barriers[0].subresourceRange.layerCount = 1;
+    barriers[0].srcAccessMask = VK_ACCESS_NONE;
+    barriers[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+
+    barriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barriers[1].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barriers[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[1].image = destTexture->image;
+    barriers[1].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barriers[1].subresourceRange.baseMipLevel = 0;
+    barriers[1].subresourceRange.levelCount = 1;
+    barriers[1].subresourceRange.baseArrayLayer = 0;
+    barriers[1].subresourceRange.layerCount = 1;
+    barriers[1].srcAccessMask = VK_ACCESS_NONE;
+    barriers[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+    vulkan.dispatchTable.cmdPipelineBarrier(
+        cb->commandBuffer,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0,
+        0, nullptr,
+        0, nullptr,
+        2, barriers
+    );
+
+    VkImageBlit blit = {};
+    blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    blit.srcSubresource.mipLevel = 0;
+    blit.srcSubresource.baseArrayLayer = 0;
+    blit.srcSubresource.layerCount = 1;
+    blit.srcOffsets[0] = { 0, 0, 0 };
+    blit.srcOffsets[1] = { static_cast<int32_t>(srcTexture->desc.dimensions.x), static_cast<int32_t>(srcTexture->desc.dimensions.y), static_cast<int32_t>(srcTexture->desc.dimensions.z) };
+    blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    blit.dstSubresource.mipLevel = 0;
+    blit.dstSubresource.baseArrayLayer = 0;
+    blit.dstSubresource.layerCount = 1;
+    blit.dstOffsets[0] = { 0, 0, 0 };
+    blit.dstOffsets[1] = { static_cast<int32_t>(destTexture->desc.dimensions.x), static_cast<int32_t>(destTexture->desc.dimensions.y), static_cast<int32_t>(destTexture->desc.dimensions.z) };
+
+    vulkan.dispatchTable.cmdBlitImage(
+        cb->commandBuffer,
+        srcTexture->image,
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        destTexture->image,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        1,
+        &blit,
+        VK_FILTER_NEAREST
+    );
+
+    barriers[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barriers[0].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barriers[0].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    barriers[0].dstAccessMask = VK_ACCESS_NONE;
+    barriers[1].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barriers[1].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barriers[1].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barriers[1].dstAccessMask = VK_ACCESS_NONE;
+
+    vulkan.dispatchTable.cmdPipelineBarrier(
+        cb->commandBuffer,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        0,
+        0, nullptr,
+        0, nullptr,
+        2, barriers
     );
 }
 
@@ -1312,10 +1472,19 @@ GpuSwapchain gpuCreateSwapchain(GpuSurface surface, uint32_t images)
         VkSurfaceKHR surface;
     };
     auto surf = reinterpret_cast<GpuSurfaceImpl*>(surface);
-    auto builder = vkb::SwapchainBuilder{vulkan.device, surf->surface}.set_desired_min_image_count(images);
+
+    VkSurfaceFormatKHR surfaceFormat;
+
+    auto builder = vkb::SwapchainBuilder{vulkan.device, surf->surface}
+        .add_image_usage_flags(VK_IMAGE_USAGE_TRANSFER_DST_BIT);
     vulkan.device.surface = surf->surface;
     auto presentQueue = new GpuQueue_T{ vulkan.device.get_queue(vkb::QueueType::present).value() };
     auto swapchain = builder.build().value();
+
+    auto desc = GpuTextureDesc {};
+    desc.dimensions = uint3 { swapchain.extent.width, swapchain.extent.height, 1 };
+    desc.format = gpuVkFormatToGpuFormat(swapchain.image_format);
+    desc.usage = gpuVkUsageToGpuUsage(swapchain.image_usage_flags);
 
     std::vector<VkImage> swapchainImages = swapchain.get_images().value();
     std::vector<VkSemaphore> presentSemaphores;
@@ -1333,6 +1502,7 @@ GpuSwapchain gpuCreateSwapchain(GpuSurface surface, uint32_t images)
         swapchain.swapchain, 
         presentQueue->queue, 
         0, 
+        desc,
         swapchainImages, 
         presentSemaphores
     };
@@ -1363,9 +1533,9 @@ GpuTexture gpuSwapchainImage(GpuSwapchain swapchain)
     vulkan.dispatchTable.waitForFences(1, &vulkan.acquireFence, VK_TRUE, UINT64_MAX);
 
     return new GpuTexture_T {
-        GpuTextureDesc{}, // TODO: populate texture description
+        swapchain->desc,
         swapchain->images[swapchain->imageIndex],
-        nullptr,
+        VK_NULL_HANDLE
     };
 }
 

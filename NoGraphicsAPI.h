@@ -54,8 +54,8 @@ enum BLEND { BLEND_ADD, BLEND_SUBTRACT, BLEND_REV_SUBTRACT, BLEND_MIN, BLEND_MAX
 enum FACTOR { FACTOR_ZERO, FACTOR_ONE, FACTOR_SRC_COLOR, FACTOR_DST_COLOR, FACTOR_SRC_ALPHA /*, ...*/ };
 enum TOPOLOGY { TOPOLOGY_TRIANGLE_LIST, TOPOLOGY_TRIANGLE_STRIP, TOPOLOGY_TRIANGLE_FAN };
 enum TEXTURE { TEXTURE_1D, TEXTURE_2D, TEXTURE_3D, TEXTURE_CUBE, TEXTURE_2D_ARRAY, TEXTURE_CUBE_ARRAY };
-enum FORMAT { FORMAT_NONE, FORMAT_RGBA8_UNORM, FORMAT_D32_FLOAT, FORMAT_RG11B10_FLOAT, FORMAT_RGB10_A2_UNORM /*, ...*/ };
-enum USAGE_FLAGS { USAGE_SAMPLED, USAGE_STORAGE, USAGE_COLOR_ATTACHMENT, USAGE_DEPTH_STENCIL_ATTACHMENT /*, ...*/ };
+enum FORMAT { FORMAT_NONE, FORMAT_RGBA8_UNORM, FORMAT_BGRA8_SRGB, FORMAT_D32_FLOAT, FORMAT_RG11B10_FLOAT, FORMAT_RGB10_A2_UNORM /*, ...*/ };
+enum USAGE_FLAGS { USAGE_SAMPLED = 1 << 0, USAGE_STORAGE = 1 << 1, USAGE_COLOR_ATTACHMENT = 1 << 2, USAGE_DEPTH_STENCIL_ATTACHMENT = 1 << 3, USAGE_TRANSFER_DST = 1 << 4 /*, ...*/ };
 enum STAGE { STAGE_TRANSFER, STAGE_COMPUTE, STAGE_RASTER_COLOR_OUT, STAGE_PIXEL_SHADER, STAGE_VERTEX_SHADER /*, ...*/ };
 enum HAZARD_FLAGS { HAZARD_NONE = 0x0, HAZARD_DRAW_ARGUMENTS = 0x1, HAZARD_DESCRIPTORS = 0x2, HAZARD_DEPTH_STENCIL = 0x4 };
 enum SIGNAL { SIGNAL_ATOMIC_SET, SIGNAL_ATOMIC_MAX, SIGNAL_ATOMIC_OR /*, ...*/ };
@@ -238,8 +238,9 @@ void gpuDestroySemaphore(GpuSemaphore sema);
 
 // Commands
 void gpuMemCpy(GpuCommandBuffer cb, void* destGpu, void* srcGpu, uint64_t size);
-void gpuCopyToTexture(GpuCommandBuffer cb, void* destGpu, void* srcGpu, GpuTexture texture);
-void gpuCopyFromTexture(GpuCommandBuffer cb, void* destGpu, void* srcGpu, GpuTexture texture);
+void gpuCopyToTexture(GpuCommandBuffer cb, void* srcGpu, GpuTexture texture);
+void gpuCopyFromTexture(GpuCommandBuffer cb, void* destGpu, GpuTexture texture);
+void gpuBlitTexture(GpuCommandBuffer cb, GpuTexture destTexture, GpuTexture srcTexture);
 
 void gpuSetActiveTextureHeapPtr(GpuCommandBuffer cb, void *ptrGpu);
 

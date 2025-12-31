@@ -204,14 +204,14 @@ void test_upload_download_image()
     auto texture = gpuCreateTexture(textureDesc, texturePtr);
 
     auto commandBuffer = gpuStartCommandRecording(queue);
-    gpuCopyToTexture(commandBuffer, texturePtr, upload.gpu, texture);
+    gpuCopyToTexture(commandBuffer, upload.gpu, texture);
     gpuSubmit(queue, Span<GpuCommandBuffer>(&commandBuffer, 1), semaphore, 1);
     gpuWaitSemaphore(semaphore, 1);
 
     commandBuffer = gpuStartCommandRecording(queue);
 
     auto readback = gpuMalloc(textureSizeAlign.size, MEMORY_READBACK);
-    gpuCopyFromTexture(commandBuffer, gpuHostToDevicePointer(readback), texturePtr, texture);
+    gpuCopyFromTexture(commandBuffer, gpuHostToDevicePointer(readback), texture);
 
     gpuSubmit(queue, Span<GpuCommandBuffer>(&commandBuffer, 1), semaphore, 2);
     gpuWaitSemaphore(semaphore, 2);
@@ -270,7 +270,7 @@ void test_image_blur()
     auto test = textureHeap[1];
 
     auto commandBuffer = gpuStartCommandRecording(queue);
-    gpuCopyToTexture(commandBuffer, texturePtr, upload.gpu, texture);
+    gpuCopyToTexture(commandBuffer, upload.gpu, texture);
     gpuSubmit(queue, Span<GpuCommandBuffer>(&commandBuffer, 1), semaphore, 1);
     gpuWaitSemaphore(semaphore, 1);
 
@@ -296,7 +296,7 @@ void test_image_blur()
 
     commandBuffer = gpuStartCommandRecording(queue);
     auto readback = gpuMalloc(textureSizeAlign.size, MEMORY_READBACK);
-    gpuCopyFromTexture(commandBuffer, gpuHostToDevicePointer(readback), outputPtr, outputTexture);
+    gpuCopyFromTexture(commandBuffer, gpuHostToDevicePointer(readback), outputTexture);
     gpuSubmit(queue, Span<GpuCommandBuffer>(&commandBuffer, 1), semaphore, 3);
     gpuWaitSemaphore(semaphore, 3);
 
@@ -326,6 +326,30 @@ void test_sdl_window()
     auto semaphore = gpuCreateSemaphore(0);
     uint64_t nextFrame = 1;
 
+    // Load input image
+    int width, height, channels;
+    stbi_uc* inputImage = stbi_load("../../../Assets/NoGraphicsAPI.png", &width, &height, &channels, 4);
+    auto upload = allocate<uint8_t>(width * height * 4);
+    memcpy(upload.cpu, inputImage, width * height * 4);
+
+    GpuTextureDesc textureDesc{
+        .type = TEXTURE_2D,
+        .dimensions = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1 },
+        .format = FORMAT_RGBA8_UNORM,
+        .usage = USAGE_SAMPLED
+    };
+
+    GpuTextureSizeAlign textureSizeAlign = gpuTextureSizeAlign(textureDesc);
+    void* texturePtr = gpuMalloc(textureSizeAlign.size, MEMORY_GPU);
+    auto texture = gpuCreateTexture(textureDesc, texturePtr);
+
+    auto uploadSemaphore = gpuCreateSemaphore(0);
+    auto commandBuffer = gpuStartCommandRecording(queue);
+    gpuCopyToTexture(commandBuffer, upload.gpu, texture);
+    gpuSubmit(queue, Span<GpuCommandBuffer>(&commandBuffer, 1), uploadSemaphore, 1);
+    gpuWaitSemaphore(uploadSemaphore, 1);
+    gpuDestroySemaphore(uploadSemaphore);
+
     while (!exit)
     {
         SDL_Event event;
@@ -343,12 +367,18 @@ void test_sdl_window()
             gpuWaitSemaphore(semaphore, nextFrame - FRAMES_IN_FLIGHT);
         }
 
-        auto commandBuffer = gpuStartCommandRecording(queue);
+        commandBuffer = gpuStartCommandRecording(queue);
         auto image = gpuSwapchainImage(swapchain);
+        gpuBlitTexture(commandBuffer, image, texture);
         gpuSubmit(queue, Span<GpuCommandBuffer>(&commandBuffer, 1), semaphore, nextFrame);
         gpuPresent(swapchain, semaphore, nextFrame++);
     }
     
+    gpuDestroyTexture(texture);
+    gpuFree(texturePtr);
+    gpuDestroySemaphore(semaphore);
+    upload.free();
+    gpuDestroySwapchain(swapchain);
     SDL_Gpu_DestroySurface(surface);
     SDL_DestroyWindow(window);
 }
