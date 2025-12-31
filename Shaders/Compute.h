@@ -7,7 +7,7 @@ struct alignas(16) Data
 {
     float4 color;
     uint offset;
-    const uint* input;
+    uint* input;
     uint* output;
 };
 

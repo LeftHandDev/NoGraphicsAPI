@@ -147,11 +147,9 @@ struct GpuRenderPassDesc
 };
 
 struct GpuTextureSizeAlign { size_t size; size_t align; };
-struct GpuTextureDescriptorSizeAlignOffset { size_t size; size_t align; size_t offset; };
-struct GpuTextureDescriptorHeapDesc { GpuTextureDescriptorSizeAlignOffset textureDesc; GpuTextureDescriptorSizeAlignOffset rwTextureDesc; size_t heapSize; };
+struct GpuTextureDescriptor { uint64_t data[4]; };
 
 #ifdef GPU_RAY_TRACING_EXTENSION
-
 struct GpuAccelerationStructureSizes
 {
     size_t size;
@@ -188,6 +186,7 @@ struct GpuAccelerationStructureInstanceDesc
 
 struct GpuAccelerationStructureBlasDesc
 {
+    GEOMETRY_TYPE type = GEOMETRY_TYPE_TRIANGLES;
     Span<GpuAccelerationStructureTrianglesDesc> triangles = {};
     Span<GpuAccelerationStructureAabbsDesc> aabbs = {};
 };
@@ -196,8 +195,11 @@ struct GpuAccelerationStructureTlasDesc
 {
     Span<GpuAccelerationStructureInstanceDesc> instances = {};
 };
-
 #endif // GPU_RAY_TRACING_EXTENSION
+
+#ifdef GPU_EXPOSE_INTERNAL
+void* gpuVulkanInstance();
+#endif // GPU_EXPOSE_INTERNAL
 
 // Memory
 void* gpuMalloc(size_t bytes, MEMORY memory = MEMORY_DEFAULT);
@@ -209,9 +211,8 @@ void* gpuHostToDevicePointer(void *ptr);
 GpuTextureSizeAlign gpuTextureSizeAlign(GpuTextureDesc desc);
 GpuTexture gpuCreateTexture(GpuTextureDesc desc, void* ptrGpu);
 void gpuDestroyTexture(GpuTexture texture);
-GpuTextureDescriptorHeapDesc gpuTextureDescriptorHeapDesc();
-void gpuTextureViewDescriptor(GpuTexture texture, GpuViewDesc desc, void* descriptor);
-void gpuRWTextureViewDescriptor(GpuTexture texture, GpuViewDesc desc, void* descriptor);
+GpuTextureDescriptor gpuTextureViewDescriptor(GpuTexture texture, GpuViewDesc desc);
+GpuTextureDescriptor gpuRWTextureViewDescriptor(GpuTexture texture, GpuViewDesc desc);
 
 // Pipelines
 GpuPipeline gpuCreateComputePipeline(ByteSpan computeIR);
@@ -264,7 +265,7 @@ void gpuDrawMeshlets(GpuCommandBuffer cb, void* meshletDataGpu, void* pixelDataG
 void gpuDrawMeshletsIndirect(GpuCommandBuffer cb, void* meshletDataGpu, void* pixelDataGpu, void *dimGpu);
 
 #ifdef GPU_SURFACE_EXTENSION
-GpuSwapchain gpuCreateSwapchain(GpuSurface surface, GpuQueue queue, Span<FORMAT> formats, uint32_t width, uint32_t height, uint32_t bufferCount);
+GpuSwapchain gpuCreateSwapchain(GpuSurface surface, uint32_t images);
 void gpuDestroySwapchain(GpuSwapchain swapchain);
 
 uint gpuSwapchainImageIndex(GpuSwapchain swapchain);

@@ -2,6 +2,8 @@
 #include "Shaders/Compute.h"
 #include "Shaders/Blur.h"
 
+#include "Common.h"
+
 #define STB_IMAGE_IMPLEMENTATION
 #include "External/stb_image.h"
 
@@ -38,18 +40,10 @@ Allocation<T> allocate(int count = 1)
     };
 };
 
-std::vector<uint8_t> loadIR(const std::filesystem::path& path)
+template<typename T>
+T* gpuMalloc(int count = 1)
 {
-    std::ifstream file { path, std::ios::binary | std::ios::ate };
-    if (!file.is_open())
-    {
-        return {};
-    }
-    auto size = file.tellg();
-    std::vector<uint8_t> buffer(size);
-    file.seekg(0);
-    file.read(reinterpret_cast<char*>(buffer.data()), size);
-    return buffer;
+    return static_cast<T*>(::gpuMalloc(sizeof(T) * count));
 }
 
 void test_compute_shader()
@@ -71,7 +65,7 @@ void test_compute_shader()
     data.cpu->input = inputData.gpu;
     data.cpu->output = outputData.gpu;
 
-    auto computeIR = loadIR("../../../Shaders/Compute2.spv");
+    auto computeIR = Utilities::loadIR("../../../Shaders/Compute2.spv");
     auto pipeline = gpuCreateComputePipeline(ByteSpan(computeIR.data(), computeIR.size()));
 
     auto commandBuffer = gpuStartCommandRecording(queue);
@@ -187,7 +181,7 @@ void test_upload_download_image()
     auto queue = gpuCreateQueue();
     auto semaphore = gpuCreateSemaphore(0);
 
-    auto computeIR = loadIR("../../../Shaders/Blur.spv");
+    auto computeIR = Utilities::loadIR("../../../Shaders/Blur.spv");
     auto pipeline = gpuCreateComputePipeline(ByteSpan(computeIR.data(), computeIR.size()));
 
     // Load input image
@@ -237,15 +231,10 @@ void test_image_blur()
     auto queue = gpuCreateQueue();
     auto semaphore = gpuCreateSemaphore(0);
 
-    auto computeIR = loadIR("../../../Shaders/Blur.spv");
+    auto computeIR = Utilities::loadIR("../../../Shaders/Blur.spv");
     auto pipeline = gpuCreateComputePipeline(ByteSpan(computeIR.data(), computeIR.size()));
 
-    auto descriptorHeapDesc = gpuTextureDescriptorHeapDesc();
-
-    auto textureHeap = gpuMalloc(
-        descriptorHeapDesc.heapSize, 
-        std::max(descriptorHeapDesc.textureDesc.align, descriptorHeapDesc.rwTextureDesc.align)
-    );
+    auto textureHeap = gpuMalloc<GpuTextureDescriptor>(1024);
     
     // Load input image
     int width, height, channels;
@@ -275,17 +264,10 @@ void test_image_blur()
     void* outputPtr = gpuMalloc(textureSizeAlign.size, MEMORY_GPU);
     auto outputTexture = gpuCreateTexture(outputTextureDes, outputPtr);
 
-    gpuTextureViewDescriptor(
-        texture, 
-        GpuViewDesc{.format = FORMAT_RGBA8_UNORM }, 
-        static_cast<uint8_t*>(textureHeap) + descriptorHeapDesc.textureDesc.offset
-    );
+    textureHeap[0] = gpuTextureViewDescriptor(texture, GpuViewDesc{.format = FORMAT_RGBA8_UNORM });
+    textureHeap[1] = gpuRWTextureViewDescriptor(outputTexture, GpuViewDesc{ .format = FORMAT_RGBA8_UNORM });
 
-    gpuRWTextureViewDescriptor(
-        outputTexture, 
-        GpuViewDesc{ .format = FORMAT_RGBA8_UNORM }, 
-        static_cast<uint8_t*>(textureHeap) + descriptorHeapDesc.rwTextureDesc.offset
-    );
+    auto test = textureHeap[1];
 
     auto commandBuffer = gpuStartCommandRecording(queue);
     gpuCopyToTexture(commandBuffer, texturePtr, upload.gpu, texture);
@@ -298,7 +280,7 @@ void test_image_blur()
 
     data.cpu->imageSize = { static_cast<uint32_t>(width), static_cast<uint32_t>(height) };
     data.cpu->srcTexture = 0;
-    data.cpu->dstTexture = 0;
+    data.cpu->dstTexture = 1;
 
     gpuSetPipeline(commandBuffer, pipeline);
     gpuSetActiveTextureHeapPtr(commandBuffer, gpuHostToDevicePointer(textureHeap));
@@ -359,10 +341,10 @@ int main()
     // test_upload_download();
     // test_upload_download_barrier();
     // test_compute_shader();
-    // test_image_blur();
+    test_image_blur();
     // test_upload_download_image();
 
-    test_sdl_window();
+    // test_sdl_window();
 
     return 0;
 }

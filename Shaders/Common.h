@@ -8,8 +8,14 @@
 #else
 #define alignas(x) // do nothing in shader
 
-const Sampler2D<float4> textureHeap[];
-const RWTexture2D<float4> rwTextureHeap[];
+[[vk::binding(0, 0)]]
+Texture2D<float4> textureHeap[];
+
+[[vk::binding(0, 1)]]
+RWTexture2D<float4> rwTextureHeap[];
+
+[[vk::binding(0, 2)]]
+SamplerState samplerHeap[];
 
 #endif
 

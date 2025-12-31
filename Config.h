@@ -4,10 +4,6 @@
 #define GPU_SURFACE_EXTENSION
 #define GPU_RAY_TRACING_EXTENSION
 
-#ifdef GPU_EXPOSE_INTERNAL
-void* gpuVulkanInstance();
-#endif // GPU_EXPOSE_INTERNAL
-
 #ifdef GPU_SURFACE_EXTENSION
 struct GpuSurface_T;
 using GpuSurface = GpuSurface_T*;

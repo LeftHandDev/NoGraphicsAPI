@@ -10,8 +10,9 @@ void main(uint3 threadId: SV_DispatchThreadID, BlurData* data)
         return;
 
 
-    Sampler2D<float4> srcTexture = textureHeap[data->srcTexture];
+    Texture2D<float4> srcTexture = textureHeap[data->srcTexture];
     RWTexture2D<float4> dstTexture = rwTextureHeap[data->dstTexture];
+    SamplerState sampler = samplerHeap[0]; // default sampler
 
     float4 color = float4(0.0, 0.0, 0.0, 0.0);
     const int kernelRadius = 16;
@@ -23,7 +24,7 @@ void main(uint3 threadId: SV_DispatchThreadID, BlurData* data)
             int2 sampleCoord = pixelCoord + int2(kx, ky);
             sampleCoord = clamp(sampleCoord, int2(0, 0), imgSize - int2(1, 1));
             float2 uv = (float2(sampleCoord.x, sampleCoord.y) + 0.5) / float2(imgSize.x, imgSize.y);
-            color += srcTexture.SampleLevel(uv, 0);
+            color += srcTexture.SampleLevel(sampler, uv, 0);
         }
     }
     

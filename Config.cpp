@@ -1,5 +1,6 @@
 #define GPU_EXPOSE_INTERNAL
 #include "Config.h"
+#include "NoGraphicsAPI.h"
 
 #ifdef GPU_SURFACE_EXTENSION
 #include "External/VkBootstrap.h"
