@@ -39,6 +39,7 @@ GPU_DEFINE_HANDLE(GpuCommandBuffer)
 GPU_DEFINE_HANDLE(GpuSemaphore)
 #ifdef GPU_SURFACE_EXTENSION
 GPU_DEFINE_HANDLE(GpuSurface)
+GPU_DEFINE_HANDLE(GpuSurface)
 GPU_DEFINE_HANDLE(GpuSwapchain)
 #endif
 #ifdef GPU_RAY_TRACING_EXTENSION
@@ -199,6 +200,9 @@ struct GpuAccelerationStructureTlasDesc
 
 #ifdef GPU_EXPOSE_INTERNAL
 void* gpuVulkanInstance();
+GpuSurface gpuCreateSurface(void* vulkanSurface);
+void* gpuVulkanSurface(GpuSurface surface);
+void gpuDestroySurface(GpuSurface surface);
 #endif // GPU_EXPOSE_INTERNAL
 
 // Memory

@@ -14,7 +14,7 @@ find_package(SDL3 CONFIG QUIET)
 
 add_executable(NoGraphicsAPI
     External/VkBootstrap.cpp
-    Config.cpp
+    SDL_gpu.cpp
     NoGraphicsAPI.cpp
     Main.cpp
 )

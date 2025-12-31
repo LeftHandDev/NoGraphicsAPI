@@ -29,6 +29,7 @@ struct GpuQueue_T { VkQueue queue; };
 struct GpuCommandBuffer_T { VkCommandBuffer commandBuffer; };
 struct GpuSemaphore_T { VkSemaphore semaphore; };
 #ifdef GPU_SURFACE_EXTENSION
+struct GpuSurface_T { VkSurfaceKHR surface = VK_NULL_HANDLE; };
 struct GpuSwapchain_T 
 { 
     VkSwapchainKHR swapchain = VK_NULL_HANDLE; 
@@ -425,6 +426,31 @@ static Vulkan vulkan;
 void* gpuVulkanInstance()
 {
     return vulkan.instance.instance;
+}
+
+GpuSurface gpuCreateSurface(void *vulkanSurface)
+{
+    return new GpuSurface_T { static_cast<VkSurfaceKHR>(vulkanSurface) };
+}
+
+void *gpuVulkanSurface(GpuSurface surface)
+{
+    if (surface == nullptr)
+    {
+        return nullptr;
+    }
+
+    return surface->surface;
+}
+
+void gpuDestroySurface(GpuSurface surface)
+{
+    if (surface == nullptr)
+    {
+        return;
+    }
+
+    delete surface;
 }
 
 void* gpuMalloc(size_t bytes, MEMORY memory)

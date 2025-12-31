@@ -10,7 +10,7 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "External/stb_image_write.h"
 
-#include <SDL3/SDL.h>
+#include "SDL_gpu.h"
 
 #include <iostream>
 #include <filesystem>
@@ -315,7 +315,7 @@ void test_image_blur()
 
 void test_sdl_window()
 {
-    auto window = SDL_CreateWindow("Test Window", 1920, 1080, SDL_WINDOW_VULKAN);
+    auto window = SDL_CreateWindow("Test Window", 1920, 1080, SDL_WINDOW_GPU);
     auto surface = SDL_Gpu_CreateSurface(window);
     bool exit = false;
 
