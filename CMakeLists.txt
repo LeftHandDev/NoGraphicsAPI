@@ -11,12 +11,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(Vulkan REQUIRED)
 find_package(SDL3 CONFIG QUIET)
+find_package(glm QUIET)
 
 add_executable(NoGraphicsAPI
     External/VkBootstrap.cpp
     SDL_gpu.cpp
     NoGraphicsAPI.cpp
     Main.cpp
+    Samples/Compute/Compute.cpp
+    Samples/Graphics/Graphics.cpp
 )
 
 if(TARGET Vulkan::Vulkan)
@@ -35,9 +38,23 @@ else()
     endif()
 
     if(NOT DEFINED VULKAN_SDK)
-        message(FATAL_ERROR "SDL3 package not found and VULKAN_SDK env var is not set")
+        message(FATAL_ERROR "VULKAN_SDK env var is not set")
     endif()
 
     target_include_directories(NoGraphicsAPI PRIVATE "${VULKAN_SDK}/Include/SDL3")
     target_link_libraries(NoGraphicsAPI PRIVATE "${VULKAN_SDK}/Lib/SDL3.lib")
+endif()
+
+if(TARGET glm::glm)
+    target_link_libraries(NoGraphicsAPI PRIVATE glm::glm)
+else()
+    if(NOT DEFINED VULKAN_SDK AND DEFINED ENV{VULKAN_SDK})
+        set(VULKAN_SDK $ENV{VULKAN_SDK})
+    endif()
+
+    if(NOT DEFINED VULKAN_SDK)
+        message(FATAL_ERROR "VULKAN_SDK env var is not set")
+    endif()
+
+    target_include_directories(NoGraphicsAPI PRIVATE "${VULKAN_SDK}/Include/glm")
 endif()

@@ -3,7 +3,7 @@
 
 #ifdef __cplusplus
 
-#include "NoGraphicsAPI.h"
+#include "../NoGraphicsAPI.h"
 
 #else
 #define alignas(x) // do nothing in shader

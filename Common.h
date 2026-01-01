@@ -5,6 +5,36 @@
 #include <filesystem>
 #include <fstream>
 
+#include "NoGraphicsAPI.h"
+
+template<typename T>
+struct Allocation
+{
+    T* cpu;
+    T* gpu;
+
+    void free()
+    {
+        gpuFree(cpu);
+    }
+};
+
+template<typename T>
+Allocation<T> allocate(int count = 1)
+{
+    auto addr = gpuMalloc(sizeof(T) * count);
+    return { 
+        .cpu = static_cast<T*>(addr), 
+        .gpu = static_cast<T*>(gpuHostToDevicePointer(addr)) 
+    };
+};
+
+template<typename T>
+T* gpuMalloc(int count = 1)
+{
+    return static_cast<T*>(::gpuMalloc(sizeof(T) * count));
+}
+
 class Utilities
 {
 public:

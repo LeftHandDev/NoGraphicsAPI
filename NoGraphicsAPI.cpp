@@ -868,24 +868,12 @@ VkPipeline gpuCreateGraphicsPipeline(ByteSpan vertexIR, ByteSpan meshletIR, Byte
                                  desc.topology == TOPOLOGY_TRIANGLE_STRIP ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP :
                                  desc.topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN : VK_PRIMITIVE_TOPOLOGY_MAX_ENUM;
 
-    VkViewport viewport = {};
-    viewport.x = 0.0f;
-    viewport.y = 0.0f;
-    viewport.width = 1.0f;
-    viewport.height = 1.0f;
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
-
-    VkRect2D scissor = {};
-    scissor.offset = { 0, 0 };
-    scissor.extent = { 1, 1 };
-
     VkPipelineViewportStateCreateInfo viewportState = {};
     viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
     viewportState.viewportCount = 1;
     viewportState.scissorCount = 1;
-    viewportState.pViewports = &viewport;
-    viewportState.pScissors = &scissor;
+    viewportState.pViewports = nullptr;
+    viewportState.pScissors = nullptr;
 
     VkPipelineMultisampleStateCreateInfo multisampleState = {};
     multisampleState.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -902,6 +890,15 @@ VkPipeline gpuCreateGraphicsPipeline(ByteSpan vertexIR, ByteSpan meshletIR, Byte
     rasterizationState.rasterizerDiscardEnable = VK_FALSE;  
     rasterizationState.depthBiasEnable = VK_FALSE;
 
+    VkPipelineDynamicStateCreateInfo dynamicState = {};
+    dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    std::vector<VkDynamicState> dynamicStates = {
+        VK_DYNAMIC_STATE_VIEWPORT,
+        VK_DYNAMIC_STATE_SCISSOR
+    };
+    dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
+    dynamicState.pDynamicStates = dynamicStates.data();
+
     VkGraphicsPipelineCreateInfo pipelineCreateInfo = {};
     pipelineCreateInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     pipelineCreateInfo.pNext = &pipelineRenderingInfo;
@@ -914,6 +911,7 @@ VkPipeline gpuCreateGraphicsPipeline(ByteSpan vertexIR, ByteSpan meshletIR, Byte
     pipelineCreateInfo.pViewportState = &viewportState;
     pipelineCreateInfo.pRasterizationState = &rasterizationState;
     pipelineCreateInfo.pMultisampleState = &multisampleState;
+    pipelineCreateInfo.pDynamicState = &dynamicState;
     pipelineCreateInfo.stageCount = 2;
 
     VkPipeline pipeline;
@@ -1462,7 +1460,7 @@ void gpuBeginRenderPass(GpuCommandBuffer cb, GpuRenderPassDesc desc)
         colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
         colorAttachment.imageView = colorTarget->view;
         colorAttachment.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-        colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         colorAttachment.clearValue.color = { 0.0f, 0.0f, 0.0f, 1.0f };
         colorAttachments.push_back(colorAttachment);
@@ -1475,6 +1473,20 @@ void gpuBeginRenderPass(GpuCommandBuffer cb, GpuRenderPassDesc desc)
     renderingInfo.pColorAttachments = colorAttachments.data();
 
     vulkan.dispatchTable.cmdBeginRendering(cb->commandBuffer, &renderingInfo);
+
+    VkViewport viewport = {};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = static_cast<float>(colorTarget->desc.dimensions.x);
+    viewport.height = static_cast<float>(colorTarget->desc.dimensions.y);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    vulkan.dispatchTable.cmdSetViewport(cb->commandBuffer, 0, 1, &viewport);
+
+    VkRect2D scissor = {};
+    scissor.offset = { 0, 0 };
+    scissor.extent = { colorTarget->desc.dimensions.x, colorTarget->desc.dimensions.y };
+    vulkan.dispatchTable.cmdSetScissor(cb->commandBuffer, 0, 1, &scissor);
 }
 
 void gpuEndRenderPass(GpuCommandBuffer cb)

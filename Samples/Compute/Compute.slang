@@ -1,14 +1,13 @@
-#include "Blur.h"
+#include "Compute.h"
 
 [numthreads(16, 16, 1)]
-void main(uint3 threadId: SV_DispatchThreadID, BlurData* data)
+void main(uint3 threadId: SV_DispatchThreadID, Ptr<ComputeData, Access.Read> data)
 {
     int2 imgSize = int2(data->imageSize.x, data->imageSize.y);
     int2 pixelCoord = int2(threadId.x, threadId.y);
 
     if (pixelCoord.x >= imgSize.x || pixelCoord.y >= imgSize.y)
         return;
-
 
     Texture2D<float4> srcTexture = textureHeap[data->srcTexture];
     RWTexture2D<float4> dstTexture = rwTextureHeap[data->dstTexture];
