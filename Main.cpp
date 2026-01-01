@@ -1,6 +1,7 @@
 #include "NoGraphicsAPI.h"
 #include "Shaders/Compute.h"
 #include "Shaders/Blur.h"
+#include "Shaders/Cube.h"
 
 #include "Common.h"
 
@@ -315,40 +316,66 @@ void test_image_blur()
 
 void test_sdl_window()
 {
+    const uint FRAMES_IN_FLIGHT = 2;
+
     auto window = SDL_CreateWindow("Test Window", 1920, 1080, SDL_WINDOW_GPU);
     auto surface = SDL_Gpu_CreateSurface(window);
     bool exit = false;
 
-    const uint FRAMES_IN_FLIGHT = 2;
-
-    auto queue = gpuCreateQueue();
     auto swapchain = gpuCreateSwapchain(surface, FRAMES_IN_FLIGHT);
-    auto semaphore = gpuCreateSemaphore(0);
-    uint64_t nextFrame = 1;
+    auto swapchainDesc = gpuSwapchainDesc(swapchain);
 
-    // Load input image
-    int width, height, channels;
-    stbi_uc* inputImage = stbi_load("../../../Assets/NoGraphicsAPI.png", &width, &height, &channels, 4);
-    auto upload = allocate<uint8_t>(width * height * 4);
-    memcpy(upload.cpu, inputImage, width * height * 4);
+    ColorTarget colorTarget = {};
+    colorTarget.format = swapchainDesc.format;
 
-    GpuTextureDesc textureDesc{
-        .type = TEXTURE_2D,
-        .dimensions = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1 },
-        .format = FORMAT_RGBA8_UNORM,
-        .usage = USAGE_SAMPLED
+    GpuRasterDesc rasterDesc = {
+        .depthFormat = FORMAT_D32_FLOAT,
+        .colorTargets = Span<ColorTarget>(&colorTarget, 1)
     };
 
-    GpuTextureSizeAlign textureSizeAlign = gpuTextureSizeAlign(textureDesc);
-    void* texturePtr = gpuMalloc(textureSizeAlign.size, MEMORY_GPU);
-    auto texture = gpuCreateTexture(textureDesc, texturePtr);
+    auto vertexIR = Utilities::loadIR("../../../Shaders/Vertex.spv");
+    auto pixelIR = Utilities::loadIR("../../../Shaders/Pixel.spv");
 
-    auto uploadSemaphore = gpuCreateSemaphore(0);
-    auto commandBuffer = gpuStartCommandRecording(queue);
-    gpuCopyToTexture(commandBuffer, upload.gpu, texture);
-    gpuSubmit(queue, Span<GpuCommandBuffer>(&commandBuffer, 1), uploadSemaphore, 1);
-    gpuWaitSemaphore(uploadSemaphore, 1);
-    gpuDestroySemaphore(uploadSemaphore);
+    auto pipeline = gpuCreateGraphicsPipeline(
+        ByteSpan(vertexIR.data(), vertexIR.size()),
+        ByteSpan(pixelIR.data(), pixelIR.size()),
+        rasterDesc
+    );
+
+    auto vertices = allocate<Vertex>(8);
+    auto indices = allocate<uint3>(12);
+    
+    vertices.cpu[0].position = float4{-1.0f, -1.0f, -1.0f, 1.0f};
+    vertices.cpu[1].position = float4{ 1.0f, -1.0f, -1.0f, 1.0f };
+    vertices.cpu[2].position = float4{ 1.0f,  1.0f, -1.0f, 1.0f};
+    vertices.cpu[3].position = float4{-1.0f,  1.0f, -1.0f, 1.0f };
+    vertices.cpu[4].position = float4{-1.0f, -1.0f,  1.0f, 1.0f};
+    vertices.cpu[5].position = float4{ 1.0f, -1.0f,  1.0f, 1.0f };
+    vertices.cpu[6].position = float4{ 1.0f,  1.0f,  1.0f, 1.0f};
+    vertices.cpu[7].position = float4{-1.0f,  1.0f,  1.0f, 1.0f };
+
+    indices.cpu[0] = uint3{0,1,2};
+    indices.cpu[1] = uint3{2,3,0};
+    indices.cpu[2] = uint3{4,5,6};
+    indices.cpu[3] = uint3{6,7,4};
+    indices.cpu[4] = uint3{0,4,7};
+    indices.cpu[5] = uint3{7,3,0};
+    indices.cpu[6] = uint3{1,5,6};
+    indices.cpu[7] = uint3{6,2,1};
+    indices.cpu[8] = uint3{3,2,6};
+    indices.cpu[9] = uint3{6,7,3};
+    indices.cpu[10] = uint3{0,1,5};
+    indices.cpu[11] = uint3{5,4,0};
+
+    auto vertexData = allocate<VertexData>();
+    auto pixelData = allocate<PixelData>();
+
+    vertexData.cpu->vertices = vertices.gpu;
+    pixelData.cpu->color = float4{1.0f, 1.0f, 1.0f, 1.0f};
+
+    auto queue = gpuCreateQueue();
+    auto semaphore = gpuCreateSemaphore(0);
+    uint64_t nextFrame = 1;
 
     while (!exit)
     {
@@ -367,17 +394,22 @@ void test_sdl_window()
             gpuWaitSemaphore(semaphore, nextFrame - FRAMES_IN_FLIGHT);
         }
 
-        commandBuffer = gpuStartCommandRecording(queue);
         auto image = gpuSwapchainImage(swapchain);
-        gpuBlitTexture(commandBuffer, image, texture);
+        GpuRenderPassDesc renderPassDesc = {
+            .colorTargets = Span<GpuTexture>(&image, 1),
+            .depthStencilTarget = nullptr
+        };
+
+        auto commandBuffer = gpuStartCommandRecording(queue);
+        gpuSetPipeline(commandBuffer, pipeline);
+        gpuBeginRenderPass(commandBuffer, renderPassDesc);
+        gpuDrawIndexedInstanced(commandBuffer, vertexData.gpu, pixelData.gpu, indices.gpu, 36, 1);
+        gpuEndRenderPass(commandBuffer);
         gpuSubmit(queue, Span<GpuCommandBuffer>(&commandBuffer, 1), semaphore, nextFrame);
         gpuPresent(swapchain, semaphore, nextFrame++);
     }
     
-    gpuDestroyTexture(texture);
-    gpuFree(texturePtr);
     gpuDestroySemaphore(semaphore);
-    upload.free();
     gpuDestroySwapchain(swapchain);
     SDL_Gpu_DestroySurface(surface);
     SDL_DestroyWindow(window);

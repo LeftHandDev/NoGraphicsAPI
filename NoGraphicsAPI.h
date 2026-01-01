@@ -21,6 +21,7 @@ using float2 = struct { float x, y; };
 using float3 = struct { float x, y, z; };
 using float4 = struct { float x, y, z, w; };
 using float3x4 = struct { float4 row0, row1, row2; };
+using float4x4 = struct { float4 row0, row1, row2, row3; };
 
 // Use standard library span
 template<typename T>
@@ -118,7 +119,7 @@ struct GpuRasterDesc
     FORMAT depthFormat = FORMAT_NONE;
     FORMAT stencilFormat = FORMAT_NONE;
     Span<ColorTarget> colorTargets = {};
-    GpuBlendDesc* blendstate = nullptr; // optional embedded blend state
+    GpuBlendDesc* blendState = nullptr; // optional embedded blend state
 };
 
 struct GpuTextureDesc
@@ -273,6 +274,7 @@ void gpuDrawMeshletsIndirect(GpuCommandBuffer cb, void* meshletDataGpu, void* pi
 GpuSwapchain gpuCreateSwapchain(GpuSurface surface, uint32_t images);
 void gpuDestroySwapchain(GpuSwapchain swapchain);
 
+GpuTextureDesc gpuSwapchainDesc(GpuSwapchain swapchain);
 GpuTexture gpuSwapchainImage(GpuSwapchain swapchain);
 
 void gpuPresent(GpuSwapchain swapchain, GpuSemaphore sema, uint64_t value);
