@@ -9,7 +9,7 @@ struct VertexOut
 VertexOut main(uint vertexId: SV_VertexID, VertexData *data, PixelData *_)
 {
     VertexOut outVertex;
-    float4 position = data->vertices[vertexId].position;
+    float4 position = data->vertices[vertexId].vertex;
     outVertex.position = mul(data->mvp, position);
     outVertex.uv = data->vertices[vertexId].uv;
     return outVertex;

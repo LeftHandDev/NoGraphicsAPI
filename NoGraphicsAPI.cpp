@@ -883,8 +883,8 @@ VkPipeline gpuCreateGraphicsPipeline(ByteSpan vertexIR, ByteSpan meshletIR, Byte
     VkPipelineRasterizationStateCreateInfo rasterizationState = {};
     rasterizationState.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rasterizationState.polygonMode = VK_POLYGON_MODE_FILL;
-    rasterizationState.cullMode = VK_CULL_MODE_NONE;
-    rasterizationState.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rasterizationState.cullMode = desc.cull != CULL_NONE ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
+    rasterizationState.frontFace = desc.cull == CULL_CW ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rasterizationState.lineWidth = 1.0f;
     rasterizationState.depthClampEnable = VK_FALSE;
     rasterizationState.rasterizerDiscardEnable = VK_FALSE;  

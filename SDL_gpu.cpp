@@ -4,7 +4,7 @@
 
 #ifdef GPU_SURFACE_EXTENSION
 
-GpuSurface SDL_Gpu_CreateSurface(void *sdlWindow)
+GpuSurface SDL_Gpu_CreateSurface(SDL_Window *sdlWindow)
 {
     VkSurfaceKHR surface;
     SDL_Vulkan_CreateSurface(static_cast<SDL_Window*>(sdlWindow), static_cast<VkInstance>(gpuVulkanInstance()), nullptr, &surface);

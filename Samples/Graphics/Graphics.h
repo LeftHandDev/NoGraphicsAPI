@@ -7,7 +7,7 @@ void graphicsSample();
 
 struct Vertex
 {
-    float4 position;
+    float4 vertex;
     float2 uv;
 };
 

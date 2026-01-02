@@ -3,16 +3,11 @@
 #include "../../External/stb_image.h"
 #include "../../External/stb_image_write.h"
 
+#include <SDL3/SDL.h>
 #include "../../SDL_gpu.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
-
-// Gets the size requirements for a obj file
-// void getObjectSizeRequirements(const std::filesystem::path& path, size_t vertices, size_t indiecs, size_t uvs, size_t normals)
-// {
-
-// }
 
 void graphicsSample()
 {
@@ -63,39 +58,15 @@ void graphicsSample()
         rasterDesc
     );
 
-    auto vertices = allocate<Vertex>(8);
-    auto indices = allocate<uint3>(12);
-    
-    vertices.cpu[0].position = float4{-1.0f, -1.0f, -1.0f, 1.0f};
-    vertices.cpu[1].position = float4{ 1.0f, -1.0f, -1.0f, 1.0f };
-    vertices.cpu[2].position = float4{ 1.0f,  1.0f, -1.0f, 1.0f};
-    vertices.cpu[3].position = float4{-1.0f,  1.0f, -1.0f, 1.0f };
-    vertices.cpu[4].position = float4{-1.0f, -1.0f,  1.0f, 1.0f};
-    vertices.cpu[5].position = float4{ 1.0f, -1.0f,  1.0f, 1.0f };
-    vertices.cpu[6].position = float4{ 1.0f,  1.0f,  1.0f, 1.0f};
-    vertices.cpu[7].position = float4{-1.0f,  1.0f,  1.0f, 1.0f };
+    std::vector<Vertex> verticesObj;
+    std::vector<uint32_t> indicesObj;
 
-    vertices.cpu[0].uv = float2{0.0f, 0.0f};
-    vertices.cpu[1].uv = float2{1.0f, 0.0f};
-    vertices.cpu[2].uv = float2{1.0f, 1.0f};
-    vertices.cpu[3].uv = float2{0.0f, 1.0f};
-    vertices.cpu[4].uv = float2{0.0f, 0.0f};
-    vertices.cpu[5].uv = float2{1.0f, 0.0f};
-    vertices.cpu[6].uv = float2{1.0f, 1.0f};
-    vertices.cpu[7].uv = float2{0.0f, 1.0f};
+    Utilities::loadOBJ("../../../Assets/Cube.obj", verticesObj, indicesObj);
 
-    indices.cpu[0] = uint3{0,1,2};
-    indices.cpu[1] = uint3{2,3,0};
-    indices.cpu[2] = uint3{4,5,6};
-    indices.cpu[3] = uint3{6,7,4};
-    indices.cpu[4] = uint3{0,4,7};
-    indices.cpu[5] = uint3{7,3,0};
-    indices.cpu[6] = uint3{1,5,6};
-    indices.cpu[7] = uint3{6,2,1};
-    indices.cpu[8] = uint3{3,2,6};
-    indices.cpu[9] = uint3{6,7,3};
-    indices.cpu[10] = uint3{0,1,5};
-    indices.cpu[11] = uint3{5,4,0};
+    auto vertices = allocate<Vertex>(static_cast<int>(verticesObj.size()));
+    memcpy(vertices.cpu, verticesObj.data(), sizeof(Vertex) * verticesObj.size());
+    auto indices = allocate<uint32_t>(static_cast<int>(indicesObj.size()));
+    memcpy(indices.cpu, indicesObj.data(), sizeof(uint32_t) * indicesObj.size());
 
     auto vertexData = allocate<VertexData>();
     auto pixelData = allocate<PixelData>();
@@ -107,9 +78,7 @@ void graphicsSample()
     auto view = glm::lookAt(glm::vec3{ 3.0f, 3.0f, 3.0f }, glm::vec3{ 0.0f, 0.0f, 0.0f }, glm::vec3{ 0.0f, -1.0f, 0.0f });
 
     float yRotation = 0.0f;
-    auto model = glm::rotate(glm::mat4(1.0f), yRotation, glm::vec3{ 0.0f, 1.0f, 0.0f });
-
-    auto mvp = projection * view * model;
+    auto mvp = projection * view;
     memcpy(&vertexData.cpu->mvp, &mvp, sizeof(float4x4));
 
     auto queue = gpuCreateQueue();

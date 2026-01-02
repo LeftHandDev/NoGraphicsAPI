@@ -8,7 +8,7 @@ void computeSample()
     auto queue = gpuCreateQueue();
     auto semaphore = gpuCreateSemaphore(0);
 
-    auto computeIR = Utilities::loadIR("../../../Shaders/Blur.spv");
+    auto computeIR = Utilities::loadIR("../../../Compute/Compute.spv");
     auto pipeline = gpuCreateComputePipeline(ByteSpan(computeIR.data(), computeIR.size()));
 
     auto textureHeap = gpuMalloc<GpuTextureDescriptor>(1024);
