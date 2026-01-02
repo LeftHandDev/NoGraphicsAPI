@@ -484,14 +484,14 @@ struct Vulkan
 
         // Graphics
         {
-            VkPushConstantRange pushConstantRanges[2] = {};
-            pushConstantRanges[0].stageFlags = 
+            VkPushConstantRange pushConstantRange = {};
+            pushConstantRange.stageFlags = 
                 VK_SHADER_STAGE_VERTEX_BIT | 
                 VK_SHADER_STAGE_TASK_BIT_EXT | 
                 VK_SHADER_STAGE_MESH_BIT_EXT |
                 VK_SHADER_STAGE_FRAGMENT_BIT;
-            pushConstantRanges[0].offset = 0;
-            pushConstantRanges[0].size = sizeof(VkDeviceAddress) * 2; // vertex/mesh + pixel
+            pushConstantRange.offset = 0;
+            pushConstantRange.size = sizeof(VkDeviceAddress) * 2; // vertex/mesh + pixel
 
             VkDescriptorSetLayout descriptorSetLayouts[] = { textureSetLayout, rwTextureSetLayout, samplerSetLayout };
 
@@ -499,8 +499,8 @@ struct Vulkan
             pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
             pipelineLayoutCreateInfo.setLayoutCount = 3;
             pipelineLayoutCreateInfo.pSetLayouts = descriptorSetLayouts;
-            pipelineLayoutCreateInfo.pushConstantRangeCount = 2;
-            pipelineLayoutCreateInfo.pPushConstantRanges = pushConstantRanges;
+            pipelineLayoutCreateInfo.pushConstantRangeCount = 1;
+            pipelineLayoutCreateInfo.pPushConstantRanges = &pushConstantRange;
 
             VkPipelineLayout pipelineLayout;
             dispatchTable.createPipelineLayout(&pipelineLayoutCreateInfo, nullptr, &pipelineLayout);

@@ -14,6 +14,6 @@ struct PixelOut
 PixelOut main(PixelIn inPixel, VertexData* _, PixelData* data)
 {
     PixelOut outPixel;
-    outPixel.color = textureHeap[data->srcTexture].Sample(samplerHeap[0], inPixel.uv);
+    outPixel.color = textureHeap[data->srcTexture].SampleLevel(samplerHeap[0], inPixel.uv, 0);
     return outPixel;
 }

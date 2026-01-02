@@ -19,7 +19,8 @@ void graphicsSample()
 
 
     int width, height, channels;
-    stbi_uc* inputImage = stbi_load("../../../Assets/NoGraphicsAPI.png", &width, &height, &channels, 4);
+    stbi_set_flip_vertically_on_load(1);
+    stbi_uc* inputImage = stbi_load("../../../Assets/Dice.png", &width, &height, &channels, 4);
 
     auto upload = allocate<uint8_t>(width * height * 4);
     memcpy(upload.cpu, inputImage, width * height * 4);
@@ -28,7 +29,7 @@ void graphicsSample()
         .type = TEXTURE_2D,
         .dimensions = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1 },
         .format = FORMAT_RGBA8_UNORM,
-        .usage = USAGE_SAMPLED
+        .usage = static_cast<USAGE_FLAGS>(USAGE_SAMPLED | USAGE_TRANSFER_DST)
     };
 
     GpuTextureSizeAlign textureSizeAlign = gpuTextureSizeAlign(textureDesc);
@@ -46,6 +47,7 @@ void graphicsSample()
     colorTarget.format = swapchainDesc.format;
 
     GpuRasterDesc rasterDesc = {
+        .cull = CULL_CW,
         .colorTargets = Span<ColorTarget>(&colorTarget, 1)
     };
 
