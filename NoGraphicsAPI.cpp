@@ -1360,7 +1360,29 @@ void gpuSetActiveTextureHeapPtr(GpuCommandBuffer cb, void *ptrGpu)
 
 void gpuBarrier(GpuCommandBuffer cb, STAGE before, STAGE after, HAZARD_FLAGS hazards)
 {
-    // TODO: Handle hazards
+    std::vector<VkBufferMemoryBarrier> bufferBarriers;
+
+    if (hazards & HAZARD_DESCRIPTORS)
+    {
+        VkBufferMemoryBarrier bufferBarrier = {};
+        bufferBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        bufferBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        bufferBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        bufferBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bufferBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bufferBarrier.buffer = vulkan.textureDescriptors.buffer;
+        bufferBarrier.offset = 0;
+        bufferBarrier.size = VK_WHOLE_SIZE;
+        bufferBarriers.push_back(bufferBarrier);
+
+        bufferBarrier.buffer = vulkan.rwTextureDescriptors.buffer;
+        bufferBarriers.push_back(bufferBarrier);
+
+        bufferBarrier.buffer = vulkan.samplerDescriptors.buffer;
+        bufferBarriers.push_back(bufferBarrier);
+    }
+
+    // TODO: other hazard types
 
     vulkan.dispatchTable.cmdPipelineBarrier(
         cb->commandBuffer,
@@ -1368,19 +1390,19 @@ void gpuBarrier(GpuCommandBuffer cb, STAGE before, STAGE after, HAZARD_FLAGS haz
         gpuStageToVkStage(after),
         0,
         0, nullptr,
-        0, nullptr,
+        static_cast<uint32_t>(bufferBarriers.size()), bufferBarriers.data(),
         0, nullptr
     );
 }
 
 void gpuSignalAfter(GpuCommandBuffer cb, STAGE before, void *ptrGpu, uint64_t value, SIGNAL signal)
 {
-    
+    // TODO: implement
 }
 
 void gpuWaitBefore(GpuCommandBuffer cb, STAGE after, void *ptrGpu, uint64_t value, OP op, HAZARD_FLAGS hazards, uint64_t mask)
 {
-    
+    // TODO: implement
 }
 
 void gpuSetPipeline(GpuCommandBuffer cb, GpuPipeline pipeline)
@@ -1396,10 +1418,12 @@ void gpuSetPipeline(GpuCommandBuffer cb, GpuPipeline pipeline)
 
 void gpuSetDepthStencilState(GpuCommandBuffer cb, GpuDepthStencilState state)
 {
+    // TODO: implement
 }
 
 void gpuSetBlendState(GpuCommandBuffer cb, GpuBlendState state)
 {
+    // TODO: implement
 }
 
 void gpuDispatch(GpuCommandBuffer cb, void* dataGpu, uint3 gridDimensions)
@@ -1579,7 +1603,7 @@ void gpuDrawIndexedInstancedIndirect(GpuCommandBuffer cb, void* vertexDataGpu, v
 
 void gpuDrawIndexedInstancedIndirectMulti(GpuCommandBuffer cb, void* dataVxGpu, uint32_t vxStride, void* dataPxGpu, uint32_t pxStride, void* argsGpu, void* drawCountGpu)
 {
-    // TODO
+    // TODO: implement
 }
 
 void gpuDrawMeshlets(GpuCommandBuffer cb, void* meshletDataGpu, void* pixelDataGpu, uint3 dim)
