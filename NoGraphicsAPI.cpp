@@ -171,8 +171,6 @@ struct Vulkan
 
     // Allocation tracking
     std::vector<Allocation> allocations;
-    Allocation textureDescriptors;
-    Allocation rwTextureDescriptors;
     Allocation samplerDescriptors;
 
     // Opaque handles
@@ -491,7 +489,7 @@ struct Vulkan
                 VK_SHADER_STAGE_MESH_BIT_EXT |
                 VK_SHADER_STAGE_FRAGMENT_BIT;
             pushConstantRange.offset = 0;
-            pushConstantRange.size = sizeof(VkDeviceAddress) * 2; // vertex/mesh + pixel
+            pushConstantRange.size = sizeof(VkDeviceAddress) * 3; // vertex/mesh + pixel + indirect multi strides
 
             VkDescriptorSetLayout descriptorSetLayouts[] = { textureSetLayout, rwTextureSetLayout, samplerSetLayout };
 
@@ -1092,30 +1090,30 @@ void gpuCopyToTexture(GpuCommandBuffer cb, void* srcGpu, GpuTexture texture)
         return;
     }
 
-    VkImageMemoryBarrier barrier = {};
-    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = texture->image;
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier.subresourceRange.baseMipLevel = 0;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
-    barrier.srcAccessMask = VK_ACCESS_NONE;
-    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    // VkImageMemoryBarrier barrier = {};
+    // barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    // barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    // barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    // barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    // barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    // barrier.image = texture->image;
+    // barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    // barrier.subresourceRange.baseMipLevel = 0;
+    // barrier.subresourceRange.levelCount = 1;
+    // barrier.subresourceRange.baseArrayLayer = 0;
+    // barrier.subresourceRange.layerCount = 1;
+    // barrier.srcAccessMask = VK_ACCESS_NONE;
+    // barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 
-    vulkan.dispatchTable.cmdPipelineBarrier(
-        cb->commandBuffer,
-        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-        VK_PIPELINE_STAGE_TRANSFER_BIT,
-        0,
-        0, nullptr,
-        0, nullptr,
-        1, &barrier
-    );
+    // vulkan.dispatchTable.cmdPipelineBarrier(
+    //     cb->commandBuffer,
+    //     VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+    //     VK_PIPELINE_STAGE_TRANSFER_BIT,
+    //     0,
+    //     0, nullptr,
+    //     0, nullptr,
+    //     1, &barrier
+    // );
 
     VkBufferImageCopy region = {};
     region.bufferOffset = reinterpret_cast<VkDeviceAddress>(srcGpu) - src.address;
@@ -1130,23 +1128,20 @@ void gpuCopyToTexture(GpuCommandBuffer cb, void* srcGpu, GpuTexture texture)
 
     vulkan.dispatchTable.cmdCopyBufferToImage(cb->commandBuffer, src.buffer, texture->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    barrier.dstAccessMask = 
-        texture->desc.usage & VK_IMAGE_USAGE_STORAGE_BIT 
-            ? VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT
-            : VK_ACCESS_SHADER_READ_BIT;
+    // barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    // barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    // barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    // barrier.dstAccessMask = VK_ACCESS_NONE;
 
-    vulkan.dispatchTable.cmdPipelineBarrier(
-        cb->commandBuffer,
-        VK_PIPELINE_STAGE_TRANSFER_BIT,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-        0,
-        0, nullptr,
-        0, nullptr,
-        1, &barrier
-    );    
+    // vulkan.dispatchTable.cmdPipelineBarrier(
+    //     cb->commandBuffer,
+    //     VK_PIPELINE_STAGE_TRANSFER_BIT,
+    //     VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+    //     0,
+    //     0, nullptr,
+    //     0, nullptr,
+    //     1, &barrier
+    // );    
 }
 
 void gpuCopyFromTexture(GpuCommandBuffer cb, void* destGpu, GpuTexture texture)
@@ -1158,30 +1153,30 @@ void gpuCopyFromTexture(GpuCommandBuffer cb, void* destGpu, GpuTexture texture)
         return;
     }
 
-    VkImageMemoryBarrier barrier = {};
-    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = texture->image;
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier.subresourceRange.baseMipLevel = 0;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
-    barrier.srcAccessMask = VK_ACCESS_NONE;
-    barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    // VkImageMemoryBarrier barrier = {};
+    // barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    // barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    // barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    // barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    // barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    // barrier.image = texture->image;
+    // barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    // barrier.subresourceRange.baseMipLevel = 0;
+    // barrier.subresourceRange.levelCount = 1;
+    // barrier.subresourceRange.baseArrayLayer = 0;
+    // barrier.subresourceRange.layerCount = 1;
+    // barrier.srcAccessMask = VK_ACCESS_NONE;
+    // barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
     
-    vulkan.dispatchTable.cmdPipelineBarrier(
-        cb->commandBuffer,
-        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-        VK_PIPELINE_STAGE_TRANSFER_BIT,
-        0,
-        0, nullptr,
-        0, nullptr,
-        1, &barrier
-    );
+    // vulkan.dispatchTable.cmdPipelineBarrier(
+    //     cb->commandBuffer,
+    //     VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+    //     VK_PIPELINE_STAGE_TRANSFER_BIT,
+    //     0,
+    //     0, nullptr,
+    //     0, nullptr,
+    //     1, &barrier
+    // );
 
     VkBufferImageCopy region = {};
     region.bufferOffset = reinterpret_cast<VkDeviceAddress>(destGpu) - dst.address;
@@ -1196,20 +1191,20 @@ void gpuCopyFromTexture(GpuCommandBuffer cb, void* destGpu, GpuTexture texture)
 
     vulkan.dispatchTable.cmdCopyImageToBuffer(cb->commandBuffer, texture->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst.buffer, 1, &region);
 
-    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    barrier.dstAccessMask = VK_ACCESS_NONE;
+    // barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    // barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    // barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    // barrier.dstAccessMask = VK_ACCESS_NONE;
 
-    vulkan.dispatchTable.cmdPipelineBarrier(
-        cb->commandBuffer,
-        VK_PIPELINE_STAGE_TRANSFER_BIT,
-        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-        0,
-        0, nullptr,
-        0, nullptr,
-        1, &barrier
-    );
+    // vulkan.dispatchTable.cmdPipelineBarrier(
+    //     cb->commandBuffer,
+    //     VK_PIPELINE_STAGE_TRANSFER_BIT,
+    //     VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+    //     0,
+    //     0, nullptr,
+    //     0, nullptr,
+    //     1, &barrier
+    // );
 }
 
 void gpuBlitTexture(GpuCommandBuffer cb, GpuTexture destTexture, GpuTexture srcTexture)
@@ -1219,44 +1214,44 @@ void gpuBlitTexture(GpuCommandBuffer cb, GpuTexture destTexture, GpuTexture srcT
         return;
     }
 
-    VkImageMemoryBarrier barriers[2] = {};
-    barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    barriers[0].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-    barriers[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barriers[0].image = srcTexture->image;
-    barriers[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barriers[0].subresourceRange.baseMipLevel = 0;
-    barriers[0].subresourceRange.levelCount = 1;
-    barriers[0].subresourceRange.baseArrayLayer = 0;
-    barriers[0].subresourceRange.layerCount = 1;
-    barriers[0].srcAccessMask = VK_ACCESS_NONE;
-    barriers[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    // VkImageMemoryBarrier barriers[2] = {};
+    // barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    // barriers[0].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    // barriers[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    // barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    // barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    // barriers[0].image = srcTexture->image;
+    // barriers[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    // barriers[0].subresourceRange.baseMipLevel = 0;
+    // barriers[0].subresourceRange.levelCount = 1;
+    // barriers[0].subresourceRange.baseArrayLayer = 0;
+    // barriers[0].subresourceRange.layerCount = 1;
+    // barriers[0].srcAccessMask = VK_ACCESS_NONE;
+    // barriers[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
 
-    barriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    barriers[1].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-    barriers[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    barriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barriers[1].image = destTexture->image;
-    barriers[1].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barriers[1].subresourceRange.baseMipLevel = 0;
-    barriers[1].subresourceRange.levelCount = 1;
-    barriers[1].subresourceRange.baseArrayLayer = 0;
-    barriers[1].subresourceRange.layerCount = 1;
-    barriers[1].srcAccessMask = VK_ACCESS_NONE;
-    barriers[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    // barriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    // barriers[1].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    // barriers[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    // barriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    // barriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    // barriers[1].image = destTexture->image;
+    // barriers[1].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    // barriers[1].subresourceRange.baseMipLevel = 0;
+    // barriers[1].subresourceRange.levelCount = 1;
+    // barriers[1].subresourceRange.baseArrayLayer = 0;
+    // barriers[1].subresourceRange.layerCount = 1;
+    // barriers[1].srcAccessMask = VK_ACCESS_NONE;
+    // barriers[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 
-    vulkan.dispatchTable.cmdPipelineBarrier(
-        cb->commandBuffer,
-        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-        VK_PIPELINE_STAGE_TRANSFER_BIT,
-        0,
-        0, nullptr,
-        0, nullptr,
-        2, barriers
-    );
+    // vulkan.dispatchTable.cmdPipelineBarrier(
+    //     cb->commandBuffer,
+    //     VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+    //     VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+    //     0,
+    //     0, nullptr,
+    //     0, nullptr,
+    //     2, barriers
+    // );
 
     VkImageBlit blit = {};
     blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -1283,24 +1278,24 @@ void gpuBlitTexture(GpuCommandBuffer cb, GpuTexture destTexture, GpuTexture srcT
         VK_FILTER_NEAREST
     );
 
-    barriers[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    barriers[0].newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    barriers[0].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    barriers[0].dstAccessMask = VK_ACCESS_NONE;
-    barriers[1].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    barriers[1].newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    barriers[1].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    barriers[1].dstAccessMask = VK_ACCESS_NONE;
+    // barriers[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    // barriers[0].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    // barriers[0].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    // barriers[0].dstAccessMask = VK_ACCESS_NONE;
+    // barriers[1].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    // barriers[1].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    // barriers[1].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    // barriers[1].dstAccessMask = VK_ACCESS_NONE;
 
-    vulkan.dispatchTable.cmdPipelineBarrier(
-        cb->commandBuffer,
-        VK_PIPELINE_STAGE_TRANSFER_BIT,
-        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-        0,
-        0, nullptr,
-        0, nullptr,
-        2, barriers
-    );
+    // vulkan.dispatchTable.cmdPipelineBarrier(
+    //     cb->commandBuffer,
+    //     VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+    //     VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+    //     0,
+    //     0, nullptr,
+    //     0, nullptr,
+    //     2, barriers
+    // );
 }
 
 void gpuSetActiveTextureHeapPtr(GpuCommandBuffer cb, void *ptrGpu)
@@ -1360,26 +1355,25 @@ void gpuSetActiveTextureHeapPtr(GpuCommandBuffer cb, void *ptrGpu)
 
 void gpuBarrier(GpuCommandBuffer cb, STAGE before, STAGE after, HAZARD_FLAGS hazards)
 {
-    std::vector<VkBufferMemoryBarrier> bufferBarriers;
+    std::vector<VkMemoryBarrier> memoryBarriers;
+
+    if (hazards & HAZARD_DRAW_ARGUMENTS)
+    {
+        VkMemoryBarrier memoryBarrier = {};
+        memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        memoryBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        memoryBarrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+        memoryBarriers.push_back(memoryBarrier);
+    }
 
     if (hazards & HAZARD_DESCRIPTORS)
     {
-        VkBufferMemoryBarrier bufferBarrier = {};
-        bufferBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-        bufferBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-        bufferBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        bufferBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        bufferBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        bufferBarrier.buffer = vulkan.textureDescriptors.buffer;
-        bufferBarrier.offset = 0;
-        bufferBarrier.size = VK_WHOLE_SIZE;
-        bufferBarriers.push_back(bufferBarrier);
+        VkMemoryBarrier memoryBarrier = {};
+        memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        memoryBarrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+        memoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
-        bufferBarrier.buffer = vulkan.rwTextureDescriptors.buffer;
-        bufferBarriers.push_back(bufferBarrier);
-
-        bufferBarrier.buffer = vulkan.samplerDescriptors.buffer;
-        bufferBarriers.push_back(bufferBarrier);
+        memoryBarriers.push_back(memoryBarrier);
     }
 
     // TODO: other hazard types
@@ -1389,8 +1383,8 @@ void gpuBarrier(GpuCommandBuffer cb, STAGE before, STAGE after, HAZARD_FLAGS haz
         gpuStageToVkStage(before),
         gpuStageToVkStage(after),
         0,
+        static_cast<uint32_t>(memoryBarriers.size()), memoryBarriers.data(),
         0, nullptr,
-        static_cast<uint32_t>(bufferBarriers.size()), bufferBarriers.data(),
         0, nullptr
     );
 }
@@ -1520,9 +1514,10 @@ void gpuEndRenderPass(GpuCommandBuffer cb)
 
 void gpuDrawIndexedInstanced(GpuCommandBuffer cb, void* vertexDataGpu, void* pixelDataGpu, void* indicesGpu, uint32_t indexCount, uint32_t instanceCount)
 {
-    VkDeviceAddress pushConstants[2] = {
+    VkDeviceAddress pushConstants[3] = {
         reinterpret_cast<VkDeviceAddress>(vertexDataGpu),
-        reinterpret_cast<VkDeviceAddress>(pixelDataGpu)
+        reinterpret_cast<VkDeviceAddress>(pixelDataGpu),
+        0 // unused
     };
 
     vulkan.dispatchTable.cmdPushConstants(
@@ -1559,9 +1554,10 @@ void gpuDrawIndexedInstanced(GpuCommandBuffer cb, void* vertexDataGpu, void* pix
 
 void gpuDrawIndexedInstancedIndirect(GpuCommandBuffer cb, void* vertexDataGpu, void* pixelDataGpu, void* indicesGpu, void* argsGpu)
 {
-    VkDeviceAddress pushConstants[2] = {
+    VkDeviceAddress pushConstants[3] = {
         reinterpret_cast<VkDeviceAddress>(vertexDataGpu),
-        reinterpret_cast<VkDeviceAddress>(pixelDataGpu)
+        reinterpret_cast<VkDeviceAddress>(pixelDataGpu),
+        0 // unused
     };
 
     vulkan.dispatchTable.cmdPushConstants(
@@ -1601,9 +1597,67 @@ void gpuDrawIndexedInstancedIndirect(GpuCommandBuffer cb, void* vertexDataGpu, v
     );
 }
 
-void gpuDrawIndexedInstancedIndirectMulti(GpuCommandBuffer cb, void* dataVxGpu, uint32_t vxStride, void* dataPxGpu, uint32_t pxStride, void* argsGpu, void* drawCountGpu)
+void gpuDrawIndexedInstancedIndirectMulti(
+    GpuCommandBuffer cb, 
+    void* dataVxGpu, 
+    uint32_t vxStride, 
+    void* dataPxGpu, 
+    uint32_t pxStride,
+    void* indicesGpu, 
+    void* argsGpu, 
+    void* drawCountGpu)
 {
-    // TODO: implement
+    VkDeviceAddress pushConstants[3] = {
+        reinterpret_cast<VkDeviceAddress>(dataVxGpu),
+        reinterpret_cast<VkDeviceAddress>(dataPxGpu),
+        static_cast<VkDeviceAddress>(vxStride | (static_cast<uint64_t>(pxStride) << 32)) // pack strides into a single 64-bit value
+    };
+
+    vulkan.dispatchTable.cmdPushConstants(
+        cb->commandBuffer,
+        vulkan.layout[vulkan.currentPipeline[cb]->bindPoint],
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_FRAGMENT_BIT,
+        0,
+        sizeof(VkDeviceAddress) * 3,
+        pushConstants
+    );
+
+    Allocation indexAlloc = vulkan.findAllocation(reinterpret_cast<VkDeviceAddress>(indicesGpu));
+    if (indexAlloc.buffer == VK_NULL_HANDLE)
+    {
+        return;
+    }
+
+    vulkan.dispatchTable.cmdBindIndexBuffer(
+        cb->commandBuffer,
+        indexAlloc.buffer,
+        reinterpret_cast<VkDeviceAddress>(indicesGpu) - indexAlloc.address,
+        VK_INDEX_TYPE_UINT32
+    );
+
+    Allocation argsAlloc = vulkan.findAllocation(reinterpret_cast<VkDeviceAddress>(argsGpu));
+    if (argsAlloc.buffer == VK_NULL_HANDLE)
+    {
+        return;
+    }
+
+    Allocation countAlloc = vulkan.findAllocation(reinterpret_cast<VkDeviceAddress>(drawCountGpu));
+    if (countAlloc.buffer == VK_NULL_HANDLE)
+    {
+        return;
+    }
+
+    VkDrawIndexedIndirectCommand drawCommand = {};
+
+    vulkan.dispatchTable.cmdDrawIndexedIndirectCount(
+        cb->commandBuffer,
+        argsAlloc.buffer,
+        reinterpret_cast<VkDeviceAddress>(argsGpu) - argsAlloc.address,
+        countAlloc.buffer,
+        reinterpret_cast<VkDeviceAddress>(drawCountGpu) - countAlloc.address,
+        vulkan.physicalDeviceProperties2.properties.limits.maxDrawIndirectCount,
+        sizeof(VkDrawIndexedIndirectCommand)
+    );
 }
 
 void gpuDrawMeshlets(GpuCommandBuffer cb, void* meshletDataGpu, void* pixelDataGpu, uint3 dim)

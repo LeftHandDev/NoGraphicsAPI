@@ -99,15 +99,13 @@ void graphicsSample()
             }
         }
 
+        auto commandBuffer = gpuStartCommandRecording(queue);
+
         if (nextFrame == 1)
         {
             // First frame, copy texture data
-            auto commandBuffer = gpuStartCommandRecording(queue);
-            auto uploadSemaphore = gpuCreateSemaphore(0);
             gpuCopyToTexture(commandBuffer, upload.gpu, texture);
-            gpuSubmit(queue, Span<GpuCommandBuffer>(&commandBuffer, 1), uploadSemaphore, 1);
-            gpuWaitSemaphore(uploadSemaphore, 1);
-            gpuDestroySemaphore(uploadSemaphore);
+           // gpuBarrier(commandBuffer, STAGE_TRANSFER, STAGE_PIXEL_SHADER, HAZARD_DESCRIPTORS);
         }
 
         if (nextFrame > FRAMES_IN_FLIGHT)
@@ -121,7 +119,6 @@ void graphicsSample()
             .depthStencilTarget = nullptr
         };
 
-        auto commandBuffer = gpuStartCommandRecording(queue);
         gpuSetPipeline(commandBuffer, pipeline);
         gpuBeginRenderPass(commandBuffer, renderPassDesc);
         gpuSetActiveTextureHeapPtr(commandBuffer, textureHeap.gpu);
