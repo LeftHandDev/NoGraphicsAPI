@@ -48,6 +48,7 @@ GPU_DEFINE_HANDLE(GpuAccelerationStructure)
 #endif
 
 // Enums
+enum RESULT { RESULT_SUCCESS, RESULT_FAILURE };
 enum MEMORY { MEMORY_DEFAULT, MEMORY_GPU, MEMORY_READBACK };
 enum CULL { CULL_CCW, CULL_CW, CULL_ALL, CULL_NONE };
 enum DEPTH_FLAGS { DEPTH_UNDEFINED = 0x0, DEPTH_READ = 0x1, DEPTH_WRITE = 0x2 };
@@ -215,6 +216,10 @@ void* gpuVulkanSurface(GpuSurface surface);
 void gpuDestroySurface(GpuSurface surface);
 #endif // GPU_EXPOSE_INTERNAL
 
+// Device
+RESULT gpuCreateDevice(/* DEVICE CREATION DETAILS OMITTED */);
+void gpuDestroyDevice();
+
 // Memory
 void* gpuMalloc(size_t bytes, MEMORY memory = MEMORY_DEFAULT);
 void* gpuMalloc(size_t bytes, size_t align, MEMORY memory = MEMORY_DEFAULT);
@@ -241,7 +246,7 @@ void gpuFreeDepthStencilState(GpuDepthStencilState state);
 void gpuFreeBlendState(GpuBlendState state);
 
 // Queue
-GpuQueue gpuCreateQueue(/* DEVICE & QUEUE CREATION DETAILS OMITTED */);
+GpuQueue gpuCreateQueue(/* QUEUE CREATION DETAILS OMITTED */);
 GpuCommandBuffer gpuStartCommandRecording(GpuQueue queue);
 void gpuSubmit(GpuQueue queue, Span<GpuCommandBuffer> commandBuffers, GpuSemaphore semaphore, uint64_t value);
 

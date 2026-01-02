@@ -11,10 +11,16 @@ struct Vertex
     float2 uv;
 };
 
+struct alignas(16) Instance
+{
+    float4x4 model;
+};
+
 struct alignas(16) VertexData
 {
-    float4x4 mvp;
+    float4x4 viewProjection;
     Vertex* vertices;
+    Instance* instances;
 };
 
 struct alignas(16) PixelData
