@@ -1,5 +1,5 @@
 #include "Graphics.h"
-#include "../../Common.h"
+#include "../../Utilities.h"
 #include "../../External/stb_image.h"
 #include "../../External/stb_image_write.h"
 
@@ -53,8 +53,8 @@ void graphicsSample()
         .colorTargets = Span<ColorTarget>(&colorTarget, 1)
     };
 
-    auto vertexIR = Utilities::loadIR("../../../Samples/Graphics/Vertex.spv");
-    auto pixelIR = Utilities::loadIR("../../../Samples/Graphics/Pixel.spv");
+    auto vertexIR = loadIR("../../../Samples/Graphics/Vertex.spv");
+    auto pixelIR = loadIR("../../../Samples/Graphics/Pixel.spv");
 
     auto pipeline = gpuCreateGraphicsPipeline(
         ByteSpan(vertexIR.data(), vertexIR.size()),
@@ -65,7 +65,7 @@ void graphicsSample()
     std::vector<Vertex> verticesObj;
     std::vector<uint32_t> indicesObj;
 
-    Utilities::loadOBJ("../../../Assets/Cube.obj", verticesObj, indicesObj);
+    loadOBJ("../../../Assets/Cube.obj", verticesObj, indicesObj);
 
     auto vertices = allocate<Vertex>(static_cast<int>(verticesObj.size()));
     memcpy(vertices.cpu, verticesObj.data(), sizeof(Vertex) * verticesObj.size());

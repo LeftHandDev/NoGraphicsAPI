@@ -1,5 +1,5 @@
 #include "Compute.h"
-#include "../../Common.h"
+#include "../../Utilities.h"
 #include "../../External/stb_image.h"
 #include "../../External/stb_image_write.h"
 
@@ -8,7 +8,7 @@ void computeSample()
     auto queue = gpuCreateQueue();
     auto semaphore = gpuCreateSemaphore(0);
 
-    auto computeIR = Utilities::loadIR("../../../Compute/Compute.spv");
+    auto computeIR = loadIR("../../../Compute/Compute.spv");
     auto pipeline = gpuCreateComputePipeline(ByteSpan(computeIR.data(), computeIR.size()));
 
     auto textureHeap = gpuMalloc<GpuTextureDescriptor>(1024);

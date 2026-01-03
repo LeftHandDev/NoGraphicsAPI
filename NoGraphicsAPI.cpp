@@ -38,8 +38,9 @@ struct GpuSwapchain_T
 #ifdef GPU_RAY_TRACING_EXTENSION
 struct GpuAccelerationStructure_T 
 { 
-    VkAccelerationStructureKHR as = VK_NULL_HANDLE; 
-    VkAccelerationStructureBuildGeometryInfoKHR buildInfo = {}; 
+    VkAccelerationStructureBuildGeometryInfoKHR buildInfo = {};
+    VkAccelerationStructureBuildRangeInfoKHR buildRange = {}; 
+    std::vector<VkAccelerationStructureGeometryKHR> geometries;
 };
 #endif // GPU_RAY_TRACING_EXTENSION
 
@@ -52,6 +53,7 @@ VkPipelineStageFlagBits gpuStageToVkStage(STAGE stage)
     case STAGE_RASTER_COLOR_OUT: return VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     case STAGE_PIXEL_SHADER: return VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
     case STAGE_VERTEX_SHADER: return VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+    case STAGE_ACCELERATION_STRUCTURE_BUILD: return VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
     default: return VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
     }
 }
@@ -78,6 +80,7 @@ VkFormat gpuFormatToVkFormat(FORMAT format)
     case FORMAT_D32_FLOAT: return VK_FORMAT_D32_SFLOAT;
     case FORMAT_RG11B10_FLOAT: return VK_FORMAT_B10G11R11_UFLOAT_PACK32;
     case FORMAT_RGB10_A2_UNORM: return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+    case FORMAT_RGB32_FLOAT: return VK_FORMAT_R32G32B32_SFLOAT;
     default: return VK_FORMAT_UNDEFINED;
     }
 }
@@ -207,6 +210,11 @@ struct Vulkan
 #endif
         requiredDeviceExtensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
 #endif // GPU_SURFACE_EXTENSION
+#ifdef GPU_RAY_TRACING_EXTENSION
+        requiredDeviceExtensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+        requiredDeviceExtensions.push_back(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
+        requiredDeviceExtensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+#endif // GPU_RAY_TRACING_EXTENSION
 
         vkb::InstanceBuilder instanceBuilder;
 
@@ -224,6 +232,16 @@ struct Vulkan
             .select();
         physicalDevice = physicalDeviceRet.value();
 
+#ifdef GPU_RAY_TRACING_EXTENSION
+        VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures = {};
+        rayQueryFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
+        rayQueryFeatures.rayQuery = VK_TRUE;
+
+        VkPhysicalDeviceAccelerationStructureFeaturesKHR accelerationStructureFeatures = {};
+        accelerationStructureFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+        accelerationStructureFeatures.accelerationStructure = VK_TRUE;
+#endif // GPU_RAY_TRACING_EXTENSION
+
         VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptorBufferFeatures = {};
         descriptorBufferFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT;
         descriptorBufferFeatures.descriptorBuffer = VK_TRUE;
@@ -239,8 +257,14 @@ struct Vulkan
         physicalDeviceVulkan12Features.bufferDeviceAddress = VK_TRUE;
         physicalDeviceVulkan12Features.runtimeDescriptorArray = VK_TRUE;
 
+        physicalDevice.features.shaderInt64 = VK_TRUE;
+
         bool result = physicalDevice.enable_extension_features_if_present(physicalDeviceVulkan12Features);
         result = physicalDevice.enable_extension_features_if_present(physicalDeviceVulkan13Features) && result;
+#ifdef GPU_RAY_TRACING_EXTENSION
+        result = physicalDevice.enable_extension_features_if_present(rayQueryFeatures) && result;
+        result = physicalDevice.enable_extension_features_if_present(accelerationStructureFeatures) && result;
+#endif // GPU_RAY_TRACING_EXTENSION
         instanceDispatchTable.getPhysicalDeviceMemoryProperties(physicalDevice, &memoryProperties);
 
         descriptorBufferProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT;
@@ -604,7 +628,8 @@ void* gpuMallocHidden(size_t bytes, size_t align, MEMORY memory, bool sampler = 
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
             VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
-            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | 
+            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
 
             if (sampler)
             {
@@ -635,7 +660,9 @@ void* gpuMallocHidden(size_t bytes, size_t align, MEMORY memory, bool sampler = 
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
             VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
-            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR;
 
         auto properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
         auto alloc = vulkan->createAllocation(bytes, usage, properties, align);
@@ -1391,11 +1418,17 @@ void gpuBarrier(GpuCommandBuffer cb, STAGE before, STAGE after, HAZARD_FLAGS haz
         memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
         memoryBarrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
         memoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
         memoryBarriers.push_back(memoryBarrier);
     }
 
-    // TODO: other hazard types
+    if (hazards & HAZARD_ACCELERATION_STRUCTURE)
+    {
+        VkMemoryBarrier memoryBarrier = {};
+        memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        memoryBarrier.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        memoryBarrier.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+        memoryBarriers.push_back(memoryBarrier);
+    }
 
     vulkan->dispatchTable.cmdPipelineBarrier(
         cb->commandBuffer,
@@ -1884,35 +1917,203 @@ void gpuPresent(GpuSwapchain swapchain, GpuSemaphore sema, uint64_t value)
 #endif // GPU_SURFACE_EXTENSION
 
 #ifdef GPU_RAY_TRACING_EXTENSION
-GpuAccelerationStructureSizes gpuAccelerationStructureSizes(GpuAccelerationStructureBlasDesc desc)
+
+VkIndexType gpuIndexTypeToVkIndexType(INDEX_TYPE indexType)
 {
-    return GpuAccelerationStructureSizes();
+    switch (indexType)
+    {
+    case INDEX_TYPE_UINT16: return VK_INDEX_TYPE_UINT16;
+    case INDEX_TYPE_UINT32: return VK_INDEX_TYPE_UINT32;
+    default: return VK_INDEX_TYPE_UINT32;
+    }
 }
 
-GpuAccelerationStructureSizes gpuAccelerationStructureSizes(GpuAccelerationStructureTlasDesc desc)
+VkAccelerationStructureBuildGeometryInfoKHR gpuBuildInfoToVkBuildInfo(GpuAccelerationStructureDesc desc, std::vector<VkAccelerationStructureGeometryKHR>& outGeometries)
 {
-    return GpuAccelerationStructureSizes();
+    VkAccelerationStructureBuildGeometryInfoKHR buildInfo = {};
+    buildInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+    buildInfo.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    buildInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+
+    outGeometries.clear();
+
+    if (desc.type == TYPE_BOTTOM_LEVEL)
+    {
+        buildInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+
+        if (desc.blasDesc.type == GEOMETRY_TYPE_TRIANGLES)
+        {
+            for (const auto& triangleDesc : desc.blasDesc.triangles)
+            {
+                VkAccelerationStructureGeometryKHR geometry = {};
+                geometry.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+                geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+                geometry.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+
+                auto& triangles = geometry.geometry.triangles;
+                triangles.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+                triangles.vertexFormat = gpuFormatToVkFormat(triangleDesc.vertexFormat);
+                triangles.vertexData.deviceAddress = reinterpret_cast<VkDeviceAddress>(triangleDesc.vertexDataGpu);
+                triangles.vertexStride = triangleDesc.vertexStride;
+                triangles.maxVertex = triangleDesc.vertexCount > 0 ? triangleDesc.vertexCount - 1 : 0;
+
+                if (triangleDesc.indexDataGpu != nullptr)
+                {
+                    triangles.indexType = gpuIndexTypeToVkIndexType(triangleDesc.indexType);
+                    triangles.indexData.deviceAddress = reinterpret_cast<VkDeviceAddress>(triangleDesc.indexDataGpu);
+                }
+                else
+                {
+                    triangles.indexType = VK_INDEX_TYPE_NONE_KHR;
+                    triangles.indexData.deviceAddress = 0;
+                }
+
+                if (triangleDesc.transformDataGpu != nullptr)
+                {
+                    triangles.transformData.deviceAddress = reinterpret_cast<VkDeviceAddress>(triangleDesc.transformDataGpu);
+                }
+                else
+                {
+                    triangles.transformData.deviceAddress = 0;
+                }
+
+                outGeometries.push_back(geometry);
+            }
+        }
+        else // GEOMETRY_TYPE_AABBS
+        {
+            for (const auto& aabbDesc : desc.blasDesc.aabbs)
+            {
+                VkAccelerationStructureGeometryKHR geometry = {};
+                geometry.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+                geometry.geometryType = VK_GEOMETRY_TYPE_AABBS_KHR;
+                geometry.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+
+                auto& aabbs = geometry.geometry.aabbs;
+                aabbs.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_AABBS_DATA_KHR;
+                aabbs.data.deviceAddress = reinterpret_cast<VkDeviceAddress>(aabbDesc.aabbDataGpu);
+                aabbs.stride = aabbDesc.stride;
+
+                outGeometries.push_back(geometry);
+            }
+        }
+    }
+    else // TYPE_TOP_LEVEL
+    {
+        buildInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+
+        // For TLAS, we need to set up instance geometry
+        // The instance data should be provided as a buffer of VkAccelerationStructureInstanceKHR
+        VkAccelerationStructureGeometryKHR geometry = {};
+        geometry.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+        geometry.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
+        geometry.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+
+        auto& instances = geometry.geometry.instances;
+        instances.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
+        instances.arrayOfPointers = desc.tlasDesc.arrayOfPointers ? VK_TRUE : VK_FALSE;
+        instances.data.deviceAddress = reinterpret_cast<VkDeviceAddress>(desc.tlasDesc.instancesGpu);
+
+        outGeometries.push_back(geometry);
+    }
+
+    buildInfo.geometryCount = static_cast<uint32_t>(outGeometries.size());
+    buildInfo.pGeometries = outGeometries.data();
+
+    return buildInfo;
 }
 
-GpuAccelerationStructure gpuCreateAccelerationStructure(GpuAccelerationStructureBlasDesc desc, void *ptrGpu)
+GpuAccelerationStructureSizes gpuAccelerationStructureSizes(GpuAccelerationStructureDesc desc)
 {
-    return new GpuAccelerationStructure_T {};
+    std::vector<VkAccelerationStructureGeometryKHR> geometries;
+    VkAccelerationStructureBuildGeometryInfoKHR buildInfo = gpuBuildInfoToVkBuildInfo(desc, geometries);
+    VkAccelerationStructureBuildSizesInfoKHR sizeInfo = {};
+    sizeInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+
+    vulkan->dispatchTable.getAccelerationStructureBuildSizesKHR(
+        VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+        &buildInfo,
+        &desc.buildRange->primitiveCount,
+        &sizeInfo
+    );
+
+    return {
+        sizeInfo.accelerationStructureSize,
+        sizeInfo.updateScratchSize,
+        sizeInfo.buildScratchSize
+    };
 }
 
-GpuAccelerationStructure gpuCreateAccelerationStructure(GpuAccelerationStructureTlasDesc desc, void *ptrGpu)
+GpuAccelerationStructure gpuCreateAccelerationStructure(GpuAccelerationStructureDesc desc, void *ptrGpu, uint64_t size)
 {
-    return new GpuAccelerationStructure_T {};
+    auto alloc = vulkan->findAllocation(reinterpret_cast<VkDeviceAddress>(ptrGpu));
+    if (alloc.buffer == VK_NULL_HANDLE)
+    {
+        return nullptr;
+    }
+
+    VkAccelerationStructureCreateInfoKHR createInfo = {};
+    createInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
+    createInfo.buffer = alloc.buffer;
+    createInfo.offset = reinterpret_cast<VkDeviceAddress>(ptrGpu) - alloc.address;
+    createInfo.size = size;
+    createInfo.type = (desc.type == TYPE_BOTTOM_LEVEL) ? VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR : VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+
+    VkAccelerationStructureKHR vkAs;
+    vulkan->dispatchTable.createAccelerationStructureKHR(
+        &createInfo,
+        nullptr,
+        &vkAs
+    );
+
+    auto as = new GpuAccelerationStructure_T();
+
+    as->buildInfo = gpuBuildInfoToVkBuildInfo(desc, as->geometries);
+    as->buildInfo.dstAccelerationStructure = vkAs;
+
+    as->buildRange.firstVertex = desc.buildRange->firstVertex;
+    as->buildRange.primitiveCount = desc.buildRange->primitiveCount;
+    as->buildRange.primitiveOffset = desc.buildRange->primitiveOffset;
+    as->buildRange.firstVertex = desc.buildRange->firstVertex;
+    as->buildRange.transformOffset = desc.buildRange->transformOffset;
+
+    return as;
 }
 
-void gpuBuildAccelerationStructure(GpuCommandBuffer cb, GpuAccelerationStructure tlas, Span<GpuAccelerationStructure> instances, void *scratchGpu)
+void gpuBuildAccelerationStructures(GpuCommandBuffer cb, Span<GpuAccelerationStructure> as, void *scratchGpu, MODE mode)
 {
-}
+    std::vector<VkAccelerationStructureBuildGeometryInfoKHR> buildInfos;
+    std::vector<VkAccelerationStructureBuildRangeInfoKHR*> buildRanges;
+    for (const auto& a : as)
+    {
+        if (mode == MODE_UPDATE)
+        {
+            a->buildInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
+            a->buildInfo.srcAccelerationStructure = a->buildInfo.dstAccelerationStructure;
+        }
+        else
+        {
+            a->buildInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+            a->buildInfo.srcAccelerationStructure = VK_NULL_HANDLE;
+        }
 
-void gpuUpdateAccelerationStructure(GpuCommandBuffer cb, GpuAccelerationStructure tlas, Span<GpuAccelerationStructure> instances, void *scratchGpu)
-{
+        a->buildInfo.scratchData.deviceAddress = reinterpret_cast<VkDeviceAddress>(scratchGpu);
+
+        buildInfos.push_back(a->buildInfo);
+        buildRanges.push_back(&a->buildRange);
+    }
+
+    vulkan->dispatchTable.cmdBuildAccelerationStructuresKHR(
+        cb->commandBuffer,
+        as.size(),
+        buildInfos.data(),
+        buildRanges.data()
+    );
 }
 
 void gpuDestroyAccelerationStructure(GpuAccelerationStructure as)
 {
+    vulkan->dispatchTable.destroyAccelerationStructureKHR(as->buildInfo.dstAccelerationStructure, nullptr);
+    delete as;
 }
 #endif // GPU_RAY_TRACING_EXTENSION

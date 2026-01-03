@@ -57,14 +57,16 @@ enum BLEND { BLEND_ADD, BLEND_SUBTRACT, BLEND_REV_SUBTRACT, BLEND_MIN, BLEND_MAX
 enum FACTOR { FACTOR_ZERO, FACTOR_ONE, FACTOR_SRC_COLOR, FACTOR_DST_COLOR, FACTOR_SRC_ALPHA /*, ...*/ };
 enum TOPOLOGY { TOPOLOGY_TRIANGLE_LIST, TOPOLOGY_TRIANGLE_STRIP, TOPOLOGY_TRIANGLE_FAN };
 enum TEXTURE { TEXTURE_1D, TEXTURE_2D, TEXTURE_3D, TEXTURE_CUBE, TEXTURE_2D_ARRAY, TEXTURE_CUBE_ARRAY };
-enum FORMAT { FORMAT_NONE, FORMAT_RGBA8_UNORM, FORMAT_BGRA8_SRGB, FORMAT_D32_FLOAT, FORMAT_RG11B10_FLOAT, FORMAT_RGB10_A2_UNORM /*, ...*/ };
-enum USAGE_FLAGS { USAGE_SAMPLED = 1 << 0, USAGE_STORAGE = 1 << 1, USAGE_COLOR_ATTACHMENT = 1 << 2, USAGE_DEPTH_STENCIL_ATTACHMENT = 1 << 3, USAGE_TRANSFER_DST = 1 << 4 /*, ...*/ };
-enum STAGE { STAGE_TRANSFER, STAGE_COMPUTE, STAGE_RASTER_COLOR_OUT, STAGE_PIXEL_SHADER, STAGE_VERTEX_SHADER /*, ...*/ };
-enum HAZARD_FLAGS { HAZARD_NONE = 0x0, HAZARD_DRAW_ARGUMENTS = 0x1, HAZARD_DESCRIPTORS = 0x2, HAZARD_DEPTH_STENCIL = 0x4 };
+enum FORMAT { FORMAT_NONE, FORMAT_RGBA8_UNORM, FORMAT_BGRA8_SRGB, FORMAT_D32_FLOAT, FORMAT_RG11B10_FLOAT, FORMAT_RGB10_A2_UNORM, FORMAT_RGB32_FLOAT /*, ...*/ };
+enum USAGE_FLAGS { USAGE_SAMPLED = 1 << 0, USAGE_STORAGE = 1 << 1, USAGE_COLOR_ATTACHMENT = 1 << 2, USAGE_DEPTH_STENCIL_ATTACHMENT = 1 << 3, USAGE_TRANSFER_DST = 1 << 4, USAGE_TRANSFER_SRC = 1 << 5 /*, ...*/ };
+enum STAGE { STAGE_TRANSFER, STAGE_COMPUTE, STAGE_RASTER_COLOR_OUT, STAGE_PIXEL_SHADER, STAGE_VERTEX_SHADER, STAGE_ACCELERATION_STRUCTURE_BUILD /*, ...*/ };
+enum HAZARD_FLAGS { HAZARD_NONE = 0x0, HAZARD_DRAW_ARGUMENTS = 0x1, HAZARD_DESCRIPTORS = 0x2, HAZARD_DEPTH_STENCIL = 0x4, HAZARD_ACCELERATION_STRUCTURE = 0x8 /*, ...*/ };
 enum SIGNAL { SIGNAL_ATOMIC_SET, SIGNAL_ATOMIC_MAX, SIGNAL_ATOMIC_OR /*, ...*/ };
 #ifdef GPU_RAY_TRACING_EXTENSION
 enum INDEX_TYPE { INDEX_TYPE_UINT16, INDEX_TYPE_UINT32 };
 enum GEOMETRY_TYPE { GEOMETRY_TYPE_TRIANGLES, GEOMETRY_TYPE_AABBS };
+enum MODE { MODE_BUILD, MODE_UPDATE };
+enum TYPE { TYPE_BOTTOM_LEVEL, TYPE_TOP_LEVEL };
 #endif // GPU_RAY_TRACING_EXTENSION
 
 // View descriptor constants
@@ -188,12 +190,12 @@ struct GpuAccelerationStructureAabbsDesc
 
 struct GpuAccelerationStructureInstanceDesc
 {
-    GpuAccelerationStructure bottomLevelAS = nullptr;
-    float3x4 transform = {};
-    uint32_t instanceID = 0;
-    uint32_t instanceMask = 0xFF;
-    uint32_t hitGroupIndex = 0;
-    bool isOpaque = true;
+    float3x4 transform = {};            
+    uint32_t instanceID : 24;           
+    uint32_t instanceMask : 8;          
+    uint32_t hitGroupIndex : 24; 
+    uint32_t flags : 8;                 
+    void* blasAddress;               
 };
 
 struct GpuAccelerationStructureBlasDesc
@@ -205,8 +207,26 @@ struct GpuAccelerationStructureBlasDesc
 
 struct GpuAccelerationStructureTlasDesc
 {
-    Span<GpuAccelerationStructureInstanceDesc> instances = {};
+    bool arrayOfPointers = false;
+    void* instancesGpu = nullptr;
 };
+
+struct GpuAccelerationStructureBuildRange
+{
+    uint32_t primitiveCount = 0;
+    uint32_t primitiveOffset = 0;
+    uint32_t firstVertex = 0;
+    int32_t transformOffset = 0;
+};
+
+struct GpuAccelerationStructureDesc
+{
+    TYPE type = TYPE_BOTTOM_LEVEL;
+    GpuAccelerationStructureBlasDesc blasDesc = {};
+    GpuAccelerationStructureTlasDesc tlasDesc = {};
+    GpuAccelerationStructureBuildRange* buildRange = nullptr;
+};
+
 #endif // GPU_RAY_TRACING_EXTENSION
 
 #ifdef GPU_EXPOSE_INTERNAL
@@ -295,13 +315,11 @@ void gpuPresent(GpuSwapchain swapchain, GpuSemaphore sema, uint64_t value);
 #endif // GPU_SURFACE_EXTENSION
 
 #ifdef GPU_RAY_TRACING_EXTENSION
-GpuAccelerationStructureSizes gpuAccelerationStructureSizes(GpuAccelerationStructureBlasDesc desc);
-GpuAccelerationStructureSizes gpuAccelerationStructureSizes(GpuAccelerationStructureTlasDesc desc);
-GpuAccelerationStructure gpuCreateAccelerationStructure(GpuAccelerationStructureBlasDesc desc, void* ptrGpu);
-GpuAccelerationStructure gpuCreateAccelerationStructure(GpuAccelerationStructureTlasDesc desc, void* ptrGpu);
-void gpuBuildAccelerationStructure(GpuCommandBuffer cb, GpuAccelerationStructure tlas, Span<GpuAccelerationStructure> instances, void* scratchGpu);
-void gpuUpdateAccelerationStructure(GpuCommandBuffer cb, GpuAccelerationStructure tlas, Span<GpuAccelerationStructure> instances, void* scratchGpu);
+GpuAccelerationStructureSizes gpuAccelerationStructureSizes(GpuAccelerationStructureDesc desc);
+GpuAccelerationStructure gpuCreateAccelerationStructure(GpuAccelerationStructureDesc desc, void* ptrGpu, uint64_t size);
+void gpuBuildAccelerationStructures(GpuCommandBuffer cb, Span<GpuAccelerationStructure> as, void* scratchGpu, MODE mode);
 void gpuDestroyAccelerationStructure(GpuAccelerationStructure as);
+
 #endif // GPU_RAY_TRACING_EXTENSION
 
 #endif // NO_GRAPHICS_API_H

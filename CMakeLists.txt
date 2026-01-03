@@ -17,9 +17,11 @@ add_executable(NoGraphicsAPI
     External/VkBootstrap.cpp
     SDL_gpu.cpp
     NoGraphicsAPI.cpp
+    Utilities.cpp
     Main.cpp
     Samples/Compute/Compute.cpp
     Samples/Graphics/Graphics.cpp
+    Samples/Raytracing/Raytracing.cpp
 )
 
 if(TARGET Vulkan::Vulkan)

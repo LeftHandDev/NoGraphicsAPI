@@ -6,11 +6,13 @@
 
 #include "Samples/Compute/Compute.h"
 #include "Samples/Graphics/Graphics.h"
+#include "Samples/Raytracing/Raytracing.h"
 
 int main()
 {
     // computeSample();
-    graphicsSample();
+    // graphicsSample();
+    raytracingSample();
 
     return 0;
 }
