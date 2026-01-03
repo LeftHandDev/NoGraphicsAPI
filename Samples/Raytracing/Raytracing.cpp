@@ -70,13 +70,22 @@ void raytracingSample()
     auto meshData = allocate<MeshData>(); // only allocates the struct, not the geometry data
     mesh.allocate(meshData.cpu);
     mesh.load(meshData.cpu);
+    meshData.cpu->texture = 0; // matches the index in the texture heap
+
+    // Convert CPU pointers to GPU device addresses for shader access
+    meshData.cpu->indices = static_cast<uint32_t*>(gpuHostToDevicePointer(meshData.cpu->indices));
+    meshData.cpu->vertices = static_cast<float4*>(gpuHostToDevicePointer(meshData.cpu->vertices));
+    meshData.cpu->uvs = static_cast<float2*>(gpuHostToDevicePointer(meshData.cpu->uvs));
+    meshData.cpu->uvIndices = static_cast<uint32_t*>(gpuHostToDevicePointer(meshData.cpu->uvIndices));
+    meshData.cpu->normals = static_cast<float3*>(gpuHostToDevicePointer(meshData.cpu->normals));
+    meshData.cpu->normalIndices = static_cast<uint32_t*>(gpuHostToDevicePointer(meshData.cpu->normalIndices));
 
     GpuAccelerationStructureTrianglesDesc triangleDesc = {
-        .vertexDataGpu = gpuHostToDevicePointer(meshData.cpu->vertices),
+        .vertexDataGpu = meshData.cpu->vertices,
         .vertexCount = static_cast<uint32_t>(mesh.vertices.size()),
         .vertexStride = sizeof(float4),
         .vertexFormat = FORMAT_RGB32_FLOAT, // w component unused
-        .indexDataGpu = gpuHostToDevicePointer(meshData.cpu->indices),
+        .indexDataGpu = meshData.cpu->indices,
         .indexType = INDEX_TYPE_UINT32,
         .transformDataGpu = nullptr // optional
     };

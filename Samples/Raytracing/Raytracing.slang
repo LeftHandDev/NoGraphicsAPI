@@ -31,17 +31,31 @@ void main(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
     RayQuery<RAY_FLAG_NONE> rayQuery;
     rayQuery.TraceRayInline(tlas, RAY_FLAG_NONE, 0xFF, ray);
 
-    float4 color = float4(0.0, 0.0, 0.0, 1.0); // default: miss (black)
+    float4 color = float4(0.0, 0.0, 0.0, 1.0);
 
-    while (rayQuery.Proceed())
-    {
-        // Handle candidate hits if needed (e.g., alpha testing)
-    }
+    // while (rayQuery.Proceed())
+    // {
+    // }
 
     if (rayQuery.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
     {
+        MeshData mesh = data->meshes[rayQuery.CommittedInstanceID()];
         float2 barycentrics = rayQuery.CommittedTriangleBarycentrics();
-        color = float4(barycentrics, 1.0 - barycentrics.x - barycentrics.y, 1.0);
+        uint primitiveIndex = rayQuery.CommittedPrimitiveIndex();
+
+        uint uvIndex0 = mesh.uvIndices[primitiveIndex * 3 + 0];
+        uint uvIndex1 = mesh.uvIndices[primitiveIndex * 3 + 1];
+        uint uvIndex2 = mesh.uvIndices[primitiveIndex * 3 + 2];
+
+        float2 uv0 = mesh.uvs[uvIndex0];
+        float2 uv1 = mesh.uvs[uvIndex1];
+        float2 uv2 = mesh.uvs[uvIndex2];
+
+        float2 hitUV = uv0 * (1.0 - barycentrics.x - barycentrics.y) + uv1 * barycentrics.x + uv2 * barycentrics.y;
+
+        Texture2D<float4> tex = textureHeap[NonUniformResourceIndex(mesh.texture)];
+        SamplerState sampler = samplerHeap[0];
+        color = tex.SampleLevel(sampler, hitUV, 0);
     }
 
     outputTexture[threadId.xy] = color;

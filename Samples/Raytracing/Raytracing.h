@@ -13,6 +13,7 @@ struct alignas(16) MeshData
     uint32_t* uvIndices;
     float3* normals;
     uint32_t* normalIndices;
+    uint texture;
 };
 
 struct alignas(16) RaytracingData
