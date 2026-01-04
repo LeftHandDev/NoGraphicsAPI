@@ -21,7 +21,7 @@ void raytracingSample()
 
     int width, height, channels;
     stbi_set_flip_vertically_on_load(1);
-    stbi_uc* inputImage = stbi_load("../../../Assets/Dice.png", &width, &height, &channels, 4);
+    stbi_uc* inputImage = stbi_load("../../../Assets/NoGraphicsAPI.png", &width, &height, &channels, 4);
 
     auto upload = allocate<uint8_t>(width * height * 4);
     memcpy(upload.cpu, inputImage, width * height * 4);
@@ -66,19 +66,15 @@ void raytracingSample()
     auto computeIR = loadIR("../../../Samples/Raytracing/Raytracing.spv");
     auto pipeline = gpuCreateComputePipeline(ByteSpan(computeIR.data(), computeIR.size()));
 
-    auto mesh = createMesh("../../../Assets/Cube.obj");
+    auto mesh = createMesh("../../../Assets/Torus.obj");
     auto meshData = allocate<MeshData>(); // only allocates the struct, not the geometry data
-    mesh.allocate(meshData.cpu);
     mesh.load(meshData.cpu);
     meshData.cpu->texture = 0; // matches the index in the texture heap
 
-    // Convert CPU pointers to GPU device addresses for shader access
-    meshData.cpu->indices = static_cast<uint32_t*>(gpuHostToDevicePointer(meshData.cpu->indices));
-    meshData.cpu->vertices = static_cast<float4*>(gpuHostToDevicePointer(meshData.cpu->vertices));
-    meshData.cpu->uvs = static_cast<float2*>(gpuHostToDevicePointer(meshData.cpu->uvs));
-    meshData.cpu->uvIndices = static_cast<uint32_t*>(gpuHostToDevicePointer(meshData.cpu->uvIndices));
-    meshData.cpu->normals = static_cast<float3*>(gpuHostToDevicePointer(meshData.cpu->normals));
-    meshData.cpu->normalIndices = static_cast<uint32_t*>(gpuHostToDevicePointer(meshData.cpu->normalIndices));
+    auto model = allocate<float4x4>();
+    float rotation = 0.0f;
+    auto rot = glm::rotate(glm::mat4(1.0f), rotation, glm::vec3(1.0f, 1.0f, 0.0f));
+    memcpy(model.cpu, &rot, sizeof(float4x4));
 
     GpuAccelerationStructureTrianglesDesc triangleDesc = {
         .vertexDataGpu = meshData.cpu->vertices,
@@ -117,7 +113,7 @@ void raytracingSample()
     instance->instanceID = 0;
     instance->instanceMask = 0xFF;
     instance->hitGroupIndex = 0;
-    instance->flags = 0; // Or VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR etc.
+    instance->flags = 0; 
     instance->blasAddress = blasPtr;
     
     GpuAccelerationStructureDesc tlasDesc = {
@@ -148,12 +144,19 @@ void raytracingSample()
 
     auto viewProjection = projection * view;
 
+    auto lights = allocate<LightData>(1);
+    lights.cpu[0].position = float4{ 0.0f, 5.0f, 0.0f, 1.0f };
+    lights.cpu[0].color = float4{ 1.0f, 1.0f, 1.0f, 1.0f };
+    lights.cpu[0].intensity = 10.0f;
+
     auto raytracingData = allocate<RaytracingData>();
     memcpy(&raytracingData.cpu->cameraPosition, &camera, sizeof(float4));
     memcpy(&raytracingData.cpu->invViewProjection, &invViewProjection, sizeof(float4x4));
     raytracingData.cpu->meshes = meshData.gpu;
     raytracingData.cpu->tlas = tlasPtr;
     raytracingData.cpu->dstTexture = 1;
+    raytracingData.cpu->lights = lights.gpu;
+    raytracingData.cpu->numLights = 1;
 
     auto queue = gpuCreateQueue();
     auto semaphore = gpuCreateSemaphore(0);
@@ -185,6 +188,13 @@ void raytracingSample()
             gpuBuildAccelerationStructures(commandBuffer, Span<GpuAccelerationStructure>(&tlas, 1), scratchPtr, MODE_BUILD);
             gpuBarrier(commandBuffer, STAGE_ACCELERATION_STRUCTURE_BUILD, STAGE_COMPUTE, HAZARD_ACCELERATION_STRUCTURE);
         }
+        else
+        {
+            // gpuBuildAccelerationStructures(commandBuffer, Span<GpuAccelerationStructure>(&blas, 1), scratchPtr, MODE_UPDATE);
+            // gpuBarrier(commandBuffer, STAGE_ACCELERATION_STRUCTURE_BUILD, STAGE_ACCELERATION_STRUCTURE_BUILD, HAZARD_ACCELERATION_STRUCTURE);
+            gpuBuildAccelerationStructures(commandBuffer, Span<GpuAccelerationStructure>(&tlas, 1), scratchPtr, MODE_UPDATE);
+            gpuBarrier(commandBuffer, STAGE_ACCELERATION_STRUCTURE_BUILD, STAGE_COMPUTE, HAZARD_ACCELERATION_STRUCTURE);
+        }
 
         if (nextFrame > FRAMES_IN_FLIGHT)
         {
@@ -209,6 +219,10 @@ void raytracingSample()
 
         gpuSubmit(queue, Span<GpuCommandBuffer>(&commandBuffer, 1), semaphore, nextFrame);
         gpuPresent(swapchain, semaphore, nextFrame++);
+
+        rotation += 0.0005f;
+        auto rot = glm::rotate(glm::mat4(1.0f), rotation, glm::vec3(1.0f, 1.0f, 0.0f));
+        memcpy(&instance->transform, &rot, sizeof(float3x4));
     }
     
     gpuDestroySemaphore(semaphore);

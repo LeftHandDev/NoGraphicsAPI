@@ -1932,7 +1932,7 @@ VkAccelerationStructureBuildGeometryInfoKHR gpuBuildInfoToVkBuildInfo(GpuAcceler
 {
     VkAccelerationStructureBuildGeometryInfoKHR buildInfo = {};
     buildInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
-    buildInfo.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    buildInfo.flags = VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
     buildInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
 
     outGeometries.clear();

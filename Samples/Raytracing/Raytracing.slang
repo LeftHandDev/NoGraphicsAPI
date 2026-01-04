@@ -33,9 +33,10 @@ void main(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
 
     float4 color = float4(0.0, 0.0, 0.0, 1.0);
 
-    // while (rayQuery.Proceed())
-    // {
-    // }
+    while (rayQuery.Proceed())
+    {
+        // Handle candidate hits if needed (e.g., alpha testing)
+    }
 
     if (rayQuery.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
     {
@@ -56,6 +57,27 @@ void main(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
         Texture2D<float4> tex = textureHeap[NonUniformResourceIndex(mesh.texture)];
         SamplerState sampler = samplerHeap[0];
         color = tex.SampleLevel(sampler, hitUV, 0);
+
+        for (uint i = 0; i < data->numLights; i++)
+        {
+            LightData light = data->lights[i];
+            float3 hitT = rayQuery.WorldRayDirection() * rayQuery.CommittedRayT() + rayQuery.WorldRayOrigin();
+            float3 lightDir = normalize(light.position.xyz - hitT);
+
+            uint normalIndex0 = mesh.normalIndices[primitiveIndex * 3 + 0];
+            uint normalIndex1 = mesh.normalIndices[primitiveIndex * 3 + 1];
+            uint normalIndex2 = mesh.normalIndices[primitiveIndex * 3 + 2];
+
+            float3 normal0 = mesh.normals[normalIndex0];
+            float3 normal1 = mesh.normals[normalIndex1];
+            float3 normal2 = mesh.normals[normalIndex2];
+
+            float3 normal = normalize(normal0 * (1.0 - barycentrics.x - barycentrics.y) + normal1 * barycentrics.x + normal2 * barycentrics.y);
+            normal = normalize(mul(rayQuery.CommittedWorldToObject4x3(), normal)).xyz;
+
+            float NdotL = max(dot(normal, lightDir), 0.0);
+            color.xyz += (color.xyz * light.color.xyz * light.intensity * NdotL) / pow(distance(light.position.xyz, hitT), 2.0);
+        }
     }
 
     outputTexture[threadId.xy] = color;

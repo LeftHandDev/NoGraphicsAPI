@@ -16,12 +16,21 @@ struct alignas(16) MeshData
     uint texture;
 };
 
+struct alignas(16) LightData
+{
+    float4 position;
+    float4 color;
+    float intensity;
+};
+
 struct alignas(16) RaytracingData
 {
     float4x4 invViewProjection;
     float4 cameraPosition;
-    MeshData* meshes;
     AccelerationStructure tlas;
+    MeshData* meshes;
+    LightData* lights;
+    uint numLights;
     uint dstTexture;
 };
 

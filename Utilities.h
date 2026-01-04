@@ -42,36 +42,39 @@ T* gpuMalloc(int count = 1)
 
 struct Mesh
 {
-    // Unique attribute data
     std::vector<float4> vertices;
     std::vector<float2> uvs;
     std::vector<float3> normals;
 
-    // Per-triangle-corner indices (3 per triangle)
-    // All index arrays are aligned - use primitiveIndex * 3 + corner
-    std::vector<uint32_t> indices;       // into vertices (use for acceleration structure)
-    std::vector<uint32_t> uvIndices;     // into uvs
-    std::vector<uint32_t> normalIndices; // into normals
-
-    void allocate(MeshData* meshData) const
+    std::vector<uint32_t> indices;
+    std::vector<uint32_t> uvIndices;     
+    std::vector<uint32_t> normalIndices; 
+    
+    void load(MeshData* meshData) const
     {
         meshData->indices = gpuMalloc<uint32_t>(static_cast<int>(indices.size()));
-        meshData->vertices = gpuMalloc<float4>(static_cast<int>(vertices.size()));
-        meshData->uvs = gpuMalloc<float2>(static_cast<int>(uvs.size()));
-        meshData->uvIndices = gpuMalloc<uint32_t>(static_cast<int>(uvIndices.size()));
-        meshData->normals = gpuMalloc<float3>(static_cast<int>(normals.size()));
-        meshData->normalIndices = gpuMalloc<uint32_t>(static_cast<int>(normalIndices.size()));
-    }
-    
-    // Full load for mesh/raytracing shaders
-    void load(const MeshData* meshData) const
-    {
         memcpy(meshData->indices, indices.data(), indices.size() * sizeof(uint32_t));
+        meshData->indices = static_cast<uint32_t*>(gpuHostToDevicePointer(meshData->indices));
+
+        meshData->vertices = gpuMalloc<float4>(static_cast<int>(vertices.size()));
         memcpy(meshData->vertices, vertices.data(), vertices.size() * sizeof(float4));
+        meshData->vertices = static_cast<float4*>(gpuHostToDevicePointer(meshData->vertices));
+
+        meshData->uvs = gpuMalloc<float2>(static_cast<int>(uvs.size()));
         memcpy(meshData->uvs, uvs.data(), uvs.size() * sizeof(float2));
+        meshData->uvs = static_cast<float2*>(gpuHostToDevicePointer(meshData->uvs));
+
+        meshData->uvIndices = gpuMalloc<uint32_t>(static_cast<int>(uvIndices.size()));
         memcpy(meshData->uvIndices, uvIndices.data(), uvIndices.size() * sizeof(uint32_t));
+        meshData->uvIndices = static_cast<uint32_t*>(gpuHostToDevicePointer(meshData->uvIndices));
+
+        meshData->normals = gpuMalloc<float3>(static_cast<int>(normals.size()));
         memcpy(meshData->normals, normals.data(), normals.size() * sizeof(float3));
+        meshData->normals = static_cast<float3*>(gpuHostToDevicePointer(meshData->normals));
+
+        meshData->normalIndices = gpuMalloc<uint32_t>(static_cast<int>(normalIndices.size()));
         memcpy(meshData->normalIndices, normalIndices.data(), normalIndices.size() * sizeof(uint32_t));
+        meshData->normalIndices = static_cast<uint32_t*>(gpuHostToDevicePointer(meshData->normalIndices));
     }
 };
 
