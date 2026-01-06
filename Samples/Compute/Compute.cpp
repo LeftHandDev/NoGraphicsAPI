@@ -5,6 +5,7 @@
 
 void computeSample()
 {
+    gpuCreateDevice();
     auto queue = gpuCreateQueue();
     auto semaphore = gpuCreateSemaphore(0);
 
@@ -88,4 +89,5 @@ void computeSample()
     gpuFree(readback);
     upload.free();
     data.free();
+    gpuDestroyDevice();
 }

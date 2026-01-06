@@ -1,7 +1,7 @@
 #include "Compute.h"
 
 [numthreads(16, 16, 1)]
-void main(uint3 threadId: SV_DispatchThreadID, Ptr<ComputeData, Access.Read> data)
+void main(uint3 threadId: SV_DispatchThreadID, ComputeData* data)
 {
     int2 imgSize = int2(data->imageSize.x, data->imageSize.y);
     int2 pixelCoord = int2(threadId.x, threadId.y);
