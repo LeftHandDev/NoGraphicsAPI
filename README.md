@@ -20,8 +20,6 @@ struct alignas(16) Data
 ```
 ### Compute Shader (slang)
 ```c++
-#include "Common.h"
-
 [numthreads(16, 1, 1)]
 void main(uint3 threadId: SV_DispatchThreadID, Data* data)
 {
@@ -123,7 +121,7 @@ int main()
 }
 ```
 ## Vertex + Pixel Shaders
-Both structs for the vertex and pixel shader must be referenced in the function definitions.
+Unfortunately, both structs for the vertex and pixel shader must be referenced in the function definitions.
 ### Common Header
 ```cpp
 #include "../../Shaders/NoGraphicsAPI.h" // Must be included
@@ -134,7 +132,7 @@ struct alignas(16) VertexData
 
 struct alignas(16) PixelData
 {
-}
+};
 ```
 ### Vertex Shader
 ```cpp
@@ -142,7 +140,7 @@ struct VertexOut
 {
 };
 
-VertexOut main(uint vertexId: SV_VertexID, VertexData *data, PixelData *_)
+VertexOut main(uint vertexId: SV_VertexID, VertexData *data, PixelData *notUsed)
 {
 }
 ```
@@ -156,7 +154,7 @@ struct PixelOut
 {
 };
 
-PixelOut main(PixelIn pixel, VertexData* _, PixelData* data)
+PixelOut main(PixelIn pixel, VertexData* notUsed, PixelData* data)
 {
 }
 ```
