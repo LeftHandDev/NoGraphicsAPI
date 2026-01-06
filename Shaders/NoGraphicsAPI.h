@@ -1,5 +1,5 @@
-#ifndef NO_GRAPHICS_API_COMMON_H
-#define NO_GRAPHICS_API_COMMON_H
+#ifndef SHADERS_NO_GRAPHICS_API_H
+#define SHADERS_NO_GRAPHICS_API_H
 
 #ifdef __cplusplus
 

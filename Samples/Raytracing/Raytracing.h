@@ -1,7 +1,7 @@
-#ifndef SHADERS_RAYTRACING_H
-#define SHADERS_RAYTRACING_H
-
-#include "../../Shaders/common.h"
+#ifndef SAMPLES_SHADER_RAYTRACING_H
+#define SAMPLES_SHADER_RAYTRACING_H
+    
+#include "../../Shaders/NoGraphicsAPI.h"
 
 void raytracingSample();
 

@@ -1,7 +1,7 @@
-#ifndef SHADERS_COMPUTE_H
-#define SHADERS_COMPUTE_H
+#ifndef SAMPLES_SHADER_COMPUTE_H
+#define SAMPLES_SHADER_COMPUTE_H
 
-#include "../../Shaders/Common.h"
+#include "../../Shaders/NoGraphicsAPI.h"
 
 void computeSample();
 
@@ -12,4 +12,4 @@ struct alignas(16) ComputeData
     uint dstTexture;
 };
 
-#endif // SHADERS_COMPUTE_H
+#endif // SAMPLES_SHADER_COMPUTE_H
