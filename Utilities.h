@@ -35,9 +35,9 @@ Allocation<T> allocate(int count = 1)
 };
 
 template<typename T>
-T* gpuMalloc(int count = 1)
+T* gpuMalloc(int count = 1, MEMORY type = MEMORY_DEFAULT)
 {
-    return static_cast<T*>(::gpuMalloc(sizeof(T) * count));
+    return static_cast<T*>(::gpuMalloc(sizeof(T) * count, type));
 }
 
 struct Mesh
