@@ -76,6 +76,91 @@ gpuDestroySemaphore(semaphore);
 gpuDestroyDevice();
 ```
 
+## Windowed Usage
+
+```c++
+#include <SDL3/SDL.h>
+#include "../../SDL_gpu.h"
+
+#define FRAMES_IN_FLIGHT 2
+
+int main()
+{
+    if (gpuCreateDevice() != RESULT_OK)
+        return -1;
+
+    auto window = SDL_CreateWindow("Example", 1920, 1080, SDL_WINDOW_GPU);
+    auto surface = SDL_Gpu_CreateSurface(window);
+    auto swapchain = gpuCreateSwapchain(surface, FRAMES_IN_FLIGHT);
+
+    // Queue, semaphore creation...
+
+    uint64_t nextFrame = 1;
+
+    bool exit = false;
+    while (!exit)
+    {
+        // SDL poll events...
+
+        if (nextFrame > FRAMES_IN_FLIGHT)
+            gpuWaitSemaphore(semaphore, nextFrame - FRAMES_IN_FLIGHT);
+
+        auto commandBuffer = gpuStartCommandRecording(queue);
+        auto image = gpuSwapchainImage(swapchain);
+
+        // Render/copy to swapchain image...
+
+        gpuSubmit(queue, Span<GpuCommandBuffer>(&commandBuffer, 1), semaphore, nextFrame);
+        gpuPresent(swapchain, semaphore, nextFrame++);
+    }
+
+    // Cleanup
+    // Semaphore, other objects...
+    gpuDestroySwapchain(swapchain);
+    SDL_Gpu_DestroySurface(surface);
+    SDL_DestroyWindow(window);
+    gpuDestroyDevice();
+}
+```
+## Vertex + Pixel Shaders
+Both structs for the vertex and pixel shader must be referenced in the function definitions.
+### Common Header
+```cpp
+#include "../../Shaders/NoGraphicsAPI.h" // Must be included
+
+struct alignas(16) VertexData
+{
+};
+
+struct alignas(16) PixelData
+{
+}
+```
+### Vertex Shader
+```cpp
+struct VertexOut
+{
+};
+
+VertexOut main(uint vertexId: SV_VertexID, VertexData *data, PixelData *_)
+{
+}
+```
+### Pixel Shader
+```cpp
+struct PixelIn
+{
+};
+
+struct PixelOut
+{
+};
+
+PixelOut main(PixelIn pixel, VertexData* _, PixelData* data)
+{
+}
+```
+
 ## Dependencies
 - VkBootstrap
 - glm
