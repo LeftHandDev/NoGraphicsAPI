@@ -1,6 +1,6 @@
 # No Graphics API
 
-A Vulkan+slang implementation of the simplified graphics API from Sebastian Aaltonen's blog post: [No Graphics API](https://www.sebastianaaltonen.com/blog/no-graphics-api).
+A Vulkan + slang implementation of the simplified graphics API from Sebastian Aaltonen's blog post: [No Graphics API](https://www.sebastianaaltonen.com/blog/no-graphics-api).
 
 ## Instructions
 Update VulkanSDK to 1.4.335 (install glm and SDL with the SDK)
@@ -18,7 +18,7 @@ struct alignas(16) Data
     float* output;
 };
 ```
-### Compute Shader (slang)
+### slang Compute Shader
 ```c++
 [numthreads(16, 1, 1)]
 void main(uint3 threadId: SV_DispatchThreadID, Data* data)
@@ -74,7 +74,7 @@ gpuDestroySemaphore(semaphore);
 gpuDestroyDevice();
 ```
 
-## Windowed Usage
+## Window Usage
 
 ```c++
 #include <SDL3/SDL.h>
