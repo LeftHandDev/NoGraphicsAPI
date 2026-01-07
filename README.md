@@ -5,7 +5,7 @@ A Vulkan + slang implementation of the simplified graphics API from Sebastian Aa
 ## Instructions
 Update VulkanSDK to 1.4.335 (install glm and SDL with the SDK)
 
-## Simple Usage (No Surfaces)
+## Windowless Usage
 ### Common header
 ```c++
 #include "../../Shaders/NoGraphicsAPI.h" // Must be included
