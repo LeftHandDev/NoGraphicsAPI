@@ -71,6 +71,10 @@ void raytracingSample()
     mesh.load(meshData.cpu);
     meshData.cpu->texture = 0; // matches the index in the texture heap
 
+    auto instancesToMesh = allocate<uint32_t>(2);
+    instancesToMesh.cpu[0] = 0;
+    instancesToMesh.cpu[1] = 0;
+
     auto model = allocate<float4x4>();
     float rotation = 0.0f;
     auto rot = glm::rotate(glm::mat4(1.0f), rotation, glm::vec3(1.0f, 1.0f, 0.0f));
@@ -104,26 +108,37 @@ void raytracingSample()
     void* blasPtr = gpuMalloc(blasSize.size, MEMORY_GPU);
     auto blas = gpuCreateAccelerationStructure(blasDesc, blasPtr, blasSize.size);
 
-    auto instance = gpuMalloc<GpuAccelerationStructureInstanceDesc>();
-    instance->transform = float3x4{
+    auto instances = gpuMalloc<GpuAccelerationStructureInstanceDesc>(2);
+    instances[0].transform = float3x4{
         {1,0,0,0},
         {0,1,0,0},
         {0,0,1,0}
     };
-    instance->instanceID = 0;
-    instance->instanceMask = 0xFF;
-    instance->hitGroupIndex = 0;
-    instance->flags = 0; 
-    instance->blasAddress = blasPtr;
+    instances[0].instanceID = 0;
+    instances[0].instanceMask = 0xFF;
+    instances[0].hitGroupIndex = 0;
+    instances[0].flags = 0; 
+    instances[0].blasAddress = blasPtr;
+
+    instances[1].transform = float3x4{
+        {1,0,0,0},
+        {0,1,0,-2},
+        {0,0,1,0}
+    };
+    instances[1].instanceID = 1;
+    instances[1].instanceMask = 0xFF;
+    instances[1].hitGroupIndex = 0;
+    instances[1].flags = 0;
+    instances[1].blasAddress = blasPtr;
     
     GpuAccelerationStructureDesc tlasDesc = {
         .type = TYPE_TOP_LEVEL,
         .tlasDesc = {
             .arrayOfPointers = false,
-            .instancesGpu = gpuHostToDevicePointer(instance)
+            .instancesGpu = gpuHostToDevicePointer(instances)
         },
         .buildRange = new GpuAccelerationStructureBuildRange{
-            .primitiveCount = 1,
+            .primitiveCount = 2,
             .primitiveOffset = 0,
             .firstVertex = 0,
             .transformOffset = 0
@@ -137,26 +152,35 @@ void raytracingSample()
     auto scratchSize = std::max(blasSize.buildScratchSize, tlasSize.buildScratchSize);
     void* scratchPtr = gpuMalloc(scratchSize, MEMORY_GPU);
 
-    auto camera = glm::vec4{ 0.0f, 3.0f, 5.0f, 1.f };
+    auto camera = glm::vec4{ 0.0f, 2.0f, 7.0f, 1.f };
     auto projection = glm::perspective(glm::radians(45.0f), 1920.0f / 1080.0f, 0.1f, 100.0f);
     auto view = glm::lookAt(glm::vec3(camera), glm::vec3{ 0.0f, 0.0f, 0.0f }, glm::vec3{ 0.0f, -1.0f, 0.0f });
     auto invViewProjection = glm::inverse(projection * view);
 
     auto viewProjection = projection * view;
 
-    auto lights = allocate<LightData>(1);
+    auto lights = allocate<LightData>(3);
     lights.cpu[0].position = float4{ 0.0f, 5.0f, 0.0f, 1.0f };
-    lights.cpu[0].color = float4{ 1.0f, 1.0f, 1.0f, 1.0f };
-    lights.cpu[0].intensity = 10.0f;
+    lights.cpu[0].color = float4{ 1.0f, 0.25f, 0.25f, 0.0f };
+    lights.cpu[0].intensity = 100.0f;
+
+    lights.cpu[1].position = float4{ 5.0f, 5.0f, 0.0f, 1.0f };
+    lights.cpu[1].color = float4{ 0.25f, 1.0f, 0.25f, 1.0f };
+    lights.cpu[1].intensity = 100.0f;
+
+    lights.cpu[2].position = float4{ -5.0f, 5.0f, 0.0f, 1.0f };
+    lights.cpu[2].color = float4{ 0.25f, 0.25f, 1.0f, 1.0f };
+    lights.cpu[2].intensity = 100.0f;
 
     auto raytracingData = allocate<RaytracingData>();
     memcpy(&raytracingData.cpu->cameraPosition, &camera, sizeof(float4));
     memcpy(&raytracingData.cpu->invViewProjection, &invViewProjection, sizeof(float4x4));
     raytracingData.cpu->meshes = meshData.gpu;
     raytracingData.cpu->tlas = tlasPtr;
+    raytracingData.cpu->instanceToMesh = instancesToMesh.gpu;
     raytracingData.cpu->dstTexture = 1;
     raytracingData.cpu->lights = lights.gpu;
-    raytracingData.cpu->numLights = 1;
+    raytracingData.cpu->numLights = 3;
 
     auto queue = gpuCreateQueue();
     auto semaphore = gpuCreateSemaphore(0);
@@ -222,7 +246,7 @@ void raytracingSample()
 
         rotation += 0.0005f;
         auto rot = glm::rotate(glm::mat4(1.0f), rotation, glm::vec3(1.0f, 1.0f, 0.0f));
-        memcpy(&instance->transform, &rot, sizeof(float3x4));
+        memcpy(&instances[0].transform, &rot, sizeof(float3x4));
     }
     
     gpuDestroySemaphore(semaphore);

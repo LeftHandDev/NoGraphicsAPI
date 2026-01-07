@@ -14,6 +14,7 @@ struct alignas(16) MeshData
     float3* normals;
     uint32_t* normalIndices;
     uint texture;
+    uint padding;
 };
 
 struct alignas(16) LightData
@@ -21,6 +22,7 @@ struct alignas(16) LightData
     float4 position;
     float4 color;
     float intensity;
+    float3 padding;
 };
 
 struct alignas(16) RaytracingData
@@ -28,6 +30,7 @@ struct alignas(16) RaytracingData
     float4x4 invViewProjection;
     float4 cameraPosition;
     AccelerationStructure tlas;
+    uint32_t* instanceToMesh;
     MeshData* meshes;
     LightData* lights;
     uint numLights;

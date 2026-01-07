@@ -1,5 +1,31 @@
 #include "Raytracing.h"
 
+// Visibility function
+float V(RaytracingAccelerationStructure tlas, LightData light, float3 x0, float3 x1)
+{
+    RayQuery<RAY_FLAG_NONE> shadowRay;
+    RayDesc ray;
+    ray.Origin = x0;
+    ray.Direction = normalize(x1 - x0);
+    ray.TMin = 0.001;
+    ray.TMax = length(x1 - x0);
+    shadowRay.TraceRayInline(tlas, RAY_FLAG_NONE, 0xFF, ray);
+
+    while (shadowRay.Proceed())
+    {
+        // Handle candidate hits if needed (e.g., alpha testing)
+    }
+
+    if (shadowRay.CommittedStatus() == COMMITTED_NOTHING)
+    {
+        return 1.0;
+    }
+    else
+    {
+        return 0.0;
+    }
+}
+
 [numthreads(8, 8, 1)]
 void main(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
 {
@@ -40,7 +66,8 @@ void main(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
 
     if (rayQuery.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
     {
-        MeshData mesh = data->meshes[rayQuery.CommittedInstanceID()];
+        uint32_t meshId = data->instanceToMesh[rayQuery.CommittedInstanceID()];
+        MeshData mesh = data->meshes[meshId];
         float2 barycentrics = rayQuery.CommittedTriangleBarycentrics();
         uint primitiveIndex = rayQuery.CommittedPrimitiveIndex();
 
@@ -56,7 +83,7 @@ void main(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
 
         Texture2D<float4> tex = textureHeap[NonUniformResourceIndex(mesh.texture)];
         SamplerState sampler = samplerHeap[0];
-        color = tex.SampleLevel(sampler, hitUV, 0);
+        float4 albedo = tex.SampleLevel(sampler, hitUV, 0);
 
         for (uint i = 0; i < data->numLights; i++)
         {
@@ -76,8 +103,11 @@ void main(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
             normal = normalize(mul(rayQuery.CommittedWorldToObject4x3(), normal)).xyz;
 
             float NdotL = max(dot(normal, lightDir), 0.0);
-            color.xyz += (color.xyz * light.color.xyz * light.intensity * NdotL) / pow(distance(light.position.xyz, hitT), 2.0);
+            float3 Li = (albedo.xyz * light.color.xyz * light.intensity * NdotL) / pow(distance(light.position.xyz, hitT), 2.0);
+            color.xyz += Li * V(tlas, light, hitT + normal * 0.001, light.position.xyz);
         }
+
+        color.xyz /= float(data->numLights);
     }
 
     outputTexture[threadId.xy] = color;
