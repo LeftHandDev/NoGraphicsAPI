@@ -1,14 +1,14 @@
 #include "Raytracing.h"
 
 // Visibility function
-float V(RaytracingAccelerationStructure tlas, LightData light, float3 x0, float3 x1)
+float V(RaytracingAccelerationStructure tlas, LightData light, float3 x1, float3 x2)
 {
     RayQuery<RAY_FLAG_NONE> shadowRay;
     RayDesc ray;
-    ray.Origin = x0;
-    ray.Direction = normalize(x1 - x0);
+    ray.Origin = x1;
+    ray.Direction = normalize(x2 - x1);
     ray.TMin = 0.001;
-    ray.TMax = length(x1 - x0);
+    ray.TMax = length(x2 - x1);
     shadowRay.TraceRayInline(tlas, RAY_FLAG_NONE, 0xFF, ray);
 
     while (shadowRay.Proceed())
@@ -85,19 +85,19 @@ void main(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
         SamplerState sampler = samplerHeap[0];
         float4 albedo = tex.SampleLevel(sampler, hitUV, 0);
 
+        uint normalIndex0 = mesh.normalIndices[primitiveIndex * 3 + 0];
+        uint normalIndex1 = mesh.normalIndices[primitiveIndex * 3 + 1];
+        uint normalIndex2 = mesh.normalIndices[primitiveIndex * 3 + 2];
+
+        float3 normal0 = mesh.normals[normalIndex0];
+        float3 normal1 = mesh.normals[normalIndex1];
+        float3 normal2 = mesh.normals[normalIndex2];
+
         for (uint i = 0; i < data->numLights; i++)
         {
             LightData light = data->lights[i];
             float3 hitT = rayQuery.WorldRayDirection() * rayQuery.CommittedRayT() + rayQuery.WorldRayOrigin();
             float3 lightDir = normalize(light.position.xyz - hitT);
-
-            uint normalIndex0 = mesh.normalIndices[primitiveIndex * 3 + 0];
-            uint normalIndex1 = mesh.normalIndices[primitiveIndex * 3 + 1];
-            uint normalIndex2 = mesh.normalIndices[primitiveIndex * 3 + 2];
-
-            float3 normal0 = mesh.normals[normalIndex0];
-            float3 normal1 = mesh.normals[normalIndex1];
-            float3 normal2 = mesh.normals[normalIndex2];
 
             float3 normal = normalize(normal0 * (1.0 - barycentrics.x - barycentrics.y) + normal1 * barycentrics.x + normal2 * barycentrics.y);
             normal = normalize(mul(rayQuery.CommittedWorldToObject4x3(), normal)).xyz;
