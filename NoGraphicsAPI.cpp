@@ -18,13 +18,13 @@ struct GpuTexture_T
     VkImage image = VK_NULL_HANDLE; 
     VkImageView view = VK_NULL_HANDLE;
 };
-struct GpuDepthStencilState_T {  };
-struct GpuBlendState_T { };
+struct GpuDepthStencilState_T { GpuDepthStencilDesc desc; };
+struct GpuBlendState_T { GpuBlendDesc desc; };
 struct GpuQueue_T { VkQueue queue; };
 struct GpuCommandBuffer_T { VkCommandBuffer commandBuffer; };
 struct GpuSemaphore_T { VkSemaphore semaphore; };
 #ifdef GPU_SURFACE_EXTENSION
-struct GpuSurface_T { VkSurfaceKHR surface = VK_NULL_HANDLE; };
+struct GpuSurface_T { VkSurfaceKHR surface = VK_NULL_HANDLE; std::vector<FORMAT> formats; };
 struct GpuSwapchain_T 
 { 
     VkSwapchainKHR swapchain = VK_NULL_HANDLE; 
@@ -67,6 +67,9 @@ FORMAT gpuVkFormatToGpuFormat(VkFormat format)
     case VK_FORMAT_D32_SFLOAT: return FORMAT_D32_FLOAT;
     case VK_FORMAT_B10G11R11_UFLOAT_PACK32: return FORMAT_RG11B10_FLOAT;
     case VK_FORMAT_A2B10G10R10_UNORM_PACK32: return FORMAT_RGB10_A2_UNORM;
+    case VK_FORMAT_R32G32_SFLOAT: return FORMAT_RG32_FLOAT;
+    case VK_FORMAT_R32G32B32_SFLOAT: return FORMAT_RGB32_FLOAT;
+    case VK_FORMAT_R32G32B32A32_SFLOAT: return FORMAT_RGBA32_FLOAT;
     default: return FORMAT_NONE;
     }
 }
@@ -80,7 +83,9 @@ VkFormat gpuFormatToVkFormat(FORMAT format)
     case FORMAT_D32_FLOAT: return VK_FORMAT_D32_SFLOAT;
     case FORMAT_RG11B10_FLOAT: return VK_FORMAT_B10G11R11_UFLOAT_PACK32;
     case FORMAT_RGB10_A2_UNORM: return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+    case FORMAT_RG32_FLOAT: return VK_FORMAT_R32G32_SFLOAT;
     case FORMAT_RGB32_FLOAT: return VK_FORMAT_R32G32B32_SFLOAT;
+    case FORMAT_RGBA32_FLOAT: return VK_FORMAT_R32G32B32A32_SFLOAT;
     default: return VK_FORMAT_UNDEFINED;
     }
 }
@@ -135,8 +140,64 @@ VkImageUsageFlagBits gpuGpuUsageToVkUsage(USAGE_FLAGS usage)
     {
         result = static_cast<uint32_t>(VK_IMAGE_USAGE_TRANSFER_DST_BIT) | result;
     }
+    if (usage & USAGE_TRANSFER_SRC)
+    {
+        result = static_cast<uint32_t>(VK_IMAGE_USAGE_TRANSFER_SRC_BIT) | result;
+    }
 
     return static_cast<VkImageUsageFlagBits>(result);
+}
+
+VkBlendOp gpuBlendOpToVkBlendOp(BLEND blend)
+{
+    switch (blend)
+    {
+    case BLEND_ADD: return VK_BLEND_OP_ADD;
+    case BLEND_SUBTRACT: return VK_BLEND_OP_SUBTRACT;
+    case BLEND_REV_SUBTRACT: return VK_BLEND_OP_REVERSE_SUBTRACT;
+    case BLEND_MIN: return VK_BLEND_OP_MIN;
+    case BLEND_MAX: return VK_BLEND_OP_MAX;
+    default: return VK_BLEND_OP_ADD;
+    }
+}
+
+VkBlendFactor gpuFactorToVkFactor(FACTOR factor)
+{
+    switch (factor)
+    {
+    case FACTOR_ZERO: return VK_BLEND_FACTOR_ZERO;
+    case FACTOR_ONE: return VK_BLEND_FACTOR_ONE;
+    case FACTOR_SRC_COLOR: return VK_BLEND_FACTOR_SRC_COLOR;
+    case FACTOR_DST_COLOR: return VK_BLEND_FACTOR_DST_COLOR;
+    case FACTOR_SRC_ALPHA: return VK_BLEND_FACTOR_SRC_ALPHA;
+    default: return VK_BLEND_FACTOR_ONE;
+    }
+}
+
+VkCompareOp gpuOpToVkCompareOp(OP op)
+{
+    switch (op)
+    {
+    case OP_NEVER: return VK_COMPARE_OP_NEVER;
+    case OP_LESS: return VK_COMPARE_OP_LESS;
+    case OP_EQUAL: return VK_COMPARE_OP_EQUAL;
+    case OP_LESS_EQUAL: return VK_COMPARE_OP_LESS_OR_EQUAL;
+    case OP_GREATER: return VK_COMPARE_OP_GREATER;
+    case OP_NOT_EQUAL: return VK_COMPARE_OP_NOT_EQUAL;
+    case OP_GREATER_EQUAL: return VK_COMPARE_OP_GREATER_OR_EQUAL;
+    case OP_ALWAYS: return VK_COMPARE_OP_ALWAYS;
+    default: return VK_COMPARE_OP_ALWAYS;
+    }
+}
+
+VkStencilOp gpuOpToVkStencilOp(OP op)
+{
+    switch (op)
+    {
+    case OP_KEEP: return VK_STENCIL_OP_KEEP;
+    case OP_ZERO: return VK_STENCIL_OP_ZERO;
+    default: return VK_STENCIL_OP_KEEP;
+    }
 }
 
 struct Allocation
@@ -565,7 +626,7 @@ void* gpuVulkanInstance()
 
 GpuSurface gpuCreateSurface(void *vulkanSurface)
 {
-    return new GpuSurface_T { static_cast<VkSurfaceKHR>(vulkanSurface) };
+    return new GpuSurface_T { static_cast<VkSurfaceKHR>(vulkanSurface), {} };
 }
 
 void *gpuVulkanSurface(GpuSurface surface)
@@ -746,7 +807,7 @@ GpuTexture gpuCreateTexture(GpuTextureDesc desc, void* ptrGpu)
                         desc.type == TEXTURE_2D ? VK_IMAGE_VIEW_TYPE_2D :
                         desc.type == TEXTURE_3D ? VK_IMAGE_VIEW_TYPE_3D : VK_IMAGE_VIEW_TYPE_MAX_ENUM;
     viewInfo.format = gpuFormatToVkFormat(desc.format);
-    viewInfo.subresourceRange.aspectMask = desc.usage == USAGE_DEPTH_STENCIL_ATTACHMENT ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.aspectMask = (desc.usage & USAGE_DEPTH_STENCIL_ATTACHMENT) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
     viewInfo.subresourceRange.baseMipLevel = 0;
     viewInfo.subresourceRange.levelCount = desc.mipCount;
     viewInfo.subresourceRange.baseArrayLayer = 0;
@@ -872,7 +933,17 @@ VkPipeline gpuCreateGraphicsPipeline(ByteSpan vertexIR, ByteSpan meshletIR, Byte
         {
             GpuBlendDesc blendDesc = *desc.blendState;
             blendAttachment.blendEnable = VK_TRUE;
-            // TODO: blend state
+            blendAttachment.srcColorBlendFactor = gpuFactorToVkFactor(blendDesc.srcColorFactor);
+            blendAttachment.dstColorBlendFactor = gpuFactorToVkFactor(blendDesc.dstColorFactor);
+            blendAttachment.colorBlendOp = gpuBlendOpToVkBlendOp(blendDesc.colorOp);
+            blendAttachment.srcAlphaBlendFactor = gpuFactorToVkFactor(blendDesc.srcAlphaFactor);
+            blendAttachment.dstAlphaBlendFactor = gpuFactorToVkFactor(blendDesc.dstAlphaFactor);
+            blendAttachment.alphaBlendOp = gpuBlendOpToVkBlendOp(blendDesc.alphaOp);
+            blendAttachment.colorWriteMask = 
+                ((blendDesc.colorWriteMask & 0x1) ? VK_COLOR_COMPONENT_R_BIT : 0) |
+                ((blendDesc.colorWriteMask & 0x2) ? VK_COLOR_COMPONENT_G_BIT : 0) |
+                ((blendDesc.colorWriteMask & 0x4) ? VK_COLOR_COMPONENT_B_BIT : 0) |
+                ((blendDesc.colorWriteMask & 0x8) ? VK_COLOR_COMPONENT_A_BIT : 0);
         }
         else
         {
@@ -884,10 +955,10 @@ VkPipeline gpuCreateGraphicsPipeline(ByteSpan vertexIR, ByteSpan meshletIR, Byte
             blendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
             blendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
             blendAttachment.colorWriteMask = 
-                VK_COLOR_COMPONENT_R_BIT | 
-                VK_COLOR_COMPONENT_G_BIT | 
-                VK_COLOR_COMPONENT_B_BIT | 
-                VK_COLOR_COMPONENT_A_BIT;
+                ((target.writeMask & 0x1) ? VK_COLOR_COMPONENT_R_BIT : 0) |
+                ((target.writeMask & 0x2) ? VK_COLOR_COMPONENT_G_BIT : 0) |
+                ((target.writeMask & 0x4) ? VK_COLOR_COMPONENT_B_BIT : 0) |
+                ((target.writeMask & 0x8) ? VK_COLOR_COMPONENT_A_BIT : 0);
         }
 
         blendAttachments.push_back(blendAttachment);
@@ -897,6 +968,8 @@ VkPipeline gpuCreateGraphicsPipeline(ByteSpan vertexIR, ByteSpan meshletIR, Byte
     pipelineRenderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
     pipelineRenderingInfo.colorAttachmentCount = desc.colorTargets.size();
     pipelineRenderingInfo.pColorAttachmentFormats = colorFormats.data();
+    pipelineRenderingInfo.depthAttachmentFormat = gpuFormatToVkFormat(desc.depthFormat);
+    pipelineRenderingInfo.stencilAttachmentFormat = gpuFormatToVkFormat(desc.stencilFormat);
 
     VkPipelineColorBlendStateCreateInfo blendState = {};
     blendState.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
@@ -934,11 +1007,32 @@ VkPipeline gpuCreateGraphicsPipeline(ByteSpan vertexIR, ByteSpan meshletIR, Byte
     rasterizationState.rasterizerDiscardEnable = VK_FALSE;  
     rasterizationState.depthBiasEnable = VK_FALSE;
 
+    VkPipelineDepthStencilStateCreateInfo depthStencilState = {};
+    depthStencilState.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depthStencilState.depthTestEnable = (desc.depthFormat != FORMAT_NONE) ? VK_TRUE : VK_FALSE;
+    depthStencilState.depthWriteEnable = (desc.depthFormat != FORMAT_NONE) ? VK_TRUE : VK_FALSE;
+    depthStencilState.depthCompareOp = VK_COMPARE_OP_LESS;
+    depthStencilState.depthBoundsTestEnable = VK_FALSE;
+    depthStencilState.stencilTestEnable = (desc.stencilFormat != FORMAT_NONE) ? VK_TRUE : VK_FALSE;
+    depthStencilState.minDepthBounds = 0.0f;
+    depthStencilState.maxDepthBounds = 1.0f;
+
     VkPipelineDynamicStateCreateInfo dynamicState = {};
     dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
     std::vector<VkDynamicState> dynamicStates = {
         VK_DYNAMIC_STATE_VIEWPORT,
-        VK_DYNAMIC_STATE_SCISSOR
+        VK_DYNAMIC_STATE_SCISSOR,
+        VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE,
+        VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE,
+        VK_DYNAMIC_STATE_DEPTH_COMPARE_OP,
+        VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE,
+        VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE,
+        VK_DYNAMIC_STATE_STENCIL_OP,
+        VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK,
+        VK_DYNAMIC_STATE_STENCIL_WRITE_MASK,
+        VK_DYNAMIC_STATE_STENCIL_REFERENCE,
+        VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE,
+        VK_DYNAMIC_STATE_DEPTH_BIAS
     };
     dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
     dynamicState.pDynamicStates = dynamicStates.data();
@@ -954,6 +1048,7 @@ VkPipeline gpuCreateGraphicsPipeline(ByteSpan vertexIR, ByteSpan meshletIR, Byte
     pipelineCreateInfo.pColorBlendState = &blendState;
     pipelineCreateInfo.pViewportState = &viewportState;
     pipelineCreateInfo.pRasterizationState = &rasterizationState;
+    pipelineCreateInfo.pDepthStencilState = &depthStencilState;
     pipelineCreateInfo.pMultisampleState = &multisampleState;
     pipelineCreateInfo.pDynamicState = &dynamicState;
     pipelineCreateInfo.stageCount = 2;
@@ -986,20 +1081,28 @@ void gpuFreePipeline(GpuPipeline pipeline)
 
 GpuDepthStencilState gpuCreateDepthStencilState(GpuDepthStencilDesc desc)
 {
-    return nullptr;
+    return new GpuDepthStencilState_T { desc };
 }
 
 GpuBlendState gpuCreateBlendState(GpuBlendDesc desc)
 {
-    return nullptr;
+    return new GpuBlendState_T { desc };
 }
 
 void gpuFreeDepthStencilState(GpuDepthStencilState state)
 {
+    if (state != nullptr)
+    {
+        delete state;
+    }
 }
 
 void gpuFreeBlendState(GpuBlendState state)
 {
+    if (state != nullptr)
+    {
+        delete state;
+    }
 }
 
 GpuQueue gpuCreateQueue()
@@ -1283,6 +1386,15 @@ void gpuBarrier(GpuCommandBuffer cb, STAGE before, STAGE after, HAZARD_FLAGS haz
         memoryBarriers.push_back(memoryBarrier);
     }
 
+    if (hazards & HAZARD_DEPTH_STENCIL)
+    {
+        VkMemoryBarrier memoryBarrier = {};
+        memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        memoryBarrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        memoryBarrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        memoryBarriers.push_back(memoryBarrier);
+    }
+
     if (hazards & HAZARD_ACCELERATION_STRUCTURE)
     {
         VkMemoryBarrier memoryBarrier = {};
@@ -1326,7 +1438,53 @@ void gpuSetPipeline(GpuCommandBuffer cb, GpuPipeline pipeline)
 
 void gpuSetDepthStencilState(GpuCommandBuffer cb, GpuDepthStencilState state)
 {
-    // TODO: implement
+    if (state == nullptr)
+    {
+        return;
+    }
+
+    const auto& desc = state->desc;
+    VkCommandBuffer cmd = cb->commandBuffer;
+
+    // Depth state
+    vulkan->dispatchTable.cmdSetDepthTestEnable(cmd, (desc.depthMode & DEPTH_READ) ? VK_TRUE : VK_FALSE);
+    vulkan->dispatchTable.cmdSetDepthWriteEnable(cmd, (desc.depthMode & DEPTH_WRITE) ? VK_TRUE : VK_FALSE);
+    vulkan->dispatchTable.cmdSetDepthCompareOp(cmd, gpuOpToVkCompareOp(desc.depthTest));
+    vulkan->dispatchTable.cmdSetDepthBoundsTestEnable(cmd, VK_FALSE);
+
+    // Depth bias
+    bool depthBiasEnabled = desc.depthBias != 0.0f || desc.depthBiasSlopeFactor != 0.0f;
+    vulkan->dispatchTable.cmdSetDepthBiasEnable(cmd, depthBiasEnabled ? VK_TRUE : VK_FALSE);
+    if (depthBiasEnabled)
+    {
+        vulkan->dispatchTable.cmdSetDepthBias(cmd, desc.depthBias, desc.depthBiasClamp, desc.depthBiasSlopeFactor);
+    }
+
+    // Stencil state
+    bool stencilEnabled = desc.stencilFront.test != OP_ALWAYS || desc.stencilBack.test != OP_ALWAYS;
+    vulkan->dispatchTable.cmdSetStencilTestEnable(cmd, stencilEnabled ? VK_TRUE : VK_FALSE);
+
+    if (stencilEnabled)
+    {
+        vulkan->dispatchTable.cmdSetStencilOp(
+            cmd, VK_STENCIL_FACE_FRONT_BIT,
+            gpuOpToVkStencilOp(desc.stencilFront.failOp),
+            gpuOpToVkStencilOp(desc.stencilFront.passOp),
+            gpuOpToVkStencilOp(desc.stencilFront.depthFailOp),
+            gpuOpToVkCompareOp(desc.stencilFront.test)
+        );
+        vulkan->dispatchTable.cmdSetStencilOp(
+            cmd, VK_STENCIL_FACE_BACK_BIT,
+            gpuOpToVkStencilOp(desc.stencilBack.failOp),
+            gpuOpToVkStencilOp(desc.stencilBack.passOp),
+            gpuOpToVkStencilOp(desc.stencilBack.depthFailOp),
+            gpuOpToVkCompareOp(desc.stencilBack.test)
+        );
+        vulkan->dispatchTable.cmdSetStencilCompareMask(cmd, VK_STENCIL_FACE_FRONT_AND_BACK, desc.stencilReadMask);
+        vulkan->dispatchTable.cmdSetStencilWriteMask(cmd, VK_STENCIL_FACE_FRONT_AND_BACK, desc.stencilWriteMask);
+        vulkan->dispatchTable.cmdSetStencilReference(cmd, VK_STENCIL_FACE_FRONT_BIT, desc.stencilFront.reference);
+        vulkan->dispatchTable.cmdSetStencilReference(cmd, VK_STENCIL_FACE_BACK_BIT, desc.stencilBack.reference);
+    }
 }
 
 void gpuSetBlendState(GpuCommandBuffer cb, GpuBlendState state)
@@ -1398,11 +1556,24 @@ void gpuBeginRenderPass(GpuCommandBuffer cb, GpuRenderPassDesc desc)
         colorAttachments.push_back(colorAttachment);
     }
 
+    VkRenderingAttachmentInfo depthAttachment = {};
+    if (desc.depthStencilTarget != nullptr)
+    {
+        depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        depthAttachment.imageView = desc.depthStencilTarget->view;
+        depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        depthAttachment.clearValue.depthStencil = { 1.0f, 0 };
+    }
+
     auto& colorTarget = desc.colorTargets[0];
     renderingInfo.renderArea.extent = { colorTarget->desc.dimensions.x, colorTarget->desc.dimensions.y };
     renderingInfo.layerCount = 1;
     renderingInfo.colorAttachmentCount = desc.colorTargets.size();
     renderingInfo.pColorAttachments = colorAttachments.data();
+    renderingInfo.pDepthAttachment = desc.depthStencilTarget != nullptr ? &depthAttachment : nullptr;
+    renderingInfo.pStencilAttachment = nullptr; // TODO: separate stencil support if needed
 
     vulkan->dispatchTable.cmdBeginRendering(cb->commandBuffer, &renderingInfo);
 
@@ -1630,6 +1801,40 @@ void gpuDrawMeshletsIndirect(GpuCommandBuffer cb, void* meshletDataGpu, void* pi
 }
 
 #ifdef GPU_SURFACE_EXTENSION
+Span<FORMAT> gpuSurfaceFormats(GpuSurface surface)
+{
+    if (surface == nullptr)
+    {
+        return Span<FORMAT>();
+    }
+
+    if (surface->formats.empty())
+    {
+        uint32_t formatCount = 0;
+        vulkan->instanceDispatchTable.getPhysicalDeviceSurfaceFormatsKHR(
+            vulkan->physicalDevice, 
+            surface->surface, 
+            &formatCount, 
+            nullptr
+        );
+
+        std::vector<VkSurfaceFormatKHR> vkFormats(formatCount);
+        vulkan->instanceDispatchTable.getPhysicalDeviceSurfaceFormatsKHR(
+            vulkan->physicalDevice, 
+            surface->surface, 
+            &formatCount, 
+            vkFormats.data()
+        );
+
+        for (const auto& vkFormat : vkFormats)
+        {
+            surface->formats.push_back(gpuVkFormatToGpuFormat(vkFormat.format));
+        }
+    }
+
+    return Span<FORMAT>(surface->formats);
+}
+
 GpuSwapchain gpuCreateSwapchain(GpuSurface surface, uint32_t images)
 {
     struct GpuSurfaceImpl

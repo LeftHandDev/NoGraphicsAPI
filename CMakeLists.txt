@@ -78,6 +78,16 @@ else()
         COMMENT "Compiling Pixel.slang -> Pixel.spv"
         VERBATIM)
 
+    add_custom_command(
+        OUTPUT "${CMAKE_SOURCE_DIR}/Samples/Graphics/TAA.spv"
+        COMMAND "${SLANGC}" "${CMAKE_SOURCE_DIR}/Samples/Graphics/TAA.slang"
+                -target spirv -stage compute -entry main
+                -I "${SHADER_INCLUDE_DIR}"
+                -o "${CMAKE_SOURCE_DIR}/Samples/Graphics/TAA.spv"
+        DEPENDS "${CMAKE_SOURCE_DIR}/Samples/Graphics/TAA.slang" "${SHADER_INCLUDE_DIR}/NoGraphicsAPI.h"
+        COMMENT "Compiling TAA.slang -> TAA.spv"
+        VERBATIM)
+
     # Raytracing sample currently uses a compute shader
     add_custom_command(
         OUTPUT "${CMAKE_SOURCE_DIR}/Samples/Raytracing/Raytracing.spv"
@@ -94,6 +104,7 @@ else()
             "${CMAKE_SOURCE_DIR}/Samples/Compute/Compute.spv"
             "${CMAKE_SOURCE_DIR}/Samples/Graphics/Vertex.spv"
             "${CMAKE_SOURCE_DIR}/Samples/Graphics/Pixel.spv"
+            "${CMAKE_SOURCE_DIR}/Samples/Graphics/TAA.spv"
             "${CMAKE_SOURCE_DIR}/Samples/Raytracing/Raytracing.spv")
 
     add_dependencies(NoGraphicsAPI Shaders)
