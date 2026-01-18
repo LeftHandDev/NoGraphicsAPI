@@ -1,5 +1,33 @@
 #include "Raytracing.h"
 
+uint xxhash32(uint3 p)
+{
+    const uint PRIME32_2 = 2246822519U;
+    const uint PRIME32_3 = 3266489917U;
+    const uint PRIME32_4 = 668265263U;
+    const uint PRIME32_5 = 374761393U;
+
+    uint h32 = p.z + PRIME32_5 + p.x * PRIME32_3;
+    h32 = PRIME32_4 * ((h32 << 17) | (h32 >> 15));
+    h32 += p.y * PRIME32_3;
+    h32 = PRIME32_4 * ((h32 << 17) | (h32 >> 15));
+    h32 = PRIME32_2 * (h32 ^ (h32 >> 15));
+    h32 = PRIME32_3 * (h32 ^ (h32 >> 13));
+    return h32 ^ (h32 >> 16);
+}
+
+uint pcg(inout uint state)
+{
+    state = state * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+float randomFloat(inout uint state)
+{
+    return float(pcg(state)) / 4294967295.0;
+}
+
 // Visibility function
 float V(RaytracingAccelerationStructure tlas, LightData light, float3 x1, float3 x2)
 {
@@ -93,21 +121,25 @@ void main(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
         float3 normal1 = mesh.normals[normalIndex1];
         float3 normal2 = mesh.normals[normalIndex2];
 
-        for (uint i = 0; i < data->numLights; i++)
-        {
-            LightData light = data->lights[i];
-            float3 hitT = rayQuery.WorldRayDirection() * rayQuery.CommittedRayT() + rayQuery.WorldRayOrigin();
-            float3 lightDir = normalize(light.position.xyz - hitT);
+        uint seed = xxhash32(uint3(threadId.xy, data->frame));
+        uint lightIndex = pcg(seed) % data->numLights;
 
-            float3 normal = normalize(normal0 * (1.0 - barycentrics.x - barycentrics.y) + normal1 * barycentrics.x + normal2 * barycentrics.y);
-            normal = normalize(mul(rayQuery.CommittedWorldToObject4x3(), normal)).xyz;
+        LightData light = data->lights[lightIndex];
+        float3 hitT = rayQuery.WorldRayDirection() * rayQuery.CommittedRayT() + rayQuery.WorldRayOrigin();
+        float3 lightDir = normalize(light.position.xyz - hitT);
 
-            float NdotL = max(dot(normal, lightDir), 0.0);
-            float3 Li = (albedo.xyz * light.color.xyz * light.intensity * NdotL) / pow(distance(light.position.xyz, hitT), 2.0);
-            color.xyz += Li * V(tlas, light, hitT + normal * 0.001, light.position.xyz);
-        }
+        float3 normal = normalize(normal0 * (1.0 - barycentrics.x - barycentrics.y) + normal1 * barycentrics.x + normal2 * barycentrics.y);
+        normal = normalize(mul(rayQuery.CommittedWorldToObject4x3(), normal)).xyz;
 
-        color.xyz /= float(data->numLights);
+        float NoL = max(dot(normal, lightDir), 0.0);
+        float3 Li = (albedo.xyz * light.color.xyz * light.intensity * NoL) / pow(distance(light.position.xyz, hitT), 2.0);
+        color.xyz = Li * V(tlas, light, hitT + normal * 0.001, light.position.xyz);
+    }
+
+    if (data->accumulate == 1)
+    {
+        float4 prevColor = outputTexture[threadId.xy];
+        color = (prevColor * data->accumulatedFrames + color) / (data->accumulatedFrames + 1);
     }
 
     outputTexture[threadId.xy] = color;

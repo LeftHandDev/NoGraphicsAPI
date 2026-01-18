@@ -33,6 +33,9 @@ struct alignas(16) RaytracingData
     uint32_t* instanceToMesh;
     MeshData* meshes;
     LightData* lights;
+    uint frame;
+    uint accumulate; // 0 reset, 1 accumulate
+    uint accumulatedFrames;
     uint numLights;
     uint dstTexture;
 };

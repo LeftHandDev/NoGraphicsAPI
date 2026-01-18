@@ -179,6 +179,7 @@ void raytracingSample()
     raytracingData.cpu->tlas = tlasPtr;
     raytracingData.cpu->instanceToMesh = instancesToMesh.gpu;
     raytracingData.cpu->dstTexture = 1;
+    raytracingData.cpu->frame = 0;
     raytracingData.cpu->lights = lights.gpu;
     raytracingData.cpu->numLights = 3;
 
@@ -195,6 +196,21 @@ void raytracingSample()
             {
                 exit = true;
                 break;
+            }
+            else if (event.type == SDL_EVENT_KEY_DOWN) // if holding "A" key, set accumulate to 1
+            {
+                if (event.key.key == SDLK_A)
+                {
+                    raytracingData.cpu->accumulate = 1;
+                }
+            }
+            else if (event.type == SDL_EVENT_KEY_UP)
+            {
+                if (event.key.key == SDLK_A)
+                {
+                    raytracingData.cpu->accumulate = 0;
+                    raytracingData.cpu->accumulatedFrames = 0;
+                }
             }
         }
 
@@ -244,9 +260,22 @@ void raytracingSample()
         gpuSubmit(queue, Span<GpuCommandBuffer>(&commandBuffer, 1), semaphore, nextFrame);
         gpuPresent(swapchain, semaphore, nextFrame++);
 
-        rotation += 0.0005f;
-        auto rot = glm::rotate(glm::mat4(1.0f), rotation, glm::vec3(1.0f, 1.0f, 0.0f));
-        memcpy(&instances[0].transform, &rot, sizeof(float3x4));
+        if (raytracingData.cpu->accumulate == 0)
+        {
+            rotation += 0.0005f;
+            auto rot = glm::rotate(glm::mat4(1.0f), rotation, glm::vec3(1.0f, 1.0f, 0.0f));
+            memcpy(&instances[0].transform, &rot, sizeof(float3x4));
+        }
+
+        raytracingData.cpu->frame++;
+        if (raytracingData.cpu->accumulate == 1)
+        {
+            raytracingData.cpu->accumulatedFrames++;
+        }
+        else
+        {
+            raytracingData.cpu->accumulatedFrames = 0;
+        }
     }
     
     gpuDestroySemaphore(semaphore);

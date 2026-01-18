@@ -11,8 +11,8 @@
 int main()
 {
     // computeSample();
-    graphicsSample();
-    // raytracingSample();
+    // graphicsSample();
+    raytracingSample();
 
     return 0;
 }
