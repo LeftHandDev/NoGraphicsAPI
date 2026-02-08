@@ -224,7 +224,7 @@ struct GpuAccelerationStructureDesc
     TYPE type = TYPE_BOTTOM_LEVEL;
     GpuAccelerationStructureBlasDesc blasDesc = {};
     GpuAccelerationStructureTlasDesc tlasDesc = {};
-    GpuAccelerationStructureBuildRange* buildRange = nullptr;
+    Span<GpuAccelerationStructureBuildRange> buildRanges = {};
 };
 
 #endif // GPU_RAY_TRACING_EXTENSION

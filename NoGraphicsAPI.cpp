@@ -39,7 +39,7 @@ struct GpuSwapchain_T
 struct GpuAccelerationStructure_T 
 { 
     VkAccelerationStructureBuildGeometryInfoKHR buildInfo = {};
-    VkAccelerationStructureBuildRangeInfoKHR buildRange = {}; 
+    std::vector<VkAccelerationStructureBuildRangeInfoKHR> buildRanges; 
     std::vector<VkAccelerationStructureGeometryKHR> geometries;
 };
 #endif // GPU_RAY_TRACING_EXTENSION
@@ -2097,10 +2097,16 @@ GpuAccelerationStructureSizes gpuAccelerationStructureSizes(GpuAccelerationStruc
     VkAccelerationStructureBuildSizesInfoKHR sizeInfo = {};
     sizeInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
 
+    std::vector<uint32_t> primitiveCounts;
+    for (const auto& range : desc.buildRanges)
+    {
+        primitiveCounts.push_back(range.primitiveCount);
+    }
+
     vulkan->dispatchTable.getAccelerationStructureBuildSizesKHR(
         VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
         &buildInfo,
-        &desc.buildRange->primitiveCount,
+        primitiveCounts.data(),
         &sizeInfo
     );
 
@@ -2138,11 +2144,15 @@ GpuAccelerationStructure gpuCreateAccelerationStructure(GpuAccelerationStructure
     as->buildInfo = gpuBuildInfoToVkBuildInfo(desc, as->geometries);
     as->buildInfo.dstAccelerationStructure = vkAs;
 
-    as->buildRange.firstVertex = desc.buildRange->firstVertex;
-    as->buildRange.primitiveCount = desc.buildRange->primitiveCount;
-    as->buildRange.primitiveOffset = desc.buildRange->primitiveOffset;
-    as->buildRange.firstVertex = desc.buildRange->firstVertex;
-    as->buildRange.transformOffset = desc.buildRange->transformOffset;
+    for (const auto& range : desc.buildRanges)
+    {
+        VkAccelerationStructureBuildRangeInfoKHR vkRange = {};
+        vkRange.firstVertex = range.firstVertex;
+        vkRange.primitiveCount = range.primitiveCount;
+        vkRange.primitiveOffset = range.primitiveOffset;
+        vkRange.transformOffset = range.transformOffset;
+        as->buildRanges.push_back(vkRange);
+    }
 
     return as;
 }
@@ -2167,7 +2177,7 @@ void gpuBuildAccelerationStructures(GpuCommandBuffer cb, Span<GpuAccelerationStr
         a->buildInfo.scratchData.deviceAddress = reinterpret_cast<VkDeviceAddress>(scratchGpu);
 
         buildInfos.push_back(a->buildInfo);
-        buildRanges.push_back(&a->buildRange);
+        buildRanges.push_back(a->buildRanges.data());
     }
 
     vulkan->dispatchTable.cmdBuildAccelerationStructuresKHR(
