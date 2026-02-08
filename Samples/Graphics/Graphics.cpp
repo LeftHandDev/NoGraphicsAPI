@@ -285,9 +285,9 @@ void graphicsSample()
 
         // Raster pass
         gpuSetPipeline(commandBuffer, pipeline);
+        gpuSetActiveTextureHeapPtr(commandBuffer, textureHeap.gpu);
         gpuBeginRenderPass(commandBuffer, renderPassDesc);
         gpuSetDepthStencilState(commandBuffer, depthState);
-        gpuSetActiveTextureHeapPtr(commandBuffer, textureHeap.gpu);
         gpuDrawIndexedInstanced(commandBuffer, vertexData.gpu, pixelData.gpu, indices.gpu, 36, 2);
         gpuEndRenderPass(commandBuffer);
 

@@ -99,13 +99,25 @@ else()
         COMMENT "Compiling Raytracing.slang -> Raytracing.spv"
         VERBATIM)
 
+    # PatchDescriptorsHeap
+    add_custom_command(
+        OUTPUT "${CMAKE_SOURCE_DIR}/Shaders/PatchDescriptors.spv"
+        COMMAND "${SLANGC}" "${CMAKE_SOURCE_DIR}/Shaders/PatchDescriptors.slang"
+                -target spirv -stage compute -entry main
+                -I "${SHADER_INCLUDE_DIR}"
+                -o "${CMAKE_SOURCE_DIR}/Shaders/PatchDescriptors.spv"
+        DEPENDS "${CMAKE_SOURCE_DIR}/Shaders/PatchDescriptors.slang" "${SHADER_INCLUDE_DIR}/NoGraphicsAPI.h"
+        COMMENT "Compiling PatchDescriptors.slang -> PatchDescriptors.spv"
+        VERBATIM)
+
     add_custom_target(Shaders ALL
         DEPENDS
             "${CMAKE_SOURCE_DIR}/Samples/Compute/Compute.spv"
             "${CMAKE_SOURCE_DIR}/Samples/Graphics/Vertex.spv"
             "${CMAKE_SOURCE_DIR}/Samples/Graphics/Pixel.spv"
             "${CMAKE_SOURCE_DIR}/Samples/Graphics/TAA.spv"
-            "${CMAKE_SOURCE_DIR}/Samples/Raytracing/Raytracing.spv")
+            "${CMAKE_SOURCE_DIR}/Samples/Raytracing/Raytracing.spv"
+            "${CMAKE_SOURCE_DIR}/Shaders/PatchDescriptors.spv")
 
     add_dependencies(NoGraphicsAPI Shaders)
 endif()

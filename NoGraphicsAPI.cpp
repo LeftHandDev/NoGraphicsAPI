@@ -3,9 +3,26 @@
 #include "External/VkBootstrap.h"
 
 #include "Config.h"
+#include "Shaders/PatchDescriptors.h"
 
 #include <map>
 #include <vector>
+#include <fstream>
+#include <filesystem>
+
+std::vector<uint8_t> gpuHiddenLoadIR(const std::filesystem::path &path)
+{
+    std::ifstream file { path, std::ios::binary | std::ios::ate };
+    if (!file.is_open())
+    {
+        return {};
+    }
+    auto size = file.tellg();
+    std::vector<uint8_t> buffer(size);
+    file.seekg(0);
+    file.read(reinterpret_cast<char*>(buffer.data()), size);
+    return buffer;
+}
 
 struct GpuPipeline_T 
 { 
@@ -251,6 +268,14 @@ struct Vulkan
 
     // Descriptors
     uint32_t descriptorCount = 1024;
+    GpuPipeline patchDescriptorsPipeline = nullptr;
+    void* descriptorDataCpu = nullptr; // the raw descriptor data, possibly out of order
+    void* rwDescriptorDataCpu = nullptr; // the raw read/write descriptor data, possibly out of order
+    void* patchedDescriptorDataCpu = nullptr; // the temporary patched descriptor data
+    void* rwPatchedDescriptorDataCpu = nullptr; // the temporary patched read/write descriptor data
+    PatchDescriptorsData* patchDescriptorsDataCpu = nullptr;
+    uint32_t descriptorsUsed = 0;
+    uint32_t rwDescriptorsUsed = 0;
 
     Vulkan()
     {
@@ -317,6 +342,8 @@ struct Vulkan
         physicalDeviceVulkan12Features.timelineSemaphore = VK_TRUE;
         physicalDeviceVulkan12Features.bufferDeviceAddress = VK_TRUE;
         physicalDeviceVulkan12Features.runtimeDescriptorArray = VK_TRUE;
+        physicalDeviceVulkan12Features.shaderInt8 = VK_TRUE;
+        physicalDeviceVulkan12Features.storagePushConstant8 = VK_TRUE;
 
         physicalDevice.features.shaderInt64 = VK_TRUE;
 
@@ -332,9 +359,6 @@ struct Vulkan
         physicalDeviceProperties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
         physicalDeviceProperties2.pNext = &descriptorBufferProperties;
         instanceDispatchTable.getPhysicalDeviceProperties2(physicalDevice, &physicalDeviceProperties2);
-
-        assert(descriptorBufferProperties.sampledImageDescriptorSize == sizeof(GpuTextureDescriptor));
-        assert(descriptorBufferProperties.storageImageDescriptorSize == sizeof(GpuTextureDescriptor));
 
         vkb::DeviceBuilder deviceBuilder{ physicalDevice };
         auto deviceRet = deviceBuilder.add_pNext(&descriptorBufferFeatures).build();
@@ -382,6 +406,12 @@ struct Vulkan
         delete graphicsQueue;
         vkb::destroy_device(device);
         vkb::destroy_instance(instance);
+    }
+
+    bool descriptorsNeedPatching()
+    {
+        return descriptorBufferProperties.sampledImageDescriptorSize != sizeof(GpuTextureDescriptor) ||
+               descriptorBufferProperties.storageImageDescriptorSize != sizeof(GpuTextureDescriptor);
     }
 
     uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties)
@@ -843,8 +873,31 @@ GpuTextureDescriptor gpuTextureViewDescriptor(GpuTexture texture, GpuViewDesc de
     descriptorGetInfo.type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     descriptorGetInfo.data.pSampledImage = &imageInfo;
 
+    std::vector<uint8_t> buffer(vulkan->descriptorBufferProperties.sampledImageDescriptorSize);
+    vulkan->dispatchTable.getDescriptorEXT(&descriptorGetInfo, vulkan->descriptorBufferProperties.sampledImageDescriptorSize, buffer.data());
+
     GpuTextureDescriptor descriptor = {};
-    vulkan->dispatchTable.getDescriptorEXT(&descriptorGetInfo, vulkan->descriptorBufferProperties.sampledImageDescriptorSize, descriptor.data);
+    
+    if (vulkan->descriptorsNeedPatching())
+    {
+        assert(vulkan->descriptorsUsed <= vulkan->descriptorCount); // TODO: handle properly
+
+        if (!vulkan->descriptorDataCpu)
+        {
+            vulkan->descriptorDataCpu = gpuMalloc(vulkan->descriptorBufferProperties.sampledImageDescriptorSize * vulkan->descriptorCount);
+        }
+
+        uint8_t* dest = static_cast<uint8_t*>(vulkan->descriptorDataCpu) + vulkan->descriptorsUsed * vulkan->descriptorBufferProperties.sampledImageDescriptorSize;
+        memcpy(dest, buffer.data(), vulkan->descriptorBufferProperties.sampledImageDescriptorSize);
+        descriptor.data[0] = vulkan->descriptorsUsed * vulkan->descriptorBufferProperties.sampledImageDescriptorSize; // Store byte offset in our internal buffer
+        descriptor.data[1] = 0; // type 0 for read, 1 for read/write
+        vulkan->descriptorsUsed++;
+    }
+    else
+    {
+        memcpy(descriptor.data, buffer.data(), vulkan->descriptorBufferProperties.sampledImageDescriptorSize);
+    }
+
     return descriptor;
 }
 
@@ -860,8 +913,31 @@ GpuTextureDescriptor gpuRWTextureViewDescriptor(GpuTexture texture, GpuViewDesc 
     descriptorGetInfo.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     descriptorGetInfo.data.pStorageImage = &imageInfo;
 
+    std::vector<uint8_t> buffer(vulkan->descriptorBufferProperties.storageImageDescriptorSize);
+    vulkan->dispatchTable.getDescriptorEXT(&descriptorGetInfo, vulkan->descriptorBufferProperties.storageImageDescriptorSize, buffer.data());
+
     GpuTextureDescriptor descriptor = {};
-    vulkan->dispatchTable.getDescriptorEXT(&descriptorGetInfo, vulkan->descriptorBufferProperties.storageImageDescriptorSize, descriptor.data);
+
+    if (vulkan->descriptorsNeedPatching())
+    {
+        assert(vulkan->rwDescriptorsUsed <= vulkan->descriptorCount); // TODO: handle properly
+
+        if (!vulkan->rwDescriptorDataCpu)
+        {
+            vulkan->rwDescriptorDataCpu = gpuMalloc(vulkan->descriptorBufferProperties.storageImageDescriptorSize * vulkan->descriptorCount);
+        }
+
+        uint8_t* dest = static_cast<uint8_t*>(vulkan->rwDescriptorDataCpu) + vulkan->rwDescriptorsUsed * vulkan->descriptorBufferProperties.storageImageDescriptorSize;
+        memcpy(dest, buffer.data(), vulkan->descriptorBufferProperties.storageImageDescriptorSize);
+        descriptor.data[0] = vulkan->rwDescriptorsUsed * vulkan->descriptorBufferProperties.storageImageDescriptorSize; // Store byte offset in our internal buffer
+        descriptor.data[1] = 1; // type 0 for read, 1 for read/write
+        vulkan->rwDescriptorsUsed++;
+    }
+    else
+    {
+        memcpy(descriptor.data, buffer.data(), vulkan->descriptorBufferProperties.storageImageDescriptorSize);
+    }
+
     return descriptor;
 }
 
@@ -1312,11 +1388,9 @@ void gpuBlitTexture(GpuCommandBuffer cb, GpuTexture destTexture, GpuTexture srcT
 void gpuSetActiveTextureHeapPtr(GpuCommandBuffer cb, void *ptrGpu)
 {
     auto alloc = vulkan->findAllocation(reinterpret_cast<VkDeviceAddress>(ptrGpu));
-    if (alloc.buffer == VK_NULL_HANDLE)
-    {
-        return;
-    }
+    assert(alloc.buffer != VK_NULL_HANDLE);
 
+    // TODO: support samplers, for now we just bind a default sampler
     if (vulkan->samplerDescriptors.buffer == VK_NULL_HANDLE)
     {
         auto cpu = gpuMallocHidden(
@@ -1335,22 +1409,83 @@ void gpuSetActiveTextureHeapPtr(GpuCommandBuffer cb, void *ptrGpu)
         vulkan->dispatchTable.getDescriptorEXT(&samplerDescriptorGetInfo, vulkan->descriptorBufferProperties.samplerDescriptorSize, vulkan->samplerDescriptors.ptr);
     }
 
-    VkDescriptorBufferBindingInfoEXT bufferBindingInfo[2] = {};
+    VkDeviceAddress address = reinterpret_cast<VkDeviceAddress>(ptrGpu);
+    VkDeviceAddress rwAddress = address;
+
+    if (vulkan->descriptorsNeedPatching())
+    {
+        GpuPipeline currentPipeline = vulkan->currentPipeline[cb];
+        if (vulkan->patchDescriptorsPipeline == nullptr)
+        {
+            auto patchDescriptorsSpv = gpuHiddenLoadIR("../../../Shaders/PatchDescriptors.spv");
+            vulkan->patchDescriptorsPipeline = gpuCreateComputePipeline(patchDescriptorsSpv);
+        }
+
+        if (vulkan->patchedDescriptorDataCpu == nullptr)
+        {
+            vulkan->patchedDescriptorDataCpu = 
+                gpuMalloc(vulkan->descriptorBufferProperties.sampledImageDescriptorSize * vulkan->descriptorCount, 
+                    vulkan->descriptorBufferProperties.descriptorBufferOffsetAlignment);
+        }
+
+        if (vulkan->rwPatchedDescriptorDataCpu == nullptr)
+        {
+            vulkan->rwPatchedDescriptorDataCpu = 
+                gpuMalloc(vulkan->descriptorBufferProperties.storageImageDescriptorSize * vulkan->descriptorCount, 
+                    vulkan->descriptorBufferProperties.descriptorBufferOffsetAlignment);
+        }
+
+        auto patchedDescriptorDataGpu = gpuHostToDevicePointer(vulkan->patchedDescriptorDataCpu);
+        auto rwPatchedDescriptorDataGpu = gpuHostToDevicePointer(vulkan->rwPatchedDescriptorDataCpu);
+
+        gpuSetPipeline(cb, vulkan->patchDescriptorsPipeline);
+
+        if (vulkan->patchDescriptorsDataCpu == nullptr)
+        {
+            vulkan->patchDescriptorsDataCpu = static_cast<PatchDescriptorsData*>(gpuMalloc(sizeof(PatchDescriptorsData)));
+        }
+
+        vulkan->patchDescriptorsDataCpu->numDescriptors = (alloc.size - (alloc.address - address)) / sizeof(GpuTextureDescriptor);
+        vulkan->patchDescriptorsDataCpu->descriptorSize = vulkan->descriptorBufferProperties.sampledImageDescriptorSize;
+        vulkan->patchDescriptorsDataCpu->rwDescriptorSize = vulkan->descriptorBufferProperties.storageImageDescriptorSize;
+        vulkan->patchDescriptorsDataCpu->descriptors = static_cast<Descriptor*>(ptrGpu);
+        vulkan->patchDescriptorsDataCpu->srcDescriptors = static_cast<uint8_t*>(gpuHostToDevicePointer(vulkan->descriptorDataCpu));
+        vulkan->patchDescriptorsDataCpu->rwSrcDescriptors = static_cast<uint8_t*>(gpuHostToDevicePointer(vulkan->rwDescriptorDataCpu));
+        vulkan->patchDescriptorsDataCpu->dstDescriptors = static_cast<uint8_t*>(patchedDescriptorDataGpu);
+        vulkan->patchDescriptorsDataCpu->rwDstDescriptors = static_cast<uint8_t*>(rwPatchedDescriptorDataGpu);
+
+        assert(vulkan->descriptorCount >= 16 && vulkan->descriptorCount % 16 == 0);
+        gpuDispatch(cb, gpuHostToDevicePointer(vulkan->patchDescriptorsDataCpu), { vulkan->descriptorCount / 16, 1, 1});
+
+        gpuBarrier(cb, STAGE_COMPUTE, STAGE_COMPUTE, HAZARD_DESCRIPTORS);
+
+        // Use patched descriptors instead of the ptrGpu
+        address = reinterpret_cast<VkDeviceAddress>(patchedDescriptorDataGpu);
+        rwAddress = reinterpret_cast<VkDeviceAddress>(rwPatchedDescriptorDataGpu);
+
+        gpuSetPipeline(cb, currentPipeline);
+    }
+
+    VkDescriptorBufferBindingInfoEXT bufferBindingInfo[3] = {};
     bufferBindingInfo[0].sType = VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT;
-    bufferBindingInfo[0].address = reinterpret_cast<VkDeviceAddress>(ptrGpu);
+    bufferBindingInfo[0].address = address;
     bufferBindingInfo[0].usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
 
     bufferBindingInfo[1].sType = VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT;
-    bufferBindingInfo[1].address = vulkan->samplerDescriptors.address;
-    bufferBindingInfo[1].usage = VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT;
+    bufferBindingInfo[1].address = rwAddress;
+    bufferBindingInfo[1].usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
+
+    bufferBindingInfo[2].sType = VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT;
+    bufferBindingInfo[2].address = vulkan->samplerDescriptors.address;
+    bufferBindingInfo[2].usage = VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT;
 
     vulkan->dispatchTable.cmdBindDescriptorBuffersEXT(
         cb->commandBuffer,
-        2,
+        3,
         bufferBindingInfo
     );
 
-    uint32_t indices[3] = { 0, 0, 1 }; // read, read/write, sampler
+    uint32_t indices[3] = { 0, 1, 2 }; // read, read/write, sampler
     VkDeviceSize offsets[3] = { 0, 0, 0 };
 
     vulkan->dispatchTable.cmdSetDescriptorBufferOffsetsEXT(
