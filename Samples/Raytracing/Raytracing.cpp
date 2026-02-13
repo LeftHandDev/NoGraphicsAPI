@@ -315,7 +315,23 @@ void raytracingSample()
         }
     }
     
+    gpuWaitSemaphore(semaphore, nextFrame - 1);
+
+    stbi_image_free(inputImage);
+    upload.free();
     allocator.free();
+    gpuDestroyTexture(texture);
+    gpuFree(texturePtr);
+    gpuDestroyTexture(outputTexture);
+    gpuFree(outputTexturePtr);
+    textureHeap.free();
+    gpuFreePipeline(pipeline);
+    gpuDestroyAccelerationStructure(blas);
+    gpuFree(blasPtr);
+    gpuDestroyAccelerationStructure(tlas);
+    gpuFree(tlasPtr);
+    gpuFree(instances);
+    gpuFree(scratchPtr);
     gpuDestroySemaphore(semaphore);
     gpuDestroySwapchain(swapchain);
     SDL_Gpu_DestroySurface(surface);

@@ -417,6 +417,49 @@ struct Vulkan
     ~Vulkan()
     {
         dispatchTable.deviceWaitIdle();
+
+        for (auto& [key, commandBuffers] : submittedCommandBuffers)
+        {
+            dispatchTable.freeCommandBuffers(commandPool, static_cast<uint32_t>(commandBuffers.size()), commandBuffers.data());
+        }
+        submittedCommandBuffers.clear();
+
+        if (patchDescriptorsPipeline != nullptr)
+        {
+            dispatchTable.destroyPipeline(patchDescriptorsPipeline->pipeline, nullptr);
+            delete patchDescriptorsPipeline;
+        }
+
+        if (descriptorDataCpu != nullptr)
+        { 
+            freeAllocation(findAllocation(descriptorDataCpu));
+        }
+
+        if (rwDescriptorDataCpu != nullptr)
+        {
+            freeAllocation(findAllocation(rwDescriptorDataCpu));
+        }
+
+        if (patchedDescriptorDataCpu != nullptr)
+        { 
+            freeAllocation(findAllocation(patchedDescriptorDataCpu));
+        }
+
+        if (rwPatchedDescriptorDataCpu != nullptr) 
+        {
+            freeAllocation(findAllocation(rwPatchedDescriptorDataCpu));
+        }
+        
+        if (patchDescriptorsDataCpu != nullptr) 
+        {
+            freeAllocation(findAllocation(patchDescriptorsDataCpu));
+        }
+
+        if (samplerDescriptors.buffer != VK_NULL_HANDLE)
+        {
+            freeAllocation(samplerDescriptors);
+        }
+
         dispatchTable.destroyCommandPool(commandPool, nullptr);
         dispatchTable.destroySampler(defaultSampler, nullptr);
         dispatchTable.destroyFence(acquireFence, nullptr);
@@ -580,7 +623,6 @@ struct Vulkan
         descriptorSetLayoutCreateInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
         descriptorSetLayoutCreateInfo.bindingCount = 1;
         descriptorSetLayoutCreateInfo.pBindings = &textureBinding;
-        VkDescriptorSetLayout textureSetLayout;
         dispatchTable.createDescriptorSetLayout(&descriptorSetLayoutCreateInfo, nullptr, &textureSetLayout);
 
         VkDescriptorSetLayoutBinding rwTextureBinding = {};
@@ -594,7 +636,6 @@ struct Vulkan
         rwDescriptorSetLayoutCreateInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
         rwDescriptorSetLayoutCreateInfo.bindingCount = 1;
         rwDescriptorSetLayoutCreateInfo.pBindings = &rwTextureBinding;
-        VkDescriptorSetLayout rwTextureSetLayout;
         dispatchTable.createDescriptorSetLayout(&rwDescriptorSetLayoutCreateInfo, nullptr, &rwTextureSetLayout);
 
         VkDescriptorSetLayoutBinding samplerBinding = {};
@@ -608,7 +649,6 @@ struct Vulkan
         samplerDescriptorSetLayoutCreateInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
         samplerDescriptorSetLayoutCreateInfo.bindingCount = 1;
         samplerDescriptorSetLayoutCreateInfo.pBindings = &samplerBinding;
-        VkDescriptorSetLayout samplerSetLayout;
         dispatchTable.createDescriptorSetLayout(&samplerDescriptorSetLayoutCreateInfo, nullptr, &samplerSetLayout);
 
         dispatchTable.getDescriptorSetLayoutSizeEXT(textureSetLayout, &descriptorSetLayoutSize);
@@ -902,8 +942,6 @@ GpuTextureDescriptor gpuTextureViewDescriptor(GpuTexture texture, GpuViewDesc de
     
     if (vulkan->descriptorsNeedPatching())
     {
-        assert(vulkan->descriptorsUsed <= vulkan->descriptorCount); // TODO: handle properly
-
         if (!vulkan->descriptorDataCpu)
         {
             vulkan->descriptorDataCpu = gpuMalloc(vulkan->descriptorBufferProperties.sampledImageDescriptorSize * vulkan->descriptorCount);
@@ -942,8 +980,6 @@ GpuTextureDescriptor gpuRWTextureViewDescriptor(GpuTexture texture, GpuViewDesc 
 
     if (vulkan->descriptorsNeedPatching())
     {
-        assert(vulkan->rwDescriptorsUsed <= vulkan->descriptorCount); // TODO: handle properly
-
         if (!vulkan->rwDescriptorDataCpu)
         {
             vulkan->rwDescriptorDataCpu = gpuMalloc(vulkan->descriptorBufferProperties.storageImageDescriptorSize * vulkan->descriptorCount);
@@ -1390,7 +1426,6 @@ void gpuBlitTexture(GpuCommandBuffer cb, GpuTexture destTexture, GpuTexture srcT
 void gpuSetActiveTextureHeapPtr(GpuCommandBuffer cb, void *ptrGpu)
 {
     auto alloc = vulkan->findAllocation(reinterpret_cast<VkDeviceAddress>(ptrGpu));
-    assert(alloc.buffer != VK_NULL_HANDLE);
 
     // TODO: support samplers, for now we just bind a default sampler
     if (vulkan->samplerDescriptors.buffer == VK_NULL_HANDLE)

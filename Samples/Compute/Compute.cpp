@@ -80,6 +80,8 @@ void computeSample()
 
     stbi_write_png("Assets/BlurredOutput.png", width, height, 4, readback, width * 4);
 
+    stbi_image_free(inputImage);
+    gpuFree(textureHeap);
     gpuDestroySemaphore(semaphore);
     gpuDestroyTexture(texture);
     gpuDestroyTexture(outputTexture);

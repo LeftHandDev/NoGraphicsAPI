@@ -326,6 +326,33 @@ void graphicsSample()
         taaData.cpu->frame++;
     }
 
+    gpuWaitSemaphore(semaphore, nextFrame - 1);
+
+    stbi_image_free(inputImage);
+    upload.free();
+    gpuDestroyTexture(texture);
+    gpuFree(texturePtr);
+    gpuDestroyTexture(depthTexture);
+    gpuFree(depthPtr);
+    gpuDestroyTexture(historyTextureGpu);
+    gpuFree(historyTexturePtr);
+    gpuDestroyTexture(rasterOutputGpu);
+    gpuFree(rasterOutputPtr);
+    gpuDestroyTexture(taaOutputGpu);
+    gpuFree(taaOutputPtr);
+    gpuDestroyTexture(motionVectorsTextureGpu);
+    gpuFree(motionVectorsTexturePtr);
+    textureHeap.free();
+    gpuFreePipeline(pipeline);
+    gpuFreePipeline(taaPipeline);
+    gpuFreeDepthStencilState(depthState);
+    vertices.free();
+    uvs.free();
+    indices.free();
+    instances.free();
+    vertexData.free();
+    pixelData.free();
+    taaData.free();
     gpuDestroySemaphore(semaphore);
     gpuDestroySwapchain(swapchain);
     SDL_Gpu_DestroySurface(surface);
