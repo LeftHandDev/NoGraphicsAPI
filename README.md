@@ -1,18 +1,18 @@
 # No Graphics API
 
-A demo of the simplified graphics API from Sebastian Aaltonen's blog post: [No Graphics API](https://www.sebastianaaltonen.com/blog/no-graphics-api), implemented in Vulkan. The entire API is not implemented, just enough to get some samples working.
+A demo of the simplified graphics API from Sebastian Aaltonen's blog post [No Graphics API](https://www.sebastianaaltonen.com/blog/no-graphics-api), implemented in Vulkan. The entire API is not implemented, just enough to get some samples working.
 
 The project started with the original header from the blog post, and built from there. The style and design attempts to match the blog post where possible.
 
 
 ## Samples
 
-To see what the API looks like in practice, check out the samples. For simple usage of the API, see below.
+To see what the API looks like in practice, check out the [samples](https://github.com/LeftHandDev/NoGraphicsAPI/tree/main/Samples). For simple usage of the API, see below.
 
 ## Windowless Usage
 ### Common header
 ```c++
-#include "../../Shaders/NoGraphicsAPI.h" // Must be included
+#include "Shaders/NoGraphicsAPI.h"
 
 struct alignas(16) Data
 {
@@ -32,50 +32,55 @@ void main(uint3 threadId: SV_DispatchThreadID, Data* data)
 ```
 ### CPU side
 ```c++
-if (gpuCreateDevice() != RESULT_OK)
-    return -1; // Required features not available
+#include "NoGraphicsAPI.h"
 
-auto queue = gpuCreateQueue();
-auto semaphore = gpuCreateSemaphore(0);
+int main()
+{
+    if (gpuCreateDevice() != RESULT_OK)
+        return -1; // Required features not available
 
-auto computeIR = loadIR("Compute.spv");
-auto pipeline = gpuCreateComputePipeline(ByteSpan(computeIR.data(), computeIR.size()));
+    auto queue = gpuCreateQueue();
+    auto semaphore = gpuCreateSemaphore(0);
 
-float* input = gpuMalloc<float>(16);
-float* output = gpuMalloc<float>(16);
+    auto computeIR = loadIR("Compute.spv");
+    auto pipeline = gpuCreateComputePipeline(ByteSpan(computeIR.data(), computeIR.size()));
 
-for (int i = 0; i < 16; i++)
-    input[i] = static_cast<float>(i);
+    float* input = gpuMalloc<float>(16);
+    float* output = gpuMalloc<float>(16);
 
-auto data = gpuMalloc<Data>();
+    for (int i = 0; i < 16; i++)
+        input[i] = static_cast<float>(i);
 
-data->multiplier = 2.f;
-data->input = gpuHostToDevicePointer(input);
-data->output = gpuHostToDevicePointer(output);
+    auto data = gpuMalloc<Data>();
 
-float* readback = gpuMalloc<float>(16, MEMORY_READBACK);
+    data->multiplier = 2.f;
+    data->input = gpuHostToDevicePointer(input);
+    data->output = gpuHostToDevicePointer(output);
 
-// GPU work
-auto commandBuffer = gpuStartCommandRecording(queue);
-gpuSetPipeline(commandBuffer, pipeline);
-gpuDispatch(commandBuffer, gpuHostToDevicePointer(data), {1, 1, 1});
-gpuBarrier(commandBuffer, STAGE_COMPUTE, STAGE_TRANSFER);
-gpuMemCpy(commandBuffer, gpuHostToDevicePointer(readback), data->output, sizeof(float) * 16);
-gpuSubmit(queue, Span<GpuCommandBuffer>(&commandBuffer, 1), semaphore, 1);
-gpuWaitSemaphore(semaphore, 1);
+    float* readback = gpuMalloc<float>(16, MEMORY_READBACK);
 
-for (int i = 0; i < 16; i++)
-    std::cout << readback[i] << " ";
+    // GPU work
+    auto commandBuffer = gpuStartCommandRecording(queue);
+    gpuSetPipeline(commandBuffer, pipeline);
+    gpuDispatch(commandBuffer, gpuHostToDevicePointer(data), {1, 1, 1});
+    gpuBarrier(commandBuffer, STAGE_COMPUTE, STAGE_TRANSFER);
+    gpuMemCpy(commandBuffer, gpuHostToDevicePointer(readback), data->output, sizeof(float) * 16);
+    gpuSubmit(queue, Span<GpuCommandBuffer>(&commandBuffer, 1), semaphore, 1);
+    gpuWaitSemaphore(semaphore, 1);
 
-// Should output: 0 2 4 6 8 10 12 14 16 18 20 22 24 26 28 30
+    for (int i = 0; i < 16; i++)
+        std::cout << readback[i] << " ";
 
-// Cleanup
-gpuFree(data);
-gpuFree(input);
-gpuFree(output);
-gpuFree(readback);
-gpuDestroySemaphore(semaphore);
-gpuDestroyDevice();
+    // Should output: 0 2 4 6 8 10 12 14 16 18 20 22 24 26 28 30
+
+    // Cleanup
+    gpuFree(data);
+    gpuFree(input);
+    gpuFree(output);
+    gpuFree(readback);
+    gpuDestroySemaphore(semaphore);
+    gpuDestroyDevice();
+}
 ```
 
 ## Window Usage
@@ -84,7 +89,7 @@ Include `SDL_gpu.h` to create a window and surface similar to when using Vulkan.
 
 ```c++
 #include <SDL3/SDL.h>
-#include "../../SDL_gpu.h"
+#include "SDL_gpu.h"
 
 #define FRAMES_IN_FLIGHT 2
 
@@ -129,7 +134,7 @@ int main()
 ## Graphics Pipeline Shaders
 ### Common Header
 ```cpp
-#include "../../Shaders/NoGraphicsAPI.h" // Must be included
+#include "Shaders/NoGraphicsAPI.h"
 
 struct alignas(16) VertexData
 {
