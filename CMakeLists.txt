@@ -116,8 +116,22 @@ else()
         COMMAND ${CMAKE_COMMAND} -E copy
                 "${SPV_OUTPUT_DIR}/Shaders/Raytracing/Raytracing.spv"
                 "${CMAKE_BINARY_DIR}/Shaders/Raytracing/Raytracing.spv"
-        DEPENDS "${CMAKE_SOURCE_DIR}/Samples/Raytracing/Raytracing.slang" "${SHADER_INCLUDE_DIR}/NoGraphicsAPI.h"
+        DEPENDS "${CMAKE_SOURCE_DIR}/Samples/Raytracing/Raytracing.slang" "${CMAKE_SOURCE_DIR}/Samples/Raytracing/Raytracing.h" "${SHADER_INCLUDE_DIR}/NoGraphicsAPI.h"
         COMMENT "Compiling Raytracing.slang -> Raytracing.spv"
+        VERBATIM)
+
+    add_custom_command(
+        OUTPUT "${CMAKE_BINARY_DIR}/Shaders/Raytracing/ReSTIR.spv"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${SPV_OUTPUT_DIR}/Shaders/ReSTIR"
+        COMMAND "${SLANGC}" "${CMAKE_SOURCE_DIR}/Samples/Raytracing/ReSTIR.slang"
+                -target spirv -stage compute -entry main
+                -I "${SHADER_INCLUDE_DIR}"
+                -o "${SPV_OUTPUT_DIR}/Shaders/Raytracing/ReSTIR.spv"
+        COMMAND ${CMAKE_COMMAND} -E copy
+                "${SPV_OUTPUT_DIR}/Shaders/Raytracing/ReSTIR.spv"
+                "${CMAKE_BINARY_DIR}/Shaders/Raytracing/ReSTIR.spv"
+        DEPENDS "${CMAKE_SOURCE_DIR}/Samples/Raytracing/ReSTIR.slang" "${CMAKE_SOURCE_DIR}/Samples/Raytracing/Raytracing.h" "${SHADER_INCLUDE_DIR}/NoGraphicsAPI.h"
+        COMMENT "Compiling ReSTIR.slang -> ReSTIR.spv"
         VERBATIM)
 
     # PatchDescriptorsHeap
@@ -142,6 +156,7 @@ else()
             "${CMAKE_BINARY_DIR}/Shaders/Graphics/Pixel.spv"
             "${CMAKE_BINARY_DIR}/Shaders/Graphics/TAA.spv"
             "${CMAKE_BINARY_DIR}/Shaders/Raytracing/Raytracing.spv"
+            "${CMAKE_BINARY_DIR}/Shaders/Raytracing/ReSTIR.spv"
             "${CMAKE_BINARY_DIR}/Shaders/PatchDescriptors.spv")
 
     add_dependencies(NoGraphicsAPI Shaders)

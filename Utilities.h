@@ -25,9 +25,9 @@ struct Allocation
 };
 
 template<typename T>
-Allocation<T> allocate(int count = 1)
+Allocation<T> allocate(int count = 1, MEMORY type = MEMORY_DEFAULT)
 {
-    auto addr = gpuMalloc(sizeof(T) * count);
+    auto addr = gpuMalloc(sizeof(T) * count, type);
     return { 
         .cpu = static_cast<T*>(addr), 
         .gpu = static_cast<T*>(gpuHostToDevicePointer(addr)) 
