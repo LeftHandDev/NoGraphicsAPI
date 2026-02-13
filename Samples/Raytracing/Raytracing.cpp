@@ -13,16 +13,6 @@
 
 #include <random>
 
-float4x4 mat4ToFloat4x4(const glm::mat4& m)
-{
-    return float4x4(
-        { m[0][0], m[0][1], m[0][2], m[0][3] },
-        { m[1][0], m[1][1], m[1][2], m[1][3] },
-        { m[2][0], m[2][1], m[2][2], m[2][3] },
-        { m[3][0], m[3][1], m[3][2], m[3][3] }
-    );
-}
-
 void raytracingSample()
 {
     gpuCreateDevice();
@@ -107,7 +97,8 @@ void raytracingSample()
     camDataAlloc.cpu->position = { 0, 0, -5, 1 };
     auto view = glm::lookAt(glm::vec3(0, 0, -5), glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
     auto projection = glm::perspective(glm::radians(45.0f), swapchainDesc.dimensions.x / static_cast<float>(swapchainDesc.dimensions.y), 0.1f, 100.0f);
-    camDataAlloc.cpu->invViewProjection = mat4ToFloat4x4(glm::inverse(projection * view));
+    auto invViewProjection = glm::inverse(projection * view);
+    memcpy(&camDataAlloc.cpu->invViewProjection, &invViewProjection, sizeof(float4x4));
 
     std::vector<float3> vertices;
     std::vector<float3> normals;
