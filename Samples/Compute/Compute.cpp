@@ -3,9 +3,22 @@
 #include "../../External/stb_image.h"
 #include "../../External/stb_image_write.h"
 
+#include <SDL3/SDL.h>
+#include "../../SDL_gpu.h"
+
 void computeSample()
 {
     gpuCreateDevice();
+
+    const uint FRAMES_IN_FLIGHT = 2;
+
+    auto window = SDL_CreateWindow("Test Window", 1920, 1080, SDL_WINDOW_GPU);
+    auto surface = SDL_Gpu_CreateSurface(window);
+    bool exit = false;
+
+    auto swapchain = gpuCreateSwapchain(surface, FRAMES_IN_FLIGHT);
+    auto swapchainDesc = gpuSwapchainDesc(swapchain);
+
     auto queue = gpuCreateQueue();
     auto semaphore = gpuCreateSemaphore(0);
 
@@ -25,7 +38,7 @@ void computeSample()
         .type = TEXTURE_2D,
         .dimensions = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1 },
         .format = FORMAT_RGBA8_UNORM,
-        .usage = USAGE_SAMPLED
+        .usage = static_cast<USAGE_FLAGS>(USAGE_SAMPLED | USAGE_TRANSFER_DST)
     };
 
     GpuTextureSizeAlign textureSizeAlign = gpuTextureSizeAlign(textureDesc);
@@ -36,7 +49,7 @@ void computeSample()
         .type = TEXTURE_2D,
         .dimensions = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1 },
         .format = FORMAT_RGBA8_UNORM,
-        .usage = USAGE_STORAGE
+        .usage = static_cast<USAGE_FLAGS>(USAGE_STORAGE | USAGE_TRANSFER_SRC)
     };
 
     void* outputPtr = gpuMalloc(textureSizeAlign.size, MEMORY_GPU);
@@ -45,14 +58,10 @@ void computeSample()
     textureHeap[0] = gpuTextureViewDescriptor(texture, GpuViewDesc{.format = FORMAT_RGBA8_UNORM });
     textureHeap[1] = gpuRWTextureViewDescriptor(outputTexture, GpuViewDesc{ .format = FORMAT_RGBA8_UNORM });
 
-    auto test = textureHeap[1];
-
     auto commandBuffer = gpuStartCommandRecording(queue);
     gpuCopyToTexture(commandBuffer, upload.gpu, texture);
     gpuSubmit(queue, Span<GpuCommandBuffer>(&commandBuffer, 1), semaphore, 1);
     gpuWaitSemaphore(semaphore, 1);
-
-    commandBuffer = gpuStartCommandRecording(queue);
 
     auto data = allocate<ComputeData>();
 
@@ -60,6 +69,7 @@ void computeSample()
     data.cpu->srcTexture = 0;
     data.cpu->dstTexture = 1;
 
+    commandBuffer = gpuStartCommandRecording(queue);
     gpuSetPipeline(commandBuffer, pipeline);
     gpuSetActiveTextureHeapPtr(commandBuffer, gpuHostToDevicePointer(textureHeap));
     gpuDispatch(commandBuffer, data.gpu, { 
@@ -71,14 +81,37 @@ void computeSample()
     gpuSubmit(queue, Span<GpuCommandBuffer>(&commandBuffer, 1), semaphore, 2);
     gpuWaitSemaphore(semaphore, 2);
 
+    gpuDestroySemaphore(semaphore);
+    semaphore = gpuCreateSemaphore(0);
 
-    commandBuffer = gpuStartCommandRecording(queue);
-    auto readback = gpuMalloc(textureSizeAlign.size, MEMORY_READBACK);
-    gpuCopyFromTexture(commandBuffer, gpuHostToDevicePointer(readback), outputTexture);
-    gpuSubmit(queue, Span<GpuCommandBuffer>(&commandBuffer, 1), semaphore, 3);
-    gpuWaitSemaphore(semaphore, 3);
+    uint64_t nextFrame = 1;
 
-    stbi_write_png("Assets/BlurredOutput.png", width, height, 4, readback, width * 4);
+    while (!exit)
+    {
+        SDL_Event event;
+        while (SDL_PollEvent(&event))
+        {
+            if (event.type == SDL_EVENT_QUIT)
+            {
+                exit = true;
+                break;
+            }
+        }
+
+        if (nextFrame > FRAMES_IN_FLIGHT)
+        {
+            gpuWaitSemaphore(semaphore, nextFrame - FRAMES_IN_FLIGHT);
+        }
+
+        commandBuffer = gpuStartCommandRecording(queue);
+
+        auto image = gpuSwapchainImage(swapchain);
+        gpuBlitTexture(commandBuffer, image, outputTexture);
+        gpuSubmit(queue, Span<GpuCommandBuffer>(&commandBuffer, 1), semaphore, nextFrame);
+        gpuPresent(swapchain, semaphore, nextFrame++);
+    }
+
+    gpuWaitSemaphore(semaphore, nextFrame - 1);
 
     stbi_image_free(inputImage);
     gpuFree(textureHeap);
@@ -88,7 +121,6 @@ void computeSample()
     gpuFreePipeline(pipeline);
     gpuFree(texturePtr);
     gpuFree(outputPtr);
-    gpuFree(readback);
     upload.free();
     data.free();
     gpuDestroyDevice();
