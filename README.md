@@ -7,7 +7,7 @@ The project started with the original header from the blog post, and built from 
 
 ## Samples
 
-Working samples are in the repo to test the API and to see what the usage looks like in practice. For simple usage of the API, see below.
+To see what the API looks like in practice, check out the samples. For simple usage of the API, see below.
 
 ## Windowless Usage
 ### Common header
