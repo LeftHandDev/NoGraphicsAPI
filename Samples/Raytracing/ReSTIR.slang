@@ -1,11 +1,11 @@
 #include "Raytracing.h"
 
-void addSample(RaytracingData *data, uint resId, uint path, float w, inout uint state)
+void addSample(Reservoir *res, uint resId, uint path, float w, inout uint state)
 {
-    data->reservoirs[resId].w += w;
-    if (randomFloat(state) < (w / data->reservoirs[resId].w))
+    res[resId].w += w;
+    if (randomFloat(state) < (w / res[resId].w))
     {
-        data->reservoirs[resId].path = path;
+        res[resId].path = path;
     }
 }
 
@@ -85,39 +85,63 @@ void main(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
         {
             uint seed = xxhash32(uint3(threadId.xy, data->frame));
             uint resId = threadId.y * imgSize.x + threadId.x;
+            float3 hitT = rayQuery.WorldRayDirection() * rayQuery.CommittedRayT() + rayQuery.WorldRayOrigin();
 
             // Reset reservoir for this frame
             data->reservoirs[resId].w = 0.0;
             data->reservoirs[resId].path = 0;
+            data->reservoirs[resId].M = 0;
 
+            // RIS
             for (int i = 0; i < data->M; ++i)
             {
                 uint lightIndex = pcg(seed) % data->numLights;
 
                 LightData light = data->lights[lightIndex];
-                float3 hitT = rayQuery.WorldRayDirection() * rayQuery.CommittedRayT() + rayQuery.WorldRayOrigin();
                 float3 lightDir = normalize(light.position.xyz - hitT);
-
                 float NoL = max(dot(normal, lightDir), 0.0);
                 float3 Li = (albedo.xyz * light.color.xyz * light.intensity * NoL) / pow(distance(light.position.xyz, hitT), 2.0);
                 float pdf = 1.0 / float(data->numLights);
-                float w = (1.0 / float(data->M)) * length(Li) * (1 / pdf);
+                float w = length(Li) / pdf;
 
-                addSample(data, resId, lightIndex, w, seed);
+                addSample(data->reservoirs, resId, lightIndex, w, seed);
+            }
+            data->reservoirs[resId].M = data->M;
+
+            // Temporal pass
+            {
+                uint lightIndex = data->reservoirs[resId].path;
+                LightData light = data->lights[lightIndex];
+                float3 lightDir = normalize(light.position.xyz - hitT);
+                float NoL = max(dot(normal, lightDir), 0.0);
+                float3 Li = (albedo.xyz * light.color.xyz * light.intensity * NoL) / pow(distance(light.position.xyz, hitT), 2.0);
+
+                float V = shadowRay(tlas, light, hitT + normal * 0.001, light.position.xyz);
+
+                int prevPath = data->history[resId].path;
+                float prevW = data->history[resId].w;
+                int prevM = data->history[resId].M;
+
+                data->history[resId].w = 0.0;
+                data->history[resId].path = 0;
+                data->history[resId].M = 0;
+
+                addSample(data->history, resId, prevPath, prevW, seed);
+                addSample(data->history, resId, lightIndex, data->reservoirs[resId].w * V, seed);
+                data->history[resId].M = prevM + data->reservoirs[resId].M;
             }
 
-            uint y = data->reservoirs[resId].path;
+            // Shade pass
+            {
+                uint lightIndex = data->history[resId].path;
+                LightData light = data->lights[lightIndex];
+                float3 lightDir = normalize(light.position.xyz - hitT);
+                float NoL = max(dot(normal, lightDir), 0.0);
+                float3 Li = (albedo.xyz * light.color.xyz * light.intensity * NoL) / pow(distance(light.position.xyz, hitT), 2.0);
+                float W = (1.0 / float(data->history[resId].M)) * (1.0 / length(Li)) * data->history[resId].w;
 
-            uint lightIndex = y;
-            LightData light = data->lights[lightIndex];
-            float3 hitT = rayQuery.WorldRayDirection() * rayQuery.CommittedRayT() + rayQuery.WorldRayOrigin();
-            float3 lightDir = normalize(light.position.xyz - hitT);
-            float NoL = max(dot(normal, lightDir), 0.0);
-            float3 Li = (albedo.xyz * light.color.xyz * light.intensity * NoL) / pow(distance(light.position.xyz, hitT), 2.0);
-
-            float W = (1.0 / length(Li)) * data->reservoirs[resId].w;
-
-            color.xyz = Li * W * V(tlas, light, hitT + normal * 0.001, light.position.xyz);
+                color.xyz = Li * W;
+            }
         }
     }
 

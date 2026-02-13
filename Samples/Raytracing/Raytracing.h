@@ -38,6 +38,8 @@ struct alignas(16) Reservoir
 {
     int path; // light index
     float w;
+    int M;
+    int padding;
 };
 
 struct alignas(16) RaytracingData
@@ -48,6 +50,7 @@ struct alignas(16) RaytracingData
     MeshData* meshes;
     LightData* lights;
     Reservoir* reservoirs;
+    Reservoir* history;
     uint frame;
     uint accumulate; // 0 reset, 1 accumulate
     uint accumulatedFrames;
@@ -86,8 +89,7 @@ float randomFloat(inout uint state)
     return float(pcg(state)) / 4294967295.0;
 }
 
-// Visibility function
-float V(RaytracingAccelerationStructure tlas, LightData light, float3 x1, float3 x2)
+float shadowRay(RaytracingAccelerationStructure tlas, LightData light, float3 x1, float3 x2)
 {
     RayQuery<RAY_FLAG_NONE> shadowRay;
     RayDesc ray;

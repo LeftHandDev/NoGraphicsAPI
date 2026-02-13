@@ -215,6 +215,7 @@ void raytracingSample()
 
     // ReSTIR reservoirs
     auto reservoirs = allocate<Reservoir>(swapchainDesc.dimensions.x * swapchainDesc.dimensions.y);
+    auto history = allocate<Reservoir>(swapchainDesc.dimensions.x * swapchainDesc.dimensions.y);
 
     raytracingData.cpu->camData = camDataAlloc.gpu;
     raytracingData.cpu->tlas = tlasPtr;
@@ -222,6 +223,7 @@ void raytracingSample()
     raytracingData.cpu->meshes = meshData.gpu;
     raytracingData.cpu->lights = lightData.gpu;
     raytracingData.cpu->reservoirs = reservoirs.gpu;
+    raytracingData.cpu->history = history.gpu;
     raytracingData.cpu->numLights = numLights;
     raytracingData.cpu->dstTexture = 1;
     raytracingData.cpu->frame = 0;
@@ -253,8 +255,8 @@ void raytracingSample()
                 {
                     if (pipeline == restirPipeline)
                     {
-                        // Reset reservoirs when switching back to reference pipeline
-                        //memset(reservoirs.cpu, 0, sizeof(Reservoir) * swapchainDesc.dimensions.x * swapchainDesc.dimensions.y);
+                        // Reset history reservoir when switching back to reference pipeline
+                        memset(history.cpu, 0, sizeof(Reservoir) * swapchainDesc.dimensions.x * swapchainDesc.dimensions.y);
                         pipeline = referencePipeline;
                     }
                     else
