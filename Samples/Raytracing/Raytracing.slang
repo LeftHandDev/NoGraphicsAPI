@@ -73,11 +73,11 @@ void main(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
     // ndc.y = -ndc.y;
 
     float4 clip = float4(ndc, 0.0, 1.0);
-    float4 world = mul(data->invViewProjection, clip);
+    float4 world = mul(data->camData->invViewProjection, clip);
     world.xyz /= world.w;
 
     RayDesc ray;
-    ray.Origin = data->cameraPosition.xyz;
+    ray.Origin = data->camData->position.xyz;
     ray.Direction = normalize(world.xyz - ray.Origin);
     ray.TMin = 0.001;
     ray.TMax = 10000.0;
@@ -96,44 +96,49 @@ void main(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
     {
         uint32_t meshId = data->instanceToMesh[rayQuery.CommittedInstanceID()];
         MeshData mesh = data->meshes[meshId];
+        PrimitiveData primitive = mesh.primitives[rayQuery.CommittedGeometryIndex()];
         float2 barycentrics = rayQuery.CommittedTriangleBarycentrics();
         uint primitiveIndex = rayQuery.CommittedPrimitiveIndex();
 
-        uint uvIndex0 = mesh.uvIndices[primitiveIndex * 3 + 0];
-        uint uvIndex1 = mesh.uvIndices[primitiveIndex * 3 + 1];
-        uint uvIndex2 = mesh.uvIndices[primitiveIndex * 3 + 2];
+        uint index0 = primitive.indices[primitiveIndex * 3 + 0];
+        uint index1 = primitive.indices[primitiveIndex * 3 + 1];
+        uint index2 = primitive.indices[primitiveIndex * 3 + 2];
 
-        float2 uv0 = mesh.uvs[uvIndex0];
-        float2 uv1 = mesh.uvs[uvIndex1];
-        float2 uv2 = mesh.uvs[uvIndex2];
+        float2 uv0 = primitive.uvs[index0];
+        float2 uv1 = primitive.uvs[index1];
+        float2 uv2 = primitive.uvs[index2];
 
         float2 hitUV = uv0 * (1.0 - barycentrics.x - barycentrics.y) + uv1 * barycentrics.x + uv2 * barycentrics.y;
 
-        Texture2D<float4> tex = textureHeap[NonUniformResourceIndex(mesh.texture)];
+        Texture2D<float4> tex = textureHeap[NonUniformResourceIndex(primitive.texture)];
         SamplerState sampler = samplerHeap[0];
         float4 albedo = tex.SampleLevel(sampler, hitUV, 0);
 
-        uint normalIndex0 = mesh.normalIndices[primitiveIndex * 3 + 0];
-        uint normalIndex1 = mesh.normalIndices[primitiveIndex * 3 + 1];
-        uint normalIndex2 = mesh.normalIndices[primitiveIndex * 3 + 2];
-
-        float3 normal0 = mesh.normals[normalIndex0];
-        float3 normal1 = mesh.normals[normalIndex1];
-        float3 normal2 = mesh.normals[normalIndex2];
-
-        uint seed = xxhash32(uint3(threadId.xy, data->frame));
-        uint lightIndex = pcg(seed) % data->numLights;
-
-        LightData light = data->lights[lightIndex];
-        float3 hitT = rayQuery.WorldRayDirection() * rayQuery.CommittedRayT() + rayQuery.WorldRayOrigin();
-        float3 lightDir = normalize(light.position.xyz - hitT);
+        float3 normal0 = primitive.normals[index0];
+        float3 normal1 = primitive.normals[index1];
+        float3 normal2 = primitive.normals[index2];
 
         float3 normal = normalize(normal0 * (1.0 - barycentrics.x - barycentrics.y) + normal1 * barycentrics.x + normal2 * barycentrics.y);
         normal = normalize(mul(rayQuery.CommittedWorldToObject4x3(), normal)).xyz;
 
-        float NoL = max(dot(normal, lightDir), 0.0);
-        float3 Li = (albedo.xyz * light.color.xyz * light.intensity * NoL) / pow(distance(light.position.xyz, hitT), 2.0);
-        color.xyz = Li * V(tlas, light, hitT + normal * 0.001, light.position.xyz);
+        // Skip lighting if no lights
+        if (data->numLights == 0)
+        {
+            color.xyz = albedo.xyz;
+        }
+        else
+        {
+            uint seed = xxhash32(uint3(threadId.xy, data->frame));
+            uint lightIndex = pcg(seed) % data->numLights;
+
+            LightData light = data->lights[lightIndex];
+            float3 hitT = rayQuery.WorldRayDirection() * rayQuery.CommittedRayT() + rayQuery.WorldRayOrigin();
+            float3 lightDir = normalize(light.position.xyz - hitT);
+
+            float NoL = max(dot(normal, lightDir), 0.0);
+            float3 Li = (albedo.xyz * light.color.xyz * light.intensity * NoL) / pow(distance(light.position.xyz, hitT), 2.0);
+            color.xyz = Li * V(tlas, light, hitT + normal * 0.001, light.position.xyz);
+        }
     }
 
     if (data->accumulate == 1)

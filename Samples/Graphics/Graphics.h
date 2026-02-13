@@ -5,12 +5,6 @@
 
 void graphicsSample();
 
-struct Vertex
-{
-    float4 vertex;
-    float2 uv;
-};
-
 struct alignas(16) Instance
 {
     float4x4 model;
@@ -22,7 +16,8 @@ struct alignas(16) VertexData
     float4x4 viewProjection;
     float4x4 viewProjectionNj;
     float4x4 prevViewProjectionNj;
-    Vertex* vertices;
+    float3* vertices;
+    float2* uvs;
     Instance* instances;
 };
 

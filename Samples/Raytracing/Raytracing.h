@@ -5,16 +5,19 @@
 
 void raytracingSample();
 
-struct alignas(16) MeshData
+struct alignas(16) PrimitiveData
 {
     uint32_t* indices;
-    float4* vertices;
+    float3* vertices;
     float2* uvs;
-    uint32_t* uvIndices;
     float3* normals;
-    uint32_t* normalIndices;
     uint texture;
-    uint padding;
+    uint padding[3];
+};
+
+struct alignas(16) MeshData
+{
+    PrimitiveData* primitives;
 };
 
 struct alignas(16) LightData
@@ -25,10 +28,15 @@ struct alignas(16) LightData
     float3 padding;
 };
 
-struct alignas(16) RaytracingData
+struct alignas(16) CameraData
 {
     float4x4 invViewProjection;
-    float4 cameraPosition;
+    float4 position;
+};
+
+struct alignas(16) RaytracingData
+{
+    CameraData* camData;
     AccelerationStructure tlas;
     uint32_t* instanceToMesh;
     MeshData* meshes;

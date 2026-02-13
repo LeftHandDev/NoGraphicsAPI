@@ -51,8 +51,7 @@ void graphicsSample()
     bool exit = false;
 
     int width, height, channels;
-    stbi_set_flip_vertically_on_load(1);
-    stbi_uc* inputImage = stbi_load("../../../Assets/Dice.png", &width, &height, &channels, 4);
+    stbi_uc* inputImage = stbi_load("Assets/NoGraphicsAPI.png", &width, &height, &channels, 4);
 
     auto upload = allocate<uint8_t>(width * height * 4);
     memcpy(upload.cpu, inputImage, width * height * 4);
@@ -156,13 +155,13 @@ void graphicsSample()
     colorTargets[1].format = motionVectorsTexture.format;
 
     GpuRasterDesc rasterDesc = {
-        .cull = CULL_CW,
+        .cull = CULL_CCW,
         .depthFormat = depthDesc.format,
         .colorTargets = Span<ColorTarget>(colorTargets, 2)
     };
 
-    auto vertexIR = loadIR("../../../Samples/Graphics/Vertex.spv");
-    auto pixelIR = loadIR("../../../Samples/Graphics/Pixel.spv");
+    auto vertexIR = loadIR("../Shaders/Graphics/Vertex.spv");
+    auto pixelIR = loadIR("../Shaders/Graphics/Pixel.spv");
     auto pipeline = gpuCreateGraphicsPipeline(
         ByteSpan(vertexIR),
         ByteSpan(pixelIR),
@@ -175,27 +174,32 @@ void graphicsSample()
     };
     GpuDepthStencilState depthState = gpuCreateDepthStencilState(depthDescState);
 
-    auto taaIR = loadIR("../../../Samples/Graphics/TAA.spv");
+    auto taaIR = loadIR("../Shaders/Graphics/TAA.spv");
     auto taaPipeline = gpuCreateComputePipeline(
         ByteSpan(taaIR)
     );
 
-    std::vector<Vertex> verticesObj;
-    std::vector<uint32_t> indicesObj;
+    std::vector<float3> cubeVertices;
+    std::vector<float3> cubeNormals;
+    std::vector<float2> cubeUVs;
+    std::vector<uint32_t> cubeIndices;
+    getCube(cubeVertices, cubeNormals, cubeUVs, cubeIndices);
 
-    loadOBJ("../../../Assets/Cube.obj", verticesObj, indicesObj);
+    auto vertices = allocate<float3>(cubeVertices.size());
+    memcpy(vertices.cpu, cubeVertices.data(), sizeof(float3) * cubeVertices.size());
 
-    auto vertices = allocate<Vertex>(static_cast<int>(verticesObj.size()));
-    memcpy(vertices.cpu, verticesObj.data(), sizeof(Vertex) * verticesObj.size());
+    auto uvs = allocate<float2>(cubeUVs.size());
+    memcpy(uvs.cpu, cubeUVs.data(), sizeof(float2) * cubeUVs.size());
 
-    auto indices = allocate<uint32_t>(static_cast<int>(indicesObj.size()));
-    memcpy(indices.cpu, indicesObj.data(), sizeof(uint32_t) * indicesObj.size());
+    auto indices = allocate<uint32_t>(cubeIndices.size());
+    memcpy(indices.cpu, cubeIndices.data(), sizeof(uint32_t) * cubeIndices.size());
 
     auto instances = allocate<Instance>(2);
 
     auto vertexData = allocate<VertexData>();
     auto pixelData = allocate<PixelData>();
     vertexData.cpu->vertices = vertices.gpu;
+    vertexData.cpu->uvs = uvs.gpu;
     vertexData.cpu->instances = instances.gpu;
     pixelData.cpu->srcTexture = 0;
 

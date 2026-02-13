@@ -39,88 +39,122 @@ else()
     target_link_libraries(NoGraphicsAPI PRIVATE ${Vulkan_LIBRARIES})
 endif()
 
-# Shader compilation (slang): compile .slang to .spv using the Vulkan SDK's slangc
+# Shader compilation (slang): compile .slang to .spv next to the executable
 set(SLANGC "${VULKAN_SDK}/Bin/slangc.exe")
 if(NOT EXISTS "${SLANGC}")
     message(WARNING "slangc.exe not found at ${SLANGC}; skipping shader compilation target.")
 else()
     set(SHADER_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/Shaders")
+    set(SPV_OUTPUT_DIR "$<TARGET_FILE_DIR:NoGraphicsAPI>")
 
     # Compute (Samples/Compute)
     add_custom_command(
-        OUTPUT "${CMAKE_SOURCE_DIR}/Samples/Compute/Compute.spv"
+        OUTPUT "${CMAKE_BINARY_DIR}/Shaders/Compute/Compute.spv"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${SPV_OUTPUT_DIR}/Shaders/Compute"
         COMMAND "${SLANGC}" "${CMAKE_SOURCE_DIR}/Samples/Compute/Compute.slang"
                 -target spirv -stage compute -entry main
                 -I "${SHADER_INCLUDE_DIR}"
-                -o "${CMAKE_SOURCE_DIR}/Samples/Compute/Compute.spv"
+                -o "${SPV_OUTPUT_DIR}/Shaders/Compute/Compute.spv"
+        COMMAND ${CMAKE_COMMAND} -E copy
+                "${SPV_OUTPUT_DIR}/Shaders/Compute/Compute.spv"
+                "${CMAKE_BINARY_DIR}/Shaders/Compute/Compute.spv"
         DEPENDS "${CMAKE_SOURCE_DIR}/Samples/Compute/Compute.slang" "${SHADER_INCLUDE_DIR}/NoGraphicsAPI.h"
         COMMENT "Compiling Compute.slang -> Compute.spv"
         VERBATIM)
 
     # Graphics (vertex + fragment)
     add_custom_command(
-        OUTPUT "${CMAKE_SOURCE_DIR}/Samples/Graphics/Vertex.spv"
+        OUTPUT "${CMAKE_BINARY_DIR}/Shaders/Graphics/Vertex.spv"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${SPV_OUTPUT_DIR}/Shaders/Graphics"
         COMMAND "${SLANGC}" "${CMAKE_SOURCE_DIR}/Samples/Graphics/Vertex.slang"
                 -target spirv -stage vertex -entry main
                 -I "${SHADER_INCLUDE_DIR}"
-                -o "${CMAKE_SOURCE_DIR}/Samples/Graphics/Vertex.spv"
+                -o "${SPV_OUTPUT_DIR}/Shaders/Graphics/Vertex.spv"
+        COMMAND ${CMAKE_COMMAND} -E copy
+                "${SPV_OUTPUT_DIR}/Shaders/Graphics/Vertex.spv"
+                "${CMAKE_BINARY_DIR}/Shaders/Graphics/Vertex.spv"
         DEPENDS "${CMAKE_SOURCE_DIR}/Samples/Graphics/Vertex.slang" "${SHADER_INCLUDE_DIR}/NoGraphicsAPI.h"
         COMMENT "Compiling Vertex.slang -> Vertex.spv"
         VERBATIM)
 
     add_custom_command(
-        OUTPUT "${CMAKE_SOURCE_DIR}/Samples/Graphics/Pixel.spv"
+        OUTPUT "${CMAKE_BINARY_DIR}/Shaders/Graphics/Pixel.spv"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${SPV_OUTPUT_DIR}/Shaders/Graphics"
         COMMAND "${SLANGC}" "${CMAKE_SOURCE_DIR}/Samples/Graphics/Pixel.slang"
                 -target spirv -stage fragment -entry main
                 -I "${SHADER_INCLUDE_DIR}"
-                -o "${CMAKE_SOURCE_DIR}/Samples/Graphics/Pixel.spv"
+                -o "${SPV_OUTPUT_DIR}/Shaders/Graphics/Pixel.spv"
+        COMMAND ${CMAKE_COMMAND} -E copy
+                "${SPV_OUTPUT_DIR}/Shaders/Graphics/Pixel.spv"
+                "${CMAKE_BINARY_DIR}/Shaders/Graphics/Pixel.spv"
         DEPENDS "${CMAKE_SOURCE_DIR}/Samples/Graphics/Pixel.slang" "${SHADER_INCLUDE_DIR}/NoGraphicsAPI.h"
         COMMENT "Compiling Pixel.slang -> Pixel.spv"
         VERBATIM)
 
     add_custom_command(
-        OUTPUT "${CMAKE_SOURCE_DIR}/Samples/Graphics/TAA.spv"
+        OUTPUT "${CMAKE_BINARY_DIR}/Shaders/Graphics/TAA.spv"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${SPV_OUTPUT_DIR}/Shaders/Graphics"
         COMMAND "${SLANGC}" "${CMAKE_SOURCE_DIR}/Samples/Graphics/TAA.slang"
                 -target spirv -stage compute -entry main
                 -I "${SHADER_INCLUDE_DIR}"
-                -o "${CMAKE_SOURCE_DIR}/Samples/Graphics/TAA.spv"
+                -o "${SPV_OUTPUT_DIR}/Shaders/Graphics/TAA.spv"
+        COMMAND ${CMAKE_COMMAND} -E copy
+                "${SPV_OUTPUT_DIR}/Shaders/Graphics/TAA.spv"
+                "${CMAKE_BINARY_DIR}/Shaders/Graphics/TAA.spv"
         DEPENDS "${CMAKE_SOURCE_DIR}/Samples/Graphics/TAA.slang" "${SHADER_INCLUDE_DIR}/NoGraphicsAPI.h"
         COMMENT "Compiling TAA.slang -> TAA.spv"
         VERBATIM)
 
     # Raytracing sample currently uses a compute shader
     add_custom_command(
-        OUTPUT "${CMAKE_SOURCE_DIR}/Samples/Raytracing/Raytracing.spv"
+        OUTPUT "${CMAKE_BINARY_DIR}/Shaders/Raytracing/Raytracing.spv"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${SPV_OUTPUT_DIR}/Shaders/Raytracing"
         COMMAND "${SLANGC}" "${CMAKE_SOURCE_DIR}/Samples/Raytracing/Raytracing.slang"
                 -target spirv -stage compute -entry main
                 -I "${SHADER_INCLUDE_DIR}"
-                -o "${CMAKE_SOURCE_DIR}/Samples/Raytracing/Raytracing.spv"
+                -o "${SPV_OUTPUT_DIR}/Shaders/Raytracing/Raytracing.spv"
+        COMMAND ${CMAKE_COMMAND} -E copy
+                "${SPV_OUTPUT_DIR}/Shaders/Raytracing/Raytracing.spv"
+                "${CMAKE_BINARY_DIR}/Shaders/Raytracing/Raytracing.spv"
         DEPENDS "${CMAKE_SOURCE_DIR}/Samples/Raytracing/Raytracing.slang" "${SHADER_INCLUDE_DIR}/NoGraphicsAPI.h"
         COMMENT "Compiling Raytracing.slang -> Raytracing.spv"
         VERBATIM)
 
     # PatchDescriptorsHeap
     add_custom_command(
-        OUTPUT "${CMAKE_SOURCE_DIR}/Shaders/PatchDescriptors.spv"
+        OUTPUT "${CMAKE_BINARY_DIR}/Shaders/PatchDescriptors.spv"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${SPV_OUTPUT_DIR}/Shaders"
         COMMAND "${SLANGC}" "${CMAKE_SOURCE_DIR}/Shaders/PatchDescriptors.slang"
                 -target spirv -stage compute -entry main
                 -I "${SHADER_INCLUDE_DIR}"
-                -o "${CMAKE_SOURCE_DIR}/Shaders/PatchDescriptors.spv"
+                -o "${SPV_OUTPUT_DIR}/Shaders/PatchDescriptors.spv"
+        COMMAND ${CMAKE_COMMAND} -E copy
+                "${SPV_OUTPUT_DIR}/Shaders/PatchDescriptors.spv"
+                "${CMAKE_BINARY_DIR}/Shaders/PatchDescriptors.spv"
         DEPENDS "${CMAKE_SOURCE_DIR}/Shaders/PatchDescriptors.slang" "${SHADER_INCLUDE_DIR}/NoGraphicsAPI.h"
         COMMENT "Compiling PatchDescriptors.slang -> PatchDescriptors.spv"
         VERBATIM)
 
     add_custom_target(Shaders ALL
         DEPENDS
-            "${CMAKE_SOURCE_DIR}/Samples/Compute/Compute.spv"
-            "${CMAKE_SOURCE_DIR}/Samples/Graphics/Vertex.spv"
-            "${CMAKE_SOURCE_DIR}/Samples/Graphics/Pixel.spv"
-            "${CMAKE_SOURCE_DIR}/Samples/Graphics/TAA.spv"
-            "${CMAKE_SOURCE_DIR}/Samples/Raytracing/Raytracing.spv"
-            "${CMAKE_SOURCE_DIR}/Shaders/PatchDescriptors.spv")
+            "${CMAKE_BINARY_DIR}/Shaders/Compute/Compute.spv"
+            "${CMAKE_BINARY_DIR}/Shaders/Graphics/Vertex.spv"
+            "${CMAKE_BINARY_DIR}/Shaders/Graphics/Pixel.spv"
+            "${CMAKE_BINARY_DIR}/Shaders/Graphics/TAA.spv"
+            "${CMAKE_BINARY_DIR}/Shaders/Raytracing/Raytracing.spv"
+            "${CMAKE_BINARY_DIR}/Shaders/PatchDescriptors.spv")
 
     add_dependencies(NoGraphicsAPI Shaders)
 endif()
+
+# Copy assets to the build directory next to the executable
+add_custom_command(TARGET NoGraphicsAPI POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:NoGraphicsAPI>/Assets"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_SOURCE_DIR}/Assets"
+        "$<TARGET_FILE_DIR:NoGraphicsAPI>/Assets"
+    COMMENT "Copying Assets to build output directory"
+    VERBATIM)
 
 # Prefer SDL3 CMake package; fall back to the Vulkan SDK copy via the env var
 if(TARGET SDL3::SDL3)

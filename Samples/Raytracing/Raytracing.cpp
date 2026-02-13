@@ -6,8 +6,22 @@
 #include <SDL3/SDL.h>
 #include "../../SDL_gpu.h"
 
+#define GLM_ENABLE_EXPERIMENTAL
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtx/quaternion.hpp>
+
+#include <random>
+
+float4x4 mat4ToFloat4x4(const glm::mat4& m)
+{
+    return float4x4(
+        { m[0][0], m[0][1], m[0][2], m[0][3] },
+        { m[1][0], m[1][1], m[1][2], m[1][3] },
+        { m[2][0], m[2][1], m[2][2], m[2][3] },
+        { m[3][0], m[3][1], m[3][2], m[3][3] }
+    );
+}
 
 void raytracingSample()
 {
@@ -20,8 +34,7 @@ void raytracingSample()
     bool exit = false;
 
     int width, height, channels;
-    stbi_set_flip_vertically_on_load(1);
-    stbi_uc* inputImage = stbi_load("../../../Assets/NoGraphicsAPI.png", &width, &height, &channels, 4);
+    stbi_uc* inputImage = stbi_load("Assets/NoGraphicsAPI.png", &width, &height, &channels, 4);
 
     auto upload = allocate<uint8_t>(width * height * 4);
     memcpy(upload.cpu, inputImage, width * height * 4);
@@ -63,125 +76,159 @@ void raytracingSample()
         .colorTargets = Span<ColorTarget>(&colorTarget, 1)
     };
 
-    auto computeIR = loadIR("../../../Samples/Raytracing/Raytracing.spv");
-    auto pipeline = gpuCreateComputePipeline(ByteSpan(computeIR.data(), computeIR.size()));
+    auto computeIR = loadIR("../Shaders/Raytracing/Raytracing.spv");
+    auto pipeline = gpuCreateComputePipeline(ByteSpan(computeIR));
 
-    auto mesh = createMesh("../../../Assets/Torus.obj");
-    auto meshData = allocate<MeshData>(); // only allocates the struct, not the geometry data
-    mesh.load(meshData.cpu);
-    meshData.cpu->texture = 0; // matches the index in the texture heap
+    size_t allocatorSize = 2 * 1024 * 1024; // 2 MB
+    LinearAllocator allocator(allocatorSize); 
+    auto raytracingData = allocator.allocate<RaytracingData>();
 
-    auto instancesToMesh = allocate<uint32_t>(2);
-    instancesToMesh.cpu[0] = 0;
-    instancesToMesh.cpu[1] = 0;
-
-    auto model = allocate<float4x4>();
-    float rotation = 0.0f;
-    auto rot = glm::rotate(glm::mat4(1.0f), rotation, glm::vec3(1.0f, 1.0f, 0.0f));
-    memcpy(model.cpu, &rot, sizeof(float4x4));
-
-    GpuAccelerationStructureTrianglesDesc triangleDesc = {
-        .vertexDataGpu = meshData.cpu->vertices,
-        .vertexCount = static_cast<uint32_t>(mesh.vertices.size()),
-        .vertexStride = sizeof(float4),
-        .vertexFormat = FORMAT_RGB32_FLOAT, // w component unused
-        .indexDataGpu = meshData.cpu->indices,
-        .indexType = INDEX_TYPE_UINT32,
-        .transformDataGpu = nullptr // optional
-    };
-
-    GpuAccelerationStructureDesc blasDesc = {
-        .type = TYPE_BOTTOM_LEVEL,
-        .blasDesc = {
-            .type = GEOMETRY_TYPE_TRIANGLES,
-            .triangles = Span<GpuAccelerationStructureTrianglesDesc>(&triangleDesc, 1)
-        },
-        .buildRange = new GpuAccelerationStructureBuildRange{
-            .primitiveCount = static_cast<uint32_t>(mesh.indices.size() / 3),
-            .primitiveOffset = 0,
-            .firstVertex = 0,
-            .transformOffset = 0
-        }
-    };
-
-    auto blasSize = gpuAccelerationStructureSizes(blasDesc);
-    void* blasPtr = gpuMalloc(blasSize.size, MEMORY_GPU);
-    auto blas = gpuCreateAccelerationStructure(blasDesc, blasPtr, blasSize.size);
-
-    auto instances = gpuMalloc<GpuAccelerationStructureInstanceDesc>(2);
-    instances[0].transform = float3x4{
-        {1,0,0,0},
-        {0,1,0,0},
-        {0,0,1,0}
-    };
-    instances[0].instanceID = 0;
-    instances[0].instanceMask = 0xFF;
-    instances[0].hitGroupIndex = 0;
-    instances[0].flags = 0; 
-    instances[0].blasAddress = blasPtr;
-
-    instances[1].transform = float3x4{
-        {1,0,0,0},
-        {0,1,0,-2},
-        {0,0,1,0}
-    };
-    instances[1].instanceID = 1;
-    instances[1].instanceMask = 0xFF;
-    instances[1].hitGroupIndex = 0;
-    instances[1].flags = 0;
-    instances[1].blasAddress = blasPtr;
+    uint32_t numLights = 11;
+    auto lightData = allocator.allocate<LightData>(numLights);
     
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_real_distribution<float> dis(-2.5f, 2.5f);
+
+    // put one light at the camera so we can always see something
+    lightData.cpu[0].position = { 0, 0, -5, 1 };
+    lightData.cpu[0].color = { 1, 1, 1, 1 };
+    lightData.cpu[0].intensity = 10.0f;
+
+    // Randomly position lights in the scene
+    for (int i = 1; i < numLights; ++i)
+    {
+        lightData.cpu[i].position = { dis(gen), dis(gen), dis(gen), 1 };
+        lightData.cpu[i].color = { 1, 1, 1, 1 };
+        lightData.cpu[i].intensity = 10.0f;
+    }
+
+    auto camDataAlloc = allocator.allocate<CameraData>();
+    camDataAlloc.cpu->position = { 0, 0, -5, 1 };
+    auto view = glm::lookAt(glm::vec3(0, 0, -5), glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
+    auto projection = glm::perspective(glm::radians(45.0f), swapchainDesc.dimensions.x / static_cast<float>(swapchainDesc.dimensions.y), 0.1f, 100.0f);
+    camDataAlloc.cpu->invViewProjection = mat4ToFloat4x4(glm::inverse(projection * view));
+
+    std::vector<float3> vertices;
+    std::vector<float3> normals;
+    std::vector<float2> uvs;
+    std::vector<uint32_t> indices;
+    getCube(vertices, normals, uvs, indices);
+
+    auto vertexBuffer = allocator.allocate<float3>(vertices.size());
+    auto normalBuffer = allocator.allocate<float3>(normals.size());
+    auto uvBuffer = allocator.allocate<float2>(uvs.size());
+    auto indexBuffer = allocator.allocate<uint32_t>(indices.size());
+    memcpy(vertexBuffer.cpu, vertices.data(), vertices.size() * sizeof(float3));
+    memcpy(normalBuffer.cpu, normals.data(), normals.size() * sizeof(float3));
+    memcpy(uvBuffer.cpu, uvs.data(), uvs.size() * sizeof(float2));
+    memcpy(indexBuffer.cpu, indices.data(), indices.size() * sizeof(uint32_t));
+
+    // Setup mesh/primitive data for shader access
+    auto primitiveData = allocator.allocate<PrimitiveData>();
+    primitiveData.cpu->indices = indexBuffer.gpu;
+    primitiveData.cpu->vertices = vertexBuffer.gpu;
+    primitiveData.cpu->uvs = uvBuffer.gpu;
+    primitiveData.cpu->normals = normalBuffer.gpu;
+    primitiveData.cpu->texture = 0;
+
+    auto meshData = allocator.allocate<MeshData>();
+    meshData.cpu->primitives = primitiveData.gpu;
+
+    const uint32_t cubeCount = 10;
+    auto instanceToMesh = allocator.allocate<uint32_t>(cubeCount);
+    for (uint32_t i = 0; i < cubeCount; ++i)
+    {   
+        // All instances use the same mesh in this scenario 
+        instanceToMesh.cpu[i] = 0;
+    }
+
+    GpuAccelerationStructureTrianglesDesc trianglesDesc = {
+        .vertexDataGpu = vertexBuffer.gpu,
+        .vertexCount = static_cast<uint32_t>(vertices.size()),
+        .vertexStride = sizeof(float3),
+        .vertexFormat = FORMAT_RGB32_FLOAT,
+        .indexDataGpu = indexBuffer.gpu,
+        .indexType = INDEX_TYPE_UINT32,
+        .transformDataGpu = nullptr
+    };
+
+    GpuAccelerationStructureBlasDesc blasDesc = {
+        .type = GEOMETRY_TYPE_TRIANGLES,
+        .triangles = Span<GpuAccelerationStructureTrianglesDesc>(&trianglesDesc, 1)
+    };
+
+    GpuAccelerationStructureBuildRange blasBuildRange = {
+        .primitiveCount = static_cast<uint32_t>(indices.size() / 3),
+        .primitiveOffset = 0,
+        .firstVertex = 0,
+        .transformOffset = 0
+    };
+
+    GpuAccelerationStructureDesc blasASDesc = {
+        .type = TYPE_BOTTOM_LEVEL,
+        .blasDesc = blasDesc,
+        .buildRanges = Span<GpuAccelerationStructureBuildRange>(&blasBuildRange, 1)
+    };
+
+    auto blasSize = gpuAccelerationStructureSizes(blasASDesc);
+    void* blasPtr = gpuMalloc(blasSize.size, MEMORY_GPU);
+    auto blas = gpuCreateAccelerationStructure(blasASDesc, blasPtr, blasSize.size);
+
+    auto instances = gpuMalloc<GpuAccelerationStructureInstanceDesc>(cubeCount);
+    const float scale = 0.5f;
+
+    // Randomly place cubes in the scene
+    for (size_t i = 0; i < cubeCount; ++i)
+    {
+        // glm random rotation
+        glm::quat rotation = glm::quat(glm::vec3(dis(gen), dis(gen), dis(gen)));
+
+        glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(dis(gen), dis(gen), dis(gen))) 
+            * glm::toMat4(rotation) * glm::scale(glm::mat4(1.0f), glm::vec3(scale));
+
+        instances[i].transform = float3x4{
+            { model[0][0], model[1][0], model[2][0], model[3][0] },
+            { model[0][1], model[1][1], model[2][1], model[3][1] },
+            { model[0][2], model[1][2], model[2][2], model[3][2] }
+        };
+        instances[i].instanceID = static_cast<uint32_t>(i);
+        instances[i].instanceMask = 0xFF;
+        instances[i].hitGroupIndex = 0;
+        instances[i].flags = 0; 
+        instances[i].blasAddress = blasPtr;
+    }
+    GpuAccelerationStructureBuildRange tlasBuildRange = {
+        .primitiveCount = static_cast<uint32_t>(cubeCount),
+        .primitiveOffset = 0,
+        .firstVertex = 0,
+        .transformOffset = 0
+    };
+
     GpuAccelerationStructureDesc tlasDesc = {
         .type = TYPE_TOP_LEVEL,
         .tlasDesc = {
             .arrayOfPointers = false,
             .instancesGpu = gpuHostToDevicePointer(instances)
         },
-        .buildRange = new GpuAccelerationStructureBuildRange{
-            .primitiveCount = 2,
-            .primitiveOffset = 0,
-            .firstVertex = 0,
-            .transformOffset = 0
-        }
+        .buildRanges = Span<GpuAccelerationStructureBuildRange>(&tlasBuildRange, 1)
     };
 
     auto tlasSize = gpuAccelerationStructureSizes(tlasDesc);
     void* tlasPtr = gpuMalloc(tlasSize.size, MEMORY_GPU);
     auto tlas = gpuCreateAccelerationStructure(tlasDesc, tlasPtr, tlasSize.size);
-
-    auto scratchSize = std::max(blasSize.buildScratchSize, tlasSize.buildScratchSize);
+    
+    size_t scratchSize = std::max(blasSize.buildScratchSize, tlasSize.buildScratchSize);
     void* scratchPtr = gpuMalloc(scratchSize, MEMORY_GPU);
 
-    auto camera = glm::vec4{ 0.0f, 2.0f, 7.0f, 1.f };
-    auto projection = glm::perspective(glm::radians(45.0f), 1920.0f / 1080.0f, 0.1f, 100.0f);
-    auto view = glm::lookAt(glm::vec3(camera), glm::vec3{ 0.0f, 0.0f, 0.0f }, glm::vec3{ 0.0f, -1.0f, 0.0f });
-    auto invViewProjection = glm::inverse(projection * view);
-
-    auto viewProjection = projection * view;
-
-    auto lights = allocate<LightData>(3);
-    lights.cpu[0].position = float4{ 0.0f, 5.0f, 0.0f, 1.0f };
-    lights.cpu[0].color = float4{ 1.0f, 0.25f, 0.25f, 0.0f };
-    lights.cpu[0].intensity = 100.0f;
-
-    lights.cpu[1].position = float4{ 5.0f, 5.0f, 0.0f, 1.0f };
-    lights.cpu[1].color = float4{ 0.25f, 1.0f, 0.25f, 1.0f };
-    lights.cpu[1].intensity = 100.0f;
-
-    lights.cpu[2].position = float4{ -5.0f, 5.0f, 0.0f, 1.0f };
-    lights.cpu[2].color = float4{ 0.25f, 0.25f, 1.0f, 1.0f };
-    lights.cpu[2].intensity = 100.0f;
-
-    auto raytracingData = allocate<RaytracingData>();
-    memcpy(&raytracingData.cpu->cameraPosition, &camera, sizeof(float4));
-    memcpy(&raytracingData.cpu->invViewProjection, &invViewProjection, sizeof(float4x4));
-    raytracingData.cpu->meshes = meshData.gpu;
+    raytracingData.cpu->camData = camDataAlloc.gpu;
     raytracingData.cpu->tlas = tlasPtr;
-    raytracingData.cpu->instanceToMesh = instancesToMesh.gpu;
+    raytracingData.cpu->instanceToMesh = instanceToMesh.gpu;
+    raytracingData.cpu->meshes = meshData.gpu;
+    raytracingData.cpu->lights = lightData.gpu;
+    raytracingData.cpu->numLights = numLights;
     raytracingData.cpu->dstTexture = 1;
     raytracingData.cpu->frame = 0;
-    raytracingData.cpu->lights = lights.gpu;
-    raytracingData.cpu->numLights = 3;
 
     auto queue = gpuCreateQueue();
     auto semaphore = gpuCreateSemaphore(0);
@@ -222,7 +269,6 @@ void raytracingSample()
             gpuCopyToTexture(commandBuffer, upload.gpu, texture);
             gpuBarrier(commandBuffer, STAGE_TRANSFER, STAGE_COMPUTE, HAZARD_DESCRIPTORS);
 
-            // Build acceleration structures
             gpuBuildAccelerationStructures(commandBuffer, Span<GpuAccelerationStructure>(&blas, 1), scratchPtr, MODE_BUILD);
             gpuBarrier(commandBuffer, STAGE_ACCELERATION_STRUCTURE_BUILD, STAGE_ACCELERATION_STRUCTURE_BUILD, HAZARD_ACCELERATION_STRUCTURE);
             gpuBuildAccelerationStructures(commandBuffer, Span<GpuAccelerationStructure>(&tlas, 1), scratchPtr, MODE_BUILD);
@@ -230,8 +276,6 @@ void raytracingSample()
         }
         else
         {
-            // gpuBuildAccelerationStructures(commandBuffer, Span<GpuAccelerationStructure>(&blas, 1), scratchPtr, MODE_UPDATE);
-            // gpuBarrier(commandBuffer, STAGE_ACCELERATION_STRUCTURE_BUILD, STAGE_ACCELERATION_STRUCTURE_BUILD, HAZARD_ACCELERATION_STRUCTURE);
             gpuBuildAccelerationStructures(commandBuffer, Span<GpuAccelerationStructure>(&tlas, 1), scratchPtr, MODE_UPDATE);
             gpuBarrier(commandBuffer, STAGE_ACCELERATION_STRUCTURE_BUILD, STAGE_COMPUTE, HAZARD_ACCELERATION_STRUCTURE);
         }
@@ -260,13 +304,6 @@ void raytracingSample()
         gpuSubmit(queue, Span<GpuCommandBuffer>(&commandBuffer, 1), semaphore, nextFrame);
         gpuPresent(swapchain, semaphore, nextFrame++);
 
-        if (raytracingData.cpu->accumulate == 0)
-        {
-            rotation += 0.0005f;
-            auto rot = glm::rotate(glm::mat4(1.0f), rotation, glm::vec3(1.0f, 1.0f, 0.0f));
-            memcpy(&instances[0].transform, &rot, sizeof(float3x4));
-        }
-
         raytracingData.cpu->frame++;
         if (raytracingData.cpu->accumulate == 1)
         {
@@ -278,6 +315,7 @@ void raytracingSample()
         }
     }
     
+    allocator.free();
     gpuDestroySemaphore(semaphore);
     gpuDestroySwapchain(swapchain);
     SDL_Gpu_DestroySurface(surface);

@@ -32,6 +32,76 @@ Allocation<T> allocate(int count = 1)
         .cpu = static_cast<T*>(addr), 
         .gpu = static_cast<T*>(gpuHostToDevicePointer(addr)) 
     };
+}
+
+class LinearAllocator
+{
+public:
+
+    LinearAllocator(size_t size, MEMORY memory = MEMORY_DEFAULT)
+    {
+        basePtr = gpuMalloc(size, memory);
+        baseGpuPtr = gpuHostToDevicePointer(basePtr);
+        currentPtr = basePtr;
+        totalSize = size;
+        usedSize = 0;
+    }
+
+    ~LinearAllocator()
+    {
+        free();
+    }
+
+    template<typename T>
+    Allocation<T> allocate(size_t size = 1, size_t align = GPU_DEFAULT_ALIGNMENT)
+    {
+        size_t padding = 0;
+        size_t alignedAddress = (reinterpret_cast<size_t>(currentPtr) + (align - 1)) & ~(align - 1);
+        padding = alignedAddress - reinterpret_cast<size_t>(currentPtr);
+
+        if (usedSize + padding + size > totalSize)
+        {
+            return {}; // Out of memory
+        }
+
+        currentPtr = reinterpret_cast<void*>(alignedAddress);
+        void* allocatedPtr = currentPtr;
+        currentPtr = static_cast<uint8_t*>(currentPtr) + size * sizeof(T);
+        usedSize += padding + size * sizeof(T);
+
+        return { 
+            .cpu = static_cast<T*>(allocatedPtr), 
+            .gpu = reinterpret_cast<T*>(static_cast<char*>(baseGpuPtr) + (usedSize - size * sizeof(T)))
+        };
+    }
+
+    void reset()
+    {
+        currentPtr = basePtr;
+        usedSize = 0;
+    }
+
+    void free()
+    {
+        if (basePtr == nullptr)
+        {
+            return;
+        }
+
+        gpuFree(basePtr);
+        basePtr = nullptr;
+        baseGpuPtr = nullptr;
+        currentPtr = nullptr;
+        totalSize = 0;
+        usedSize = 0;
+    }
+
+private:
+    void* basePtr = nullptr;
+    void* baseGpuPtr = nullptr;
+    void* currentPtr = nullptr;
+    size_t totalSize = 0;
+    size_t usedSize = 0;
 };
 
 template<typename T>
@@ -40,48 +110,8 @@ T* gpuMalloc(int count = 1, MEMORY type = MEMORY_DEFAULT)
     return static_cast<T*>(::gpuMalloc(sizeof(T) * count, type));
 }
 
-struct Mesh
-{
-    std::vector<float4> vertices;
-    std::vector<float2> uvs;
-    std::vector<float3> normals;
-
-    std::vector<uint32_t> indices;
-    std::vector<uint32_t> uvIndices;     
-    std::vector<uint32_t> normalIndices; 
-    
-    void load(MeshData* meshData) const
-    {
-        meshData->indices = gpuMalloc<uint32_t>(static_cast<int>(indices.size()));
-        memcpy(meshData->indices, indices.data(), indices.size() * sizeof(uint32_t));
-        meshData->indices = static_cast<uint32_t*>(gpuHostToDevicePointer(meshData->indices));
-
-        meshData->vertices = gpuMalloc<float4>(static_cast<int>(vertices.size()));
-        memcpy(meshData->vertices, vertices.data(), vertices.size() * sizeof(float4));
-        meshData->vertices = static_cast<float4*>(gpuHostToDevicePointer(meshData->vertices));
-
-        meshData->uvs = gpuMalloc<float2>(static_cast<int>(uvs.size()));
-        memcpy(meshData->uvs, uvs.data(), uvs.size() * sizeof(float2));
-        meshData->uvs = static_cast<float2*>(gpuHostToDevicePointer(meshData->uvs));
-
-        meshData->uvIndices = gpuMalloc<uint32_t>(static_cast<int>(uvIndices.size()));
-        memcpy(meshData->uvIndices, uvIndices.data(), uvIndices.size() * sizeof(uint32_t));
-        meshData->uvIndices = static_cast<uint32_t*>(gpuHostToDevicePointer(meshData->uvIndices));
-
-        meshData->normals = gpuMalloc<float3>(static_cast<int>(normals.size()));
-        memcpy(meshData->normals, normals.data(), normals.size() * sizeof(float3));
-        meshData->normals = static_cast<float3*>(gpuHostToDevicePointer(meshData->normals));
-
-        meshData->normalIndices = gpuMalloc<uint32_t>(static_cast<int>(normalIndices.size()));
-        memcpy(meshData->normalIndices, normalIndices.data(), normalIndices.size() * sizeof(uint32_t));
-        meshData->normalIndices = static_cast<uint32_t*>(gpuHostToDevicePointer(meshData->normalIndices));
-    }
-};
-
 std::vector<uint8_t> loadIR(const std::filesystem::path& path);
 
-void loadOBJ(const std::filesystem::path& path, std::vector<Vertex>& vertices, std::vector<uint32_t>& indices);
-
-Mesh createMesh(const std::filesystem::path& path);
+void getCube(std::vector<float3>& vertices, std::vector<float3>& normals, std::vector<float2>& uvs, std::vector<uint32_t>& indices);
 
 #endif // UTILITIES_H

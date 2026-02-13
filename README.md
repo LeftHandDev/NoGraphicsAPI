@@ -1,9 +1,13 @@
 # No Graphics API
 
-A Vulkan + slang implementation of the simplified graphics API from Sebastian Aaltonen's blog post: [No Graphics API](https://www.sebastianaaltonen.com/blog/no-graphics-api).
+A demo of the simplified graphics API from Sebastian Aaltonen's blog post: [No Graphics API](https://www.sebastianaaltonen.com/blog/no-graphics-api), implemented in Vulkan. The entire API is not implemented, just enough to get some samples working.
 
-## Instructions
-Update VulkanSDK to 1.4.335 (install glm and SDL with the SDK)
+The project started with the original header from the blog post, and built from there. The style and design attempts to match the blog post where possible.
+
+
+## Samples
+
+Working samples are in the repo to test the API and to see what the usage looks like in practice. For simple usage of the API, see below.
 
 ## Windowless Usage
 ### Common header
@@ -76,6 +80,8 @@ gpuDestroyDevice();
 
 ## Window Usage
 
+Include `SDL_gpu.h` to create a window and surface similar to when using Vulkan.
+
 ```c++
 #include <SDL3/SDL.h>
 #include "../../SDL_gpu.h"
@@ -120,47 +126,65 @@ int main()
     gpuDestroyDevice();
 }
 ```
-## Vertex + Pixel Shaders
-Unfortunately, both structs for the vertex and pixel shader must be referenced in the function definitions.
+## Graphics Pipeline Shaders
 ### Common Header
 ```cpp
 #include "../../Shaders/NoGraphicsAPI.h" // Must be included
 
 struct alignas(16) VertexData
 {
+    float4x4 viewProjection;
+    float4* vertices;
+    float2* uvs;
 };
 
 struct alignas(16) PixelData
 {
+    uint texture;
 };
 ```
 ### Vertex Shader
 ```cpp
 struct VertexOut
 {
+    float4 position : SV_Position;
+    float2 uv;
 };
 
-VertexOut main(uint vertexId: SV_VertexID, VertexData *data, PixelData *notUsed)
+VertexOut main(uint vertexId: SV_VertexID, VertexData *data, PixelData *_)
 {
+    VertexOut out;
+    out.position = mul(data->viewProjection, data->vertices[vertexId]);
+    out.uv = data->uvs[vertexId];
+    return out;
 }
 ```
 ### Pixel Shader
 ```cpp
 struct PixelIn
 {
+    float4 position : SV_Position;
+    float2 uv;
 };
 
 struct PixelOut
 {
+    float4 color : SV_Target;
 };
 
-PixelOut main(PixelIn pixel, VertexData* notUsed, PixelData* data)
+PixelOut main(PixelIn pixel, VertexData* _, PixelData* data)
 {
+    PixelOut out;
+    out.color = textureHeap[data->texture].SampleLevel(samplerHeap[0], pixel.uv, 0);
+    return out;
 }
 ```
 
 ## Dependencies
-- VkBootstrap
-- glm
-- SDL
-- stb_image & stb_image_write
+- Included in the repo
+    - [VkBootstrap](https://github.com/charles-lunarg/vk-bootstrap)
+    - [stb_image & stb_image_write](https://github.com/nothings/stb/tree/master)
+
+- [Vulkan SDK](https://vulkan.lunarg.com/sdk/home)
+    - GLM
+    - SDL3

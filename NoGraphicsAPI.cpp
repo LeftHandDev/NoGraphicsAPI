@@ -277,8 +277,10 @@ struct Vulkan
     uint32_t descriptorsUsed = 0;
     uint32_t rwDescriptorsUsed = 0;
 
-    Vulkan()
+    static Vulkan* createVulkan()
     {
+        Vulkan* vulkan = new Vulkan();
+
         std::vector<const char*> requiredInstanceExtensions = {};
         std::vector<const char*> requiredDeviceExtensions = {
             VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME,
@@ -300,23 +302,38 @@ struct Vulkan
         requiredDeviceExtensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
         requiredDeviceExtensions.push_back(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
         requiredDeviceExtensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+        requiredDeviceExtensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
 #endif // GPU_RAY_TRACING_EXTENSION
 
         vkb::InstanceBuilder instanceBuilder;
 
-        auto instanceRet = instanceBuilder.request_validation_layers(true)
+        auto instanceRet = instanceBuilder
+            .request_validation_layers(true)
             .require_api_version(VK_API_VERSION_1_4)
             .enable_extensions(requiredInstanceExtensions)
             .build();
-        instance = instanceRet.value();
-        instanceDispatchTable = instance.make_table();
 
-        vkb::PhysicalDeviceSelector deviceSelector{ instance };
+        if (!instanceRet.has_value())
+        {
+            delete vulkan;
+            return nullptr;
+        }
+
+        vulkan->instance = instanceRet.value();
+        vulkan->instanceDispatchTable = vulkan->instance.make_table();
+
+        vkb::PhysicalDeviceSelector deviceSelector{ vulkan->instance };
         auto physicalDeviceRet = deviceSelector
             .add_required_extensions(requiredDeviceExtensions)
             .defer_surface_initialization()
             .select();
-        physicalDevice = physicalDeviceRet.value();
+        if (!physicalDeviceRet.has_value())
+        {
+            delete vulkan;
+            return nullptr;
+        }
+
+        vulkan->physicalDevice = physicalDeviceRet.value();
 
 #ifdef GPU_RAY_TRACING_EXTENSION
         VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures = {};
@@ -343,35 +360,39 @@ struct Vulkan
         physicalDeviceVulkan12Features.bufferDeviceAddress = VK_TRUE;
         physicalDeviceVulkan12Features.runtimeDescriptorArray = VK_TRUE;
         physicalDeviceVulkan12Features.shaderInt8 = VK_TRUE;
-        physicalDeviceVulkan12Features.storagePushConstant8 = VK_TRUE;
 
-        physicalDevice.features.shaderInt64 = VK_TRUE;
+        vulkan->physicalDevice.features.shaderInt64 = VK_TRUE;
 
-        bool result = physicalDevice.enable_extension_features_if_present(physicalDeviceVulkan12Features);
-        result = physicalDevice.enable_extension_features_if_present(physicalDeviceVulkan13Features) && result;
 #ifdef GPU_RAY_TRACING_EXTENSION
-        result = physicalDevice.enable_extension_features_if_present(rayQueryFeatures) && result;
-        result = physicalDevice.enable_extension_features_if_present(accelerationStructureFeatures) && result;
 #endif // GPU_RAY_TRACING_EXTENSION
-        instanceDispatchTable.getPhysicalDeviceMemoryProperties(physicalDevice, &memoryProperties);
+        vulkan->instanceDispatchTable.getPhysicalDeviceMemoryProperties(vulkan->physicalDevice, &vulkan->memoryProperties);
 
-        descriptorBufferProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT;
-        physicalDeviceProperties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-        physicalDeviceProperties2.pNext = &descriptorBufferProperties;
-        instanceDispatchTable.getPhysicalDeviceProperties2(physicalDevice, &physicalDeviceProperties2);
+        vulkan->descriptorBufferProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT;
+        vulkan->physicalDeviceProperties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+        vulkan->physicalDeviceProperties2.pNext = &vulkan->descriptorBufferProperties;
+        vulkan->instanceDispatchTable.getPhysicalDeviceProperties2(vulkan->physicalDevice, &vulkan->physicalDeviceProperties2);
 
-        vkb::DeviceBuilder deviceBuilder{ physicalDevice };
-        auto deviceRet = deviceBuilder.add_pNext(&descriptorBufferFeatures).build();
-        device = deviceRet.value();
-        dispatchTable = device.make_table();
+        vkb::DeviceBuilder deviceBuilder{ vulkan->physicalDevice };
+        deviceBuilder
+            .add_pNext(&physicalDeviceVulkan12Features)
+            .add_pNext(&physicalDeviceVulkan13Features)
+            .add_pNext(&descriptorBufferFeatures);
+#ifdef GPU_RAY_TRACING_EXTENSION
+        deviceBuilder
+            .add_pNext(&rayQueryFeatures)
+            .add_pNext(&accelerationStructureFeatures);
+#endif // GPU_RAY_TRACING_EXTENSION
+        auto deviceRet = deviceBuilder.build();
+        vulkan->device = deviceRet.value();
+        vulkan->dispatchTable = vulkan->device.make_table();
 
         VkCommandPoolCreateInfo poolInfo = {};
         poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-        poolInfo.queueFamilyIndex = device.get_queue_index(vkb::QueueType::graphics).value();
+        poolInfo.queueFamilyIndex = vulkan->device.get_queue_index(vkb::QueueType::graphics).value();
         poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-        dispatchTable.createCommandPool(&poolInfo, nullptr, &commandPool);
+        vulkan->dispatchTable.createCommandPool(&poolInfo, nullptr, &vulkan->commandPool);
 
-        graphicsQueue = new GpuQueue_T{ device.get_queue(vkb::QueueType::graphics).value() };
+        vulkan->graphicsQueue = new GpuQueue_T{ vulkan->device.get_queue(vkb::QueueType::graphics).value() };
 
         VkSamplerCreateInfo samplerInfo{};
         samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -382,13 +403,15 @@ struct Vulkan
         samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
         samplerInfo.unnormalizedCoordinates = VK_FALSE;
-        dispatchTable.createSampler(&samplerInfo, nullptr, &defaultSampler);
+        vulkan->dispatchTable.createSampler(&samplerInfo, nullptr, &vulkan->defaultSampler);
 
         VkFenceCreateInfo fenceInfo = {};
         fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        dispatchTable.createFence(&fenceInfo, nullptr, &acquireFence);
+        vulkan->dispatchTable.createFence(&fenceInfo, nullptr, &vulkan->acquireFence);
 
-        createPipelineLayout();
+        vulkan->createPipelineLayout();
+
+        return vulkan;
     }
 
     ~Vulkan()
@@ -683,7 +706,11 @@ RESULT gpuCreateDevice()
 {
     if (vulkan == nullptr)
     {
-        vulkan = new Vulkan();
+        vulkan = Vulkan::createVulkan();
+        if (vulkan == nullptr)
+        {
+            return RESULT_FAILURE;
+        }
     }
 
     return RESULT_SUCCESS;
@@ -819,11 +846,6 @@ GpuTextureSizeAlign gpuTextureSizeAlign(GpuTextureDesc desc)
 GpuTexture gpuCreateTexture(GpuTextureDesc desc, void* ptrGpu)
 {
     Allocation alloc = vulkan->findAllocation(reinterpret_cast<VkDeviceAddress>(ptrGpu));
-
-    if (alloc.buffer == VK_NULL_HANDLE)
-    {
-        return nullptr;
-    }
 
     VkImage image = vulkan->createImage(desc);
 
@@ -1293,11 +1315,6 @@ void gpuMemCpy(GpuCommandBuffer cb, void* destGpu, void* srcGpu, uint64_t size)
     Allocation src = vulkan->findAllocation(reinterpret_cast<VkDeviceAddress>(srcGpu));
     Allocation dst = vulkan->findAllocation(reinterpret_cast<VkDeviceAddress>(destGpu));
 
-    if (src.buffer == VK_NULL_HANDLE || dst.buffer == VK_NULL_HANDLE)
-    {
-        return;
-    }
-
     VkBufferCopy copyRegion = {};
     copyRegion.srcOffset = reinterpret_cast<VkDeviceAddress>(srcGpu) - src.address;
     copyRegion.dstOffset = reinterpret_cast<VkDeviceAddress>(destGpu) - dst.address;
@@ -1309,11 +1326,6 @@ void gpuMemCpy(GpuCommandBuffer cb, void* destGpu, void* srcGpu, uint64_t size)
 void gpuCopyToTexture(GpuCommandBuffer cb, void* srcGpu, GpuTexture texture)
 {
     Allocation src = vulkan->findAllocation(reinterpret_cast<VkDeviceAddress>(srcGpu));
-
-    if (src.buffer == VK_NULL_HANDLE || texture == nullptr)
-    {
-        return;
-    }
 
     VkBufferImageCopy region = {};
     region.bufferOffset = reinterpret_cast<VkDeviceAddress>(srcGpu) - src.address;
@@ -1333,11 +1345,6 @@ void gpuCopyFromTexture(GpuCommandBuffer cb, void* destGpu, GpuTexture texture)
 {
     Allocation dst = vulkan->findAllocation(reinterpret_cast<VkDeviceAddress>(destGpu));
 
-    if (dst.buffer == VK_NULL_HANDLE || texture == nullptr)
-    {
-        return;
-    }
-
     VkBufferImageCopy region = {};
     region.bufferOffset = reinterpret_cast<VkDeviceAddress>(destGpu) - dst.address;
     region.bufferRowLength = 0; 
@@ -1354,11 +1361,6 @@ void gpuCopyFromTexture(GpuCommandBuffer cb, void* destGpu, GpuTexture texture)
 
 void gpuBlitTexture(GpuCommandBuffer cb, GpuTexture destTexture, GpuTexture srcTexture)
 {
-    if (destTexture == nullptr || srcTexture == nullptr)
-    {
-        return;
-    }
-
     VkImageBlit blit = {};
     blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     blit.srcSubresource.mipLevel = 0;
@@ -1417,7 +1419,7 @@ void gpuSetActiveTextureHeapPtr(GpuCommandBuffer cb, void *ptrGpu)
         GpuPipeline currentPipeline = vulkan->currentPipeline[cb];
         if (vulkan->patchDescriptorsPipeline == nullptr)
         {
-            auto patchDescriptorsSpv = gpuHiddenLoadIR("../../../Shaders/PatchDescriptors.spv");
+            auto patchDescriptorsSpv = gpuHiddenLoadIR("../Shaders/PatchDescriptors.spv");
             vulkan->patchDescriptorsPipeline = gpuCreateComputePipeline(patchDescriptorsSpv);
         }
 
@@ -1573,11 +1575,6 @@ void gpuSetPipeline(GpuCommandBuffer cb, GpuPipeline pipeline)
 
 void gpuSetDepthStencilState(GpuCommandBuffer cb, GpuDepthStencilState state)
 {
-    if (state == nullptr)
-    {
-        return;
-    }
-
     const auto& desc = state->desc;
     VkCommandBuffer cmd = cb->commandBuffer;
 
@@ -1660,10 +1657,6 @@ void gpuDispatchIndirect(GpuCommandBuffer cb, void* dataGpu, void* gridDimension
     );
 
     Allocation grid = vulkan->findAllocation(reinterpret_cast<VkDeviceAddress>(gridDimensionsGpu));
-    if (grid.buffer == VK_NULL_HANDLE)
-    {
-        return;
-    }
 
     vulkan->dispatchTable.cmdDispatchIndirect(
         cb->commandBuffer, 
@@ -1750,10 +1743,6 @@ void gpuDrawIndexedInstanced(GpuCommandBuffer cb, void* vertexDataGpu, void* pix
     );
 
     Allocation indexAlloc = vulkan->findAllocation(reinterpret_cast<VkDeviceAddress>(indicesGpu));
-    if (indexAlloc.buffer == VK_NULL_HANDLE)
-    {
-        return;
-    }
 
     vulkan->dispatchTable.cmdBindIndexBuffer(
         cb->commandBuffer,
@@ -1790,10 +1779,6 @@ void gpuDrawIndexedInstancedIndirect(GpuCommandBuffer cb, void* vertexDataGpu, v
     );
 
     Allocation indexAlloc = vulkan->findAllocation(reinterpret_cast<VkDeviceAddress>(indicesGpu));
-    if (indexAlloc.buffer == VK_NULL_HANDLE)
-    {
-        return;
-    }
 
     vulkan->dispatchTable.cmdBindIndexBuffer(
         cb->commandBuffer,
@@ -1803,10 +1788,6 @@ void gpuDrawIndexedInstancedIndirect(GpuCommandBuffer cb, void* vertexDataGpu, v
     );
 
     Allocation argsAlloc = vulkan->findAllocation(reinterpret_cast<VkDeviceAddress>(argsGpu));
-    if (argsAlloc.buffer == VK_NULL_HANDLE)
-    {
-        return;
-    }
 
     vulkan->dispatchTable.cmdDrawIndexedIndirect(
         cb->commandBuffer,
@@ -1843,10 +1824,6 @@ void gpuDrawIndexedInstancedIndirectMulti(
     );
 
     Allocation indexAlloc = vulkan->findAllocation(reinterpret_cast<VkDeviceAddress>(indicesGpu));
-    if (indexAlloc.buffer == VK_NULL_HANDLE)
-    {
-        return;
-    }
 
     vulkan->dispatchTable.cmdBindIndexBuffer(
         cb->commandBuffer,
@@ -1856,16 +1833,8 @@ void gpuDrawIndexedInstancedIndirectMulti(
     );
 
     Allocation argsAlloc = vulkan->findAllocation(reinterpret_cast<VkDeviceAddress>(argsGpu));
-    if (argsAlloc.buffer == VK_NULL_HANDLE)
-    {
-        return;
-    }
 
     Allocation countAlloc = vulkan->findAllocation(reinterpret_cast<VkDeviceAddress>(drawCountGpu));
-    if (countAlloc.buffer == VK_NULL_HANDLE)
-    {
-        return;
-    }
 
     VkDrawIndexedIndirectCommand drawCommand = {};
 
@@ -1921,10 +1890,6 @@ void gpuDrawMeshletsIndirect(GpuCommandBuffer cb, void* meshletDataGpu, void* pi
     );
 
     Allocation dimAlloc = vulkan->findAllocation(reinterpret_cast<VkDeviceAddress>(dimGpu));
-    if (dimAlloc.buffer == VK_NULL_HANDLE)
-    {
-        return;
-    }
 
     vulkan->dispatchTable.cmdDrawMeshTasksIndirectEXT(
         cb->commandBuffer,
@@ -2255,10 +2220,6 @@ GpuAccelerationStructureSizes gpuAccelerationStructureSizes(GpuAccelerationStruc
 GpuAccelerationStructure gpuCreateAccelerationStructure(GpuAccelerationStructureDesc desc, void *ptrGpu, uint64_t size)
 {
     auto alloc = vulkan->findAllocation(reinterpret_cast<VkDeviceAddress>(ptrGpu));
-    if (alloc.buffer == VK_NULL_HANDLE)
-    {
-        return nullptr;
-    }
 
     VkAccelerationStructureCreateInfoKHR createInfo = {};
     createInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;

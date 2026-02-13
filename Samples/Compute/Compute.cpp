@@ -9,14 +9,14 @@ void computeSample()
     auto queue = gpuCreateQueue();
     auto semaphore = gpuCreateSemaphore(0);
 
-    auto computeIR = loadIR("../../../Compute/Compute.spv");
+    auto computeIR = loadIR("../Shaders/Compute/Compute.spv");
     auto pipeline = gpuCreateComputePipeline(ByteSpan(computeIR.data(), computeIR.size()));
 
     auto textureHeap = gpuMalloc<GpuTextureDescriptor>(1024);
     
     // Load input image
     int width, height, channels;
-    stbi_uc* inputImage = stbi_load("../../../Assets/NoGraphicsAPI.png", &width, &height, &channels, 4);
+    stbi_uc* inputImage = stbi_load("Assets/NoGraphicsAPI.png", &width, &height, &channels, 4);
 
     auto upload = allocate<uint8_t>(width * height * 4);
     memcpy(upload.cpu, inputImage, width * height * 4);
@@ -78,7 +78,7 @@ void computeSample()
     gpuSubmit(queue, Span<GpuCommandBuffer>(&commandBuffer, 1), semaphore, 3);
     gpuWaitSemaphore(semaphore, 3);
 
-    stbi_write_png("../../../Assets/BlurredOutput.png", width, height, 4, readback, width * 4);
+    stbi_write_png("Assets/BlurredOutput.png", width, height, 4, readback, width * 4);
 
     gpuDestroySemaphore(semaphore);
     gpuDestroyTexture(texture);
