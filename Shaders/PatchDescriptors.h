@@ -1,7 +1,7 @@
 #ifndef SHADERS_PATCH_DESCRIPTORS_H
 #define SHADERS_PATCH_DESCRIPTORS_H
 
-#include "./NoGraphicsAPI.h"
+#include "../NoGraphicsAPI.h"
 
 // When the descriptor size on the device is not 32 bytes, we write this descriptor to the user's descriptor heap
 struct alignas(16) Descriptor

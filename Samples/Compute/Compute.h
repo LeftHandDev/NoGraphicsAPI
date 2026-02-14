@@ -1,7 +1,7 @@
 #ifndef SAMPLES_SHADER_COMPUTE_H
 #define SAMPLES_SHADER_COMPUTE_H
 
-#include "../../Shaders/NoGraphicsAPI.h"
+#include "../../NoGraphicsAPI.h"
 
 void computeSample();
 

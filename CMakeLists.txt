@@ -24,7 +24,7 @@ endif()
 add_executable(NoGraphicsAPI
     External/VkBootstrap.cpp
     SDL_gpu.cpp
-    NoGraphicsAPI.cpp
+    NoGraphicsAPI_Impl.cpp
     Utilities.cpp
     Main.cpp
     Samples/Compute/Compute.cpp

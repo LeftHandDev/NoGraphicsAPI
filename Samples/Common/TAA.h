@@ -1,7 +1,7 @@
 #ifndef SAMPLES_SHADER_TAA_H
 #define SAMPLES_SHADER_TAA_H
 
-#include "../../Shaders/NoGraphicsAPI.h"
+#include "../../NoGraphicsAPI.h"
 
 struct alignas(16) TAAData
 {

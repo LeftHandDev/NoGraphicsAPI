@@ -12,7 +12,7 @@ To see what the API looks like in practice, check out the [samples](https://gith
 ## Windowless Usage
 ### Common header
 ```c++
-#include "Shaders/NoGraphicsAPI.h"
+#include "NoGraphicsAPI.h"
 
 struct alignas(16) Data
 {
@@ -32,7 +32,7 @@ void main(uint3 threadId: SV_DispatchThreadID, Data* data)
 ```
 ### CPU side
 ```c++
-#include "NoGraphicsAPI.h"
+#include "Compute.h" // Common header
 
 int main()
 {
@@ -91,6 +91,8 @@ Include `SDL_gpu.h` to create a window and surface similar to when using Vulkan.
 #include <SDL3/SDL.h>
 #include "SDL_gpu.h"
 
+// include common header
+
 #define FRAMES_IN_FLIGHT 2
 
 int main()
@@ -134,7 +136,7 @@ int main()
 ## Graphics Pipeline Shaders
 ### Common Header
 ```cpp
-#include "Shaders/NoGraphicsAPI.h"
+#include "NoGraphicsAPI.h"
 
 struct alignas(16) VertexData
 {

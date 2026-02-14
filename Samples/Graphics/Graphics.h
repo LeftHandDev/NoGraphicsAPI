@@ -1,7 +1,7 @@
 #ifndef SAMPLES_SHADER_GRAPHICS_H
 #define SAMPLES_SHADER_GRAPHICS_H
 
-#include "../../Shaders/NoGraphicsAPI.h"
+#include "../../NoGraphicsAPI.h"
 
 void graphicsSample();
 
