@@ -76,6 +76,9 @@ void raytracingSample()
     uint32_t numLights = 100;
     auto lightData = allocator.allocate<LightData>(numLights);
 
+    glm::vec3 cameraPos(0, 0, -5);   
+    glm::vec3 prevCameraPos = cameraPos;
+
     {
         std::random_device rd;
         std::mt19937 gen(rd());
@@ -83,7 +86,7 @@ void raytracingSample()
         std::uniform_real_distribution<float> dis(-offset, offset);
 
         // put one light at the camera so we can always see something
-        lightData.cpu[0].position = {0, 0, -5, 1};
+        lightData.cpu[0].position = {cameraPos.x, cameraPos.y, cameraPos.z, 1};
         lightData.cpu[0].color = {1, 1, 1, 1};
         lightData.cpu[0].intensity = 10.0f;
 
@@ -97,11 +100,23 @@ void raytracingSample()
     }
 
     auto camDataAlloc = allocator.allocate<CameraData>();
-    camDataAlloc.cpu->position = {0, 0, -5, 1};
-    auto view = glm::lookAt(glm::vec3(0, 0, -5), glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
-    auto projection = glm::perspective(glm::radians(45.0f), swapchainDesc.dimensions.x / static_cast<float>(swapchainDesc.dimensions.y), 0.1f, 100.0f);
-    auto invViewProjection = glm::inverse(projection * view);
-    memcpy(&camDataAlloc.cpu->invViewProjection, &invViewProjection, sizeof(float4x4));
+ 
+    auto setCamera = [&] {
+        lightData.cpu[0].position = {cameraPos.x, cameraPos.y, cameraPos.z, 1}; // first light follows the camera, so we can always see something
+        camDataAlloc.cpu->position = {cameraPos.x, cameraPos.y, cameraPos.z, 1};
+        auto view = glm::lookAt(cameraPos, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
+        auto projection = glm::perspective(glm::radians(60.0f), swapchainDesc.dimensions.x / static_cast<float>(swapchainDesc.dimensions.y), 0.1f, 100.0f);
+        auto invViewProjection = glm::inverse(projection * view);
+        memcpy(&camDataAlloc.cpu->invViewProjection, &invViewProjection, sizeof(float4x4));
+
+        view = glm::lookAt(prevCameraPos, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
+        auto viewProjection = projection * view;
+        memcpy(&camDataAlloc.cpu->prevViewProjection, &viewProjection, sizeof(float4x4));
+
+        prevCameraPos = cameraPos;
+    };
+
+    setCamera();
 
     std::vector<float3> vertices;
     std::vector<float3> normals;
@@ -235,6 +250,9 @@ void raytracingSample()
 
     auto pipeline = referencePipeline;
 
+    glm::vec3 velocity = glm::vec3(0.f);
+    float velocityScale = 0.001f;
+
     while (!exit)
     {
         SDL_Event event;
@@ -264,6 +282,22 @@ void raytracingSample()
                         pipeline = restirPipeline;
                     }
                 }
+                else if (event.key.key == SDLK_LEFT)
+                {
+                    velocity.x = -velocityScale;
+                }
+                else if (event.key.key == SDLK_RIGHT)
+                {
+                    velocity.x = velocityScale;
+                }
+                else if (event.key.key == SDLK_UP)
+                {
+                    velocity.y = velocityScale;
+                }
+                else if (event.key.key == SDLK_DOWN)
+                {
+                    velocity.y = -velocityScale;
+                }
             }
             else if (event.type == SDL_EVENT_KEY_UP)
             {
@@ -272,9 +306,19 @@ void raytracingSample()
                     raytracingData.cpu->accumulate = 0;
                     raytracingData.cpu->accumulatedFrames = 0;
                 }
+                else if (event.key.key == SDLK_LEFT || event.key.key == SDLK_RIGHT)
+                {
+                    velocity.x = 0.f;
+                }
+                else if (event.key.key == SDLK_UP || event.key.key == SDLK_DOWN)
+                {
+                    velocity.y = 0.f;
+                }
             }
         }
 
+        cameraPos += velocity;
+        setCamera();
         auto commandBuffer = gpuStartCommandRecording(queue);
 
         if (nextFrame == 1)

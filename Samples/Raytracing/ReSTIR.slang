@@ -1,8 +1,9 @@
 #include "Raytracing.h"
 
-void addSample(Reservoir *res, uint resId, uint path, float w, inout uint state)
+void addSample(Reservoir *res, uint resId, uint path, float w, int M, inout uint state)
 {
     res[resId].w += w;
+    res[resId].M += M;
     if (randomFloat(state) < (w / res[resId].w))
     {
         res[resId].path = path;
@@ -87,6 +88,13 @@ void main(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
             uint resId = threadId.y * imgSize.x + threadId.x;
             float3 hitT = rayQuery.WorldRayDirection() * rayQuery.CommittedRayT() + rayQuery.WorldRayOrigin();
 
+            float4 prevClip = mul(data->camData->prevViewProjection, float4(hitT, 1.0));
+            float2 prevUV = prevClip.xy / prevClip.w * 0.5 + 0.5;
+            int2 prevPixel = int2(prevUV * float2(imgSize));
+            uint prevResId = prevPixel.y * imgSize.x + prevPixel.x;
+
+            bool validHistory = prevPixel.x >= 0 && prevPixel.x < imgSize.x && prevPixel.y >= 0 && prevPixel.y < imgSize.y;
+
             // Reset reservoir for this frame
             data->reservoirs[resId].w = 0.0;
             data->reservoirs[resId].path = 0;
@@ -104,11 +112,50 @@ void main(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
                 float pdf = 1.0 / float(data->numLights);
                 float w = length(Li) / pdf;
 
-                addSample(data->reservoirs, resId, lightIndex, w, seed);
+                addSample(data->reservoirs, resId, lightIndex, w, 1, seed);
             }
-            data->reservoirs[resId].M = data->M;
 
-            // Temporal pass
+            if (validHistory)
+            {
+                // Temporal pass
+                {
+                    uint lightIndex = data->reservoirs[resId].path;
+                    LightData light = data->lights[lightIndex];
+                    float3 lightDir = normalize(light.position.xyz - hitT);
+                    float NoL = max(dot(normal, lightDir), 0.0);
+                    float3 Li = (albedo.xyz * light.color.xyz * light.intensity * NoL) / pow(distance(light.position.xyz, hitT), 2.0);
+
+                    float V = shadowRay(tlas, light, hitT + normal * 0.001, light.position.xyz);
+
+                    int prevPath = data->history[prevResId].path;
+                    float prevW = data->history[prevResId].w;
+                    int prevM = data->history[prevResId].M;
+
+                    const int historyLength = 20;
+                    int prevMClamped = min(prevM, historyLength * data->M);
+                    float bias = float(prevMClamped) / float(prevM + 1);
+
+                    data->history[prevResId].w = 0.0;
+                    data->history[prevResId].path = 0;
+                    data->history[prevResId].M = 0;
+
+                    addSample(data->history, prevResId, prevPath, prevW * bias, prevMClamped, seed);
+                    addSample(data->history, prevResId, lightIndex, data->reservoirs[resId].w * V, data->reservoirs[resId].M, seed);
+                }
+
+                // Shade pass
+                {
+                    uint lightIndex = data->history[prevResId].path;
+                    LightData light = data->lights[lightIndex];
+                    float3 lightDir = normalize(light.position.xyz - hitT);
+                    float NoL = max(dot(normal, lightDir), 0.0);
+                    float3 Li = (albedo.xyz * light.color.xyz * light.intensity * NoL) / pow(distance(light.position.xyz, hitT), 2.0);
+                    float W = (1.0 / float(data->history[prevResId].M)) * (1.0 / length(Li)) * data->history[prevResId].w;
+
+                    color.xyz = Li * W;
+                }
+            }
+            else // Invalid history, use current reservoir
             {
                 uint lightIndex = data->reservoirs[resId].path;
                 LightData light = data->lights[lightIndex];
@@ -118,27 +165,7 @@ void main(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
 
                 float V = shadowRay(tlas, light, hitT + normal * 0.001, light.position.xyz);
 
-                int prevPath = data->history[resId].path;
-                float prevW = data->history[resId].w;
-                int prevM = data->history[resId].M;
-
-                data->history[resId].w = 0.0;
-                data->history[resId].path = 0;
-                data->history[resId].M = 0;
-
-                addSample(data->history, resId, prevPath, prevW, seed);
-                addSample(data->history, resId, lightIndex, data->reservoirs[resId].w * V, seed);
-                data->history[resId].M = prevM + data->reservoirs[resId].M;
-            }
-
-            // Shade pass
-            {
-                uint lightIndex = data->history[resId].path;
-                LightData light = data->lights[lightIndex];
-                float3 lightDir = normalize(light.position.xyz - hitT);
-                float NoL = max(dot(normal, lightDir), 0.0);
-                float3 Li = (albedo.xyz * light.color.xyz * light.intensity * NoL) / pow(distance(light.position.xyz, hitT), 2.0);
-                float W = (1.0 / float(data->history[resId].M)) * (1.0 / length(Li)) * data->history[resId].w;
+                float W = (1.0 / float(data->reservoirs[resId].M)) * (1.0 / length(Li)) * data->reservoirs[resId].w;
 
                 color.xyz = Li * W;
             }

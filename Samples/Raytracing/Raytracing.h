@@ -31,6 +31,7 @@ struct alignas(16) LightData
 struct alignas(16) CameraData
 {
     float4x4 invViewProjection;
+    float4x4 prevViewProjection;
     float4 position;
 };
 
