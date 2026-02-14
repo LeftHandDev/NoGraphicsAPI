@@ -1,4 +1,3 @@
-#include "Graphics.h"
 #include "../../Utilities.h"
 #include "../../External/stb_image.h"
 #include "../../External/stb_image_write.h"
@@ -8,6 +7,9 @@
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+
+#include "Graphics.h"
+#include "../Common/TAA.h"
 
 std::vector<glm::vec2> haltonSequence(uint length = 16)
 {
@@ -174,7 +176,7 @@ void graphicsSample()
     };
     GpuDepthStencilState depthState = gpuCreateDepthStencilState(depthDescState);
 
-    auto taaIR = loadIR("../Shaders/Graphics/TAA.spv");
+    auto taaIR = loadIR("../Shaders/Common/TAA.spv");
     auto taaPipeline = gpuCreateComputePipeline(
         ByteSpan(taaIR)
     );
@@ -233,6 +235,8 @@ void graphicsSample()
     auto semaphore = gpuCreateSemaphore(0);
     uint64_t nextFrame = 1;
 
+    bool taaOn = true;
+
     while (!exit)
     {
         SDL_Event event;
@@ -243,6 +247,13 @@ void graphicsSample()
                 exit = true;
                 break;
             }
+            else if (event.type == SDL_EVENT_KEY_DOWN)
+            {
+                if (event.key.key == SDLK_T)
+                {
+                    taaOn = !taaOn;
+                }
+            }
         }
 
         // Update camera with jitter
@@ -252,6 +263,12 @@ void graphicsSample()
 
         float jitterX = (haltonSeq[nextFrame % haltonSeq.size()].x - 0.5f) / swapchainDesc.dimensions.x;
         float jitterY = (haltonSeq[nextFrame % haltonSeq.size()].y - 0.5f) / swapchainDesc.dimensions.y;
+
+        if (!taaOn)
+        {
+            jitterX = 0.0f;
+            jitterY = 0.0f;
+        }
 
         auto projectionWithJitter = projection;
         projectionWithJitter[2][0] += jitterX * 2.0f;
@@ -323,7 +340,14 @@ void graphicsSample()
         memcpy(&instances.cpu[1].model, &instance1, sizeof(float4x4));
 
         // Increment TAA frame counter
-        taaData.cpu->frame++;
+        if (taaOn)
+        {
+            taaData.cpu->frame++;
+        }
+        else
+        {
+            taaData.cpu->frame = 0;
+        }
     }
 
     gpuWaitSemaphore(semaphore, nextFrame - 1);

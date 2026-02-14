@@ -281,6 +281,7 @@ void raytracingSample()
                     {
                         pipeline = restirPipeline;
                     }
+                    raytracingData.cpu->accumulatedFrames = 0;
                 }
                 else if (event.key.key == SDLK_LEFT)
                 {

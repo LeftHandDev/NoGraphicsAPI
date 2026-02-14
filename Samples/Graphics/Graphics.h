@@ -26,17 +26,4 @@ struct alignas(16) PixelData
     uint srcTexture;
 };
 
-struct alignas(16) TAAData
-{
-    uint width;
-    uint height;
-    uint frame;
-    uint srcColor;
-    uint srcHistory;
-    uint srcDepth;
-    uint srcMotionVectors;
-    uint dstTexture;
-    float2 jitter;
-};
-
 #endif // SHADERS_GRAPHICS_H
