@@ -35,12 +35,19 @@ struct alignas(16) CameraData
     float4 position;
 };
 
+struct alignas(16) Path
+{
+    float4 x1; // x0 = origin (omitted), x1 = hit position, x2 = light position
+    float4 x2;
+    float4 throughput;
+};
+
 struct alignas(16) Reservoir
 {
-    int path; // light index
+    Path path;
     float w;
     int M;
-    int padding;
+    int padding[2];
 };
 
 struct alignas(16) RaytracingData
@@ -90,7 +97,7 @@ float randomFloat(inout uint state)
     return float(pcg(state)) / 4294967295.0;
 }
 
-float shadowRay(RaytracingAccelerationStructure tlas, LightData light, float3 x1, float3 x2)
+float shadowRay(RaytracingAccelerationStructure tlas, float3 x1, float3 x2)
 {
     RayQuery<RAY_FLAG_NONE> shadowRay;
     RayDesc ray;

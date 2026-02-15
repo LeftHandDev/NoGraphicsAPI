@@ -1,6 +1,6 @@
 #include "Raytracing.h"
 
-void addSample(Reservoir *res, uint resId, uint path, float w, int M, inout uint state)
+void addSample(Reservoir *res, uint resId, Path path, float w, int M, inout uint state)
 {
     res[resId].w += w;
     res[resId].M += M;
@@ -97,7 +97,7 @@ void main(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
 
             // Reset reservoir for this frame
             data->reservoirs[resId].w = 0.0;
-            data->reservoirs[resId].path = 0;
+            data->reservoirs[resId].path = Path();
             data->reservoirs[resId].M = 0;
 
             // RIS
@@ -112,22 +112,29 @@ void main(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
                 float pdf = 1.0 / float(data->numLights);
                 float w = length(Li) / pdf;
 
-                addSample(data->reservoirs, resId, lightIndex, w, 1, seed);
+                Path path;
+                path.x1 = float4(hitT, 1.0);
+                path.x2 = light.position;
+                path.throughput = light.color * light.intensity;
+
+                addSample(data->reservoirs, resId, path, w, 1, seed);
             }
 
             if (validHistory)
             {
                 // Temporal pass
                 {
-                    uint lightIndex = data->reservoirs[resId].path;
-                    LightData light = data->lights[lightIndex];
-                    float3 lightDir = normalize(light.position.xyz - hitT);
-                    float NoL = max(dot(normal, lightDir), 0.0);
-                    float3 Li = (light.color.xyz * light.intensity * NoL) / pow(distance(light.position.xyz, hitT), 2.0);
+                    Path path = data->reservoirs[resId].path;
+                    float V = shadowRay(tlas, path.x1.xyz + normal * 0.001, path.x2.xyz);
 
-                    float V = shadowRay(tlas, light, hitT + normal * 0.001, light.position.xyz);
+                    Path prevPath = data->history[prevResId].path;
+                    if (distance(prevPath.x1, path.x1) > 0.1) // Invalidate the history for likely disocclusions
+                    {
+                        prevPath = Path();
+                    }
 
-                    int prevPath = data->history[prevResId].path;
+                    prevPath.x1 = path.x1; // Update hit position for current frame
+
                     float prevW = data->history[prevResId].w;
                     int prevM = data->history[prevResId].M;
 
@@ -136,20 +143,19 @@ void main(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
                     float bias = float(prevMClamped) / float(prevM + 1);
 
                     data->history[prevResId].w = 0.0;
-                    data->history[prevResId].path = 0;
+                    data->history[prevResId].path = Path();
                     data->history[prevResId].M = 0;
 
                     addSample(data->history, prevResId, prevPath, prevW * bias, prevMClamped, seed);
-                    addSample(data->history, prevResId, lightIndex, data->reservoirs[resId].w * V, data->reservoirs[resId].M, seed);
+                    addSample(data->history, prevResId, path, data->reservoirs[resId].w * V, data->reservoirs[resId].M, seed);
                 }
 
                 // Shade pass
                 {
-                    uint lightIndex = data->history[prevResId].path;
-                    LightData light = data->lights[lightIndex];
-                    float3 lightDir = normalize(light.position.xyz - hitT);
+                    Path path = data->history[prevResId].path;
+                    float3 lightDir = normalize(path.x2.xyz - path.x1.xyz);
                     float NoL = max(dot(normal, lightDir), 0.0);
-                    float3 Li = (light.color.xyz * light.intensity * NoL) / pow(distance(light.position.xyz, hitT), 2.0);
+                    float3 Li = (path.throughput.xyz * NoL) / pow(distance(path.x2.xyz, path.x1.xyz), 2.0);
                     float W = (1.0 / float(data->history[prevResId].M)) * (1.0 / length(Li)) * data->history[prevResId].w;
 
                     color.xyz = Li * W * albedo.xyz;
@@ -157,13 +163,12 @@ void main(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
             }
             else // Invalid history, use current reservoir
             {
-                uint lightIndex = data->reservoirs[resId].path;
-                LightData light = data->lights[lightIndex];
-                float3 lightDir = normalize(light.position.xyz - hitT);
+                Path path = data->reservoirs[resId].path;
+                float3 lightDir = normalize(path.x2.xyz - path.x1.xyz);
                 float NoL = max(dot(normal, lightDir), 0.0);
-                float3 Li = (light.color.xyz * light.intensity * NoL) / pow(distance(light.position.xyz, hitT), 2.0);
+                float3 Li = (path.throughput.xyz * NoL) / pow(distance(path.x2.xyz, path.x1.xyz), 2.0);
 
-                float V = shadowRay(tlas, light, hitT + normal * 0.001, light.position.xyz);
+                float V = shadowRay(tlas, path.x1.xyz + normal * 0.001, path.x2.xyz);
 
                 float W = (1.0 / float(data->reservoirs[resId].M)) * (1.0 / length(Li)) * data->reservoirs[resId].w;
 

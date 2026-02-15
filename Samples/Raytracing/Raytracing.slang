@@ -82,7 +82,7 @@ void main(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
             float3 lightDir = normalize(light.position.xyz - hitT);
 
             float NoL = max(dot(normal, lightDir), 0.0);
-            float V = shadowRay(tlas, light, hitT + normal * 0.001, light.position.xyz);
+            float V = shadowRay(tlas, hitT + normal * 0.001, light.position.xyz);
             float3 Li = (albedo.xyz * light.color.xyz * light.intensity * NoL * V) / pow(distance(light.position.xyz, hitT), 2.0);
             float pdf = 1.0 / float(data->numLights);
             color.xyz = Li / pdf;
