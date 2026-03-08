@@ -1,17 +1,7 @@
 #include "Raytracing.h"
 
-void addSample(Reservoir *res, uint resId, Path path, float w, int M, inout uint state)
-{
-    res[resId].w += w;
-    res[resId].M += M;
-    if (randomFloat(state) < (w / res[resId].w))
-    {
-        res[resId].path = path;
-    }
-}
-
 [numthreads(8, 8, 1)]
-void main(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
+void RIS(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
 {
     RWTexture2D<float4> outputTexture = rwTextureHeap[data->dstTexture];
 
@@ -41,7 +31,7 @@ void main(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
     RayQuery<RAY_FLAG_NONE> rayQuery;
     rayQuery.TraceRayInline(tlas, RAY_FLAG_NONE, 0xFF, ray);
 
-    float4 color = float4(0.0, 0.0, 0.0, 1.0);
+    float3 debug = float3(0.0, 0.0, 0.0);
 
     while (rayQuery.Proceed())
     {
@@ -68,119 +58,248 @@ void main(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
 
         Texture2D<float4> tex = textureHeap[NonUniformResourceIndex(primitive.texture)];
         SamplerState sampler = samplerHeap[0];
-        float4 albedo = tex.SampleLevel(sampler, hitUV, 0);
+        float3 albedo = tex.SampleLevel(sampler, hitUV, 0).xyz;
 
         float3 normal0 = primitive.normals[index0];
         float3 normal1 = primitive.normals[index1];
         float3 normal2 = primitive.normals[index2];
 
         float3 normal = normalize(normal0 * (1.0 - barycentrics.x - barycentrics.y) + normal1 * barycentrics.x + normal2 * barycentrics.y);
-        normal = normalize(mul(rayQuery.CommittedWorldToObject4x3(), normal)).xyz;
+        normal = normalize(mul(rayQuery.CommittedWorldToObject4x3(), normal).xyz);
 
-        // Skip lighting if no lights
-        if (data->numLights == 0)
+        uint seed = xxhash32(uint3(threadId.xy, data->frame));
+        float3 hitT = rayQuery.WorldRayDirection() * rayQuery.CommittedRayT() + rayQuery.WorldRayOrigin();
+
+        float4 prevClip = mul(data->camData->prevViewProjection, float4(hitT, 1.0));
+        float2 prevUV = prevClip.xy / prevClip.w * 0.5 + 0.5;
+        int2 prevPixel = int2(prevUV * float2(imgSize));
+
+        RWTexture2D<float4> albedoTexture = rwTextureHeap[data->albedo];
+        albedoTexture[threadId.xy] = float4(albedo, 1.0);
+
+        RWTexture2D<float4> normalsTexture = rwTextureHeap[data->normals];
+        normalsTexture[threadId.xy] = float4(normal, 1.0);
+
+        RWTexture2D<float4> motionVectorsTexture = rwTextureHeap[data->motionVectors];
+        motionVectorsTexture[threadId.xy] = float4(threadId.xy - prevPixel, 0.0, 0.0);
+
+        // RIS reservoir
+        Reservoir r;
+
+        // MIS weight
+        float m = 1.0 / data->M;
+
+        // RIS
+        for (int i = 0; i < data->M; ++i)
         {
-            color.xyz = albedo.xyz;
+            uint lightIndex = pcg(seed) % data->numLights;
+            LightData light = data->lights[lightIndex];
+
+            Path x;
+            x.x1 = hitT + normal * 0.001; // Offset ray origin to avoid self-intersection
+            x.x2 = light.position.xyz;
+            x.light = lightIndex;
+
+            float w = m * p(x, albedo, normal, data->lights) / pdf(data->numLights);
+
+            r.addSample(x, w, seed);
         }
-        else
+
+        uint q = imgSize.x * threadId.y + threadId.x;
+        Sample s;
+
+        Path y = r.sampleOut;
+        if (y.light != -1)
         {
-            uint seed = xxhash32(uint3(threadId.xy, data->frame));
-            uint resId = threadId.y * imgSize.x + threadId.x;
-            float3 hitT = rayQuery.WorldRayDirection() * rayQuery.CommittedRayT() + rayQuery.WorldRayOrigin();
-
-            float4 prevClip = mul(data->camData->prevViewProjection, float4(hitT, 1.0));
-            float2 prevUV = prevClip.xy / prevClip.w * 0.5 + 0.5;
-            int2 prevPixel = int2(prevUV * float2(imgSize));
-            uint prevResId = prevPixel.y * imgSize.x + prevPixel.x;
-
-            bool validHistory = prevPixel.x >= 0 && prevPixel.x < imgSize.x && prevPixel.y >= 0 && prevPixel.y < imgSize.y;
-
-            // Reset reservoir for this frame
-            data->reservoirs[resId].w = 0.0;
-            data->reservoirs[resId].path = Path();
-            data->reservoirs[resId].M = 0;
-
-            // RIS
-            for (int i = 0; i < data->M; ++i)
+            float w = 0.0;
+            float p_hat = p(y, albedo, normal, data->lights);
+            if (V(y, tlas) > 0.0 && p_hat > 0.0)
             {
-                uint lightIndex = pcg(seed) % data->numLights;
-
-                LightData light = data->lights[lightIndex];
-                float3 lightDir = normalize(light.position.xyz - hitT);
-                float NoL = max(dot(normal, lightDir), 0.0);
-                float3 Li = (light.color.xyz * light.intensity * NoL) / pow(distance(light.position.xyz, hitT), 2.0);
-                float pdf = 1.0 / float(data->numLights);
-                float w = length(Li) / pdf;
-
-                Path path;
-                path.x1 = float4(hitT, 1.0);
-                path.x2 = light.position;
-                path.throughput = light.color * light.intensity;
-
-                addSample(data->reservoirs, resId, path, w, 1, seed);
+                w = r.w / p_hat;
             }
 
-            if (validHistory)
-            {
-                // Temporal pass
-                {
-                    Path path = data->reservoirs[resId].path;
-                    float V = shadowRay(tlas, path.x1.xyz + normal * 0.001, path.x2.xyz);
+            s.x = y;
+            s.w = w;
 
-                    Path prevPath = data->history[prevResId].path;
-                    if (distance(prevPath.x1, path.x1) > 0.1) // Invalidate the history for likely disocclusions
-                    {
-                        prevPath = Path();
-                    }
-
-                    prevPath.x1 = path.x1; // Update hit position for current frame
-
-                    float prevW = data->history[prevResId].w;
-                    int prevM = data->history[prevResId].M;
-
-                    const int historyLength = 20;
-                    int prevMClamped = min(prevM, historyLength * data->M);
-                    float bias = float(prevMClamped) / float(prevM + 1);
-
-                    data->history[prevResId].w = 0.0;
-                    data->history[prevResId].path = Path();
-                    data->history[prevResId].M = 0;
-
-                    addSample(data->history, prevResId, prevPath, prevW * bias, prevMClamped, seed);
-                    addSample(data->history, prevResId, path, data->reservoirs[resId].w * V, data->reservoirs[resId].M, seed);
-                }
-
-                // Shade pass
-                {
-                    Path path = data->history[prevResId].path;
-                    float3 lightDir = normalize(path.x2.xyz - path.x1.xyz);
-                    float NoL = max(dot(normal, lightDir), 0.0);
-                    float3 Li = (path.throughput.xyz * NoL) / pow(distance(path.x2.xyz, path.x1.xyz), 2.0);
-                    float W = (1.0 / float(data->history[prevResId].M)) * (1.0 / length(Li)) * data->history[prevResId].w;
-
-                    color.xyz = Li * W * albedo.xyz;
-                }
-            }
-            else // Invalid history, use current reservoir
-            {
-                Path path = data->reservoirs[resId].path;
-                float3 lightDir = normalize(path.x2.xyz - path.x1.xyz);
-                float NoL = max(dot(normal, lightDir), 0.0);
-                float3 Li = (path.throughput.xyz * NoL) / pow(distance(path.x2.xyz, path.x1.xyz), 2.0);
-
-                float V = shadowRay(tlas, path.x1.xyz + normal * 0.001, path.x2.xyz);
-
-                float W = (1.0 / float(data->reservoirs[resId].M)) * (1.0 / length(Li)) * data->reservoirs[resId].w;
-
-                color.xyz = Li * W * albedo.xyz * V;
-            }
+            // debug = albedo * BRDF() * Le(y, data->lights) * G(y, normal) * w;
         }
+
+        data->pixelSample[q] = s;
+    }
+    else
+    {
+        // No hit, write default values
+        RWTexture2D<float4> albedoTexture = rwTextureHeap[data->albedo];
+        albedoTexture[threadId.xy] = float4(0.0, 0.0, 0.0, 0.0);
+
+        RWTexture2D<float4> normalsTexture = rwTextureHeap[data->normals];
+        normalsTexture[threadId.xy] = float4(0.0, 0.0, 0.0, 0.0);
+
+        RWTexture2D<float4> motionVectorsTexture = rwTextureHeap[data->motionVectors];
+        motionVectorsTexture[threadId.xy] = float4(0.0, 0.0, 0.0, 0.0);
+
+        Sample s;
+        uint q = imgSize.x * threadId.y + threadId.x;
+        data->pixelSample[q] = s;
+    }
+
+    // if (data->accumulate == 1)
+    // {
+    //     float3 prevColor = outputTexture[threadId.xy].xyz;
+    //     debug = (prevColor * data->accumulatedFrames + debug) / (data->accumulatedFrames + 1);
+    // }
+
+    // outputTexture[threadId.xy] = float4(debug, 1.0);
+}
+
+[numthreads(8, 8, 1)]
+void Reuse(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
+{
+    RWTexture2D<float4> outputTexture = rwTextureHeap[data->dstTexture];
+
+    uint2 imgSize;
+    outputTexture.GetDimensions(imgSize.x, imgSize.y);
+
+    if (threadId.x >= imgSize.x || threadId.y >= imgSize.y)
+        return;
+
+    // Add output texture size to the threadId so we don't reuse the same random numbers from the RIS path
+    uint seed = xxhash32(uint3(threadId.xy + imgSize, data->frame));
+
+    float3 albedo = rwTextureHeap[data->albedo][threadId.xy].xyz;
+    float3 normal = rwTextureHeap[data->normals][threadId.xy].xyz;
+    int2 motionVector = int4(rwTextureHeap[data->motionVectors][threadId.xy]).xy;
+    int2 prevThreadId = int2(threadId.xy) - motionVector;
+    bool valid = prevThreadId.x >= 0 && prevThreadId.x < imgSize.x && prevThreadId.y >= 0 && prevThreadId.y < imgSize.y;
+
+    if (length(albedo) == 0.0 || length(normal) == 0.0)
+    {
+        // No hit in RIS pass, skip reuse
+        return;
+    }
+
+    // Spatial
+    if (data->spatial == 1)
+    {
+        Reservoir r;
+
+        uint q = imgSize.x * threadId.y + threadId.x;
+        const uint k = 8;
+        float sum = 0.0;
+        Sample neighbors[k];
+
+        float m = 1.0 / k;
+
+        for (int i = 0; i < k - 1; ++i)
+        {
+            uint2 neighbor = randomPixelInNeighborhood(threadId.xy, k, imgSize, seed);
+            uint Q = imgSize.x * neighbor.y + neighbor.x;
+            Sample s = data->pixelSample[Q];
+            
+            // if (s.x.light != -1)
+            // {
+            //     sum += p(s.x, albedo, normal, data->lights);
+            // }
+
+            neighbors[i] = s;
+        }
+
+        Sample cur = data->pixelSample[q];
+        float w = m * p(cur.x, albedo, normal, data->lights) * cur.w;
+        r.addSample(cur.x, w, seed);
+
+        for (int i = 0; i < k - 1; ++i)
+        {
+            Sample s = neighbors[i];
+            float w = m * p(s.x, albedo, normal, data->lights) * s.w;
+            r.addSample(s.x, w, seed);
+        }
+
+        Sample y;
+        y.x = r.sampleOut;
+
+        float p_hat = p(y.x, albedo, normal, data->lights);
+
+        if (p_hat > 0.0)
+        {
+            y.w = r.w / p_hat;
+            data->pixelSample[q] = y;
+        }
+    }
+
+    // Temporal
+    if (data->temporal == 1 && valid && data->frame > 0)
+    {
+        // Index into samples
+        uint q = imgSize.x * threadId.y + threadId.x;
+        uint Q = imgSize.x * prevThreadId.y + prevThreadId.x;
+
+        Reservoir r;
+        float m;
+        float w;
+
+        Sample cur = data->pixelSample[q];
+        Sample prev = data->prevPixelSample[Q];
+
+        float pCur = p(cur.x, albedo, normal, data->lights);
+        float pPrev = p(prev.x, albedo, normal, data->lights);
+
+        // MIS denominator
+        float d = (data->M * (data->frame + 1));
+
+        m = pCur / d;
+        w = m * pCur * cur.w;
+        r.addSample(cur.x, cur.w / d, seed);
+
+        m = pPrev / d;
+        w = m * pPrev * prev.w;
+        r.addSample(prev.x, prev.w / d, seed);
+
+        Sample y;
+        y.x = r.sampleOut;
+        y.w = r.w / p(y.x, albedo, normal, data->lights);
+
+        data->pixelSample[q] = y;
+    }
+}
+
+[numthreads(8, 8, 1)]
+void Shade(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
+{
+    RWTexture2D<float4> outputTexture = rwTextureHeap[data->dstTexture];
+
+    uint2 imgSize;
+    outputTexture.GetDimensions(imgSize.x, imgSize.y);
+
+    if (threadId.x >= imgSize.x || threadId.y >= imgSize.y)
+        return;
+
+    float3 albedo = rwTextureHeap[data->albedo][threadId.xy].xyz;
+    float3 normal = rwTextureHeap[data->normals][threadId.xy].xyz;
+
+    uint q = imgSize.x * threadId.y + threadId.x;
+    Sample y = data->pixelSample[q];
+
+    float4 color;
+
+    if (y.x.light == -1)
+    {
+        color = float4(0.f, 0.f, 0.f, 1.f);
+    }
+    else 
+    {
+        color = float4((albedo * BRDF() * Le(y.x, data->lights) * G(y.x, normal)) * y.w, 1.0);
     }
 
     if (data->accumulate == 1)
     {
         float4 prevColor = outputTexture[threadId.xy];
         color = (prevColor * data->accumulatedFrames + color) / (data->accumulatedFrames + 1);
+    }
+
+    if (isnan(length(color)))
+    {
+        color = float4(0.f, 0.f, 1.f, 1.f);
     }
 
     outputTexture[threadId.xy] = color;
