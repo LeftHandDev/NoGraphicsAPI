@@ -1,4 +1,3 @@
-#include "../../Utilities.h"
 #include "../../External/stb_image.h"
 #include "../../External/stb_image_write.h"
 
@@ -9,6 +8,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include "Graphics.h"
+#include "../Common/Utilities.h"
 #include "../Common/TAA.h"
 
 std::vector<glm::vec2> haltonSequence(uint length = 16)

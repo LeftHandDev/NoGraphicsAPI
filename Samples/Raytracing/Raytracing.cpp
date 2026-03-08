@@ -1,5 +1,3 @@
-#include "Raytracing.h"
-#include "../../Utilities.h"
 #include "../../External/stb_image.h"
 #include "../../External/stb_image_write.h"
 
@@ -13,13 +11,17 @@
 
 #include <random>
 
+#include "Raytracing.h"
+#include "../Common/Utilities.h"
+#include "../Common/Text.h"
+
 void raytracingSample()
 {
     gpuCreateDevice();
 
     const uint FRAMES_IN_FLIGHT = 2;
 
-    auto window = SDL_CreateWindow("Test Window", 1920, 1080, SDL_WINDOW_GPU);
+    auto window = SDL_CreateWindow("Test Window", 1920, 1080, SDL_WINDOW_GPU | SDL_WINDOW_BORDERLESS | SDL_WINDOW_MAXIMIZED);
     auto surface = SDL_Gpu_CreateSurface(window);
     bool exit = false;
 
@@ -42,6 +44,7 @@ void raytracingSample()
     void *texturePtr = gpuMalloc(textureSizeAlign.size, MEMORY_GPU);
     auto texture = gpuCreateTexture(textureDesc, texturePtr);
 
+    // output texture
     GpuTextureDesc outputTextureDesc{
         .type = TEXTURE_2D,
         .dimensions = {static_cast<uint32_t>(swapchainDesc.dimensions.x), static_cast<uint32_t>(swapchainDesc.dimensions.y), 1},
@@ -52,26 +55,74 @@ void raytracingSample()
     void *outputTexturePtr = gpuMalloc(outputTextureSizeAlign.size, MEMORY_GPU);
     auto outputTexture = gpuCreateTexture(outputTextureDesc, outputTexturePtr);
 
+    // albedo texture
+    GpuTextureDesc albedoTextureDesc{
+        .type = TEXTURE_2D,
+        .dimensions = {static_cast<uint32_t>(swapchainDesc.dimensions.x), static_cast<uint32_t>(swapchainDesc.dimensions.y), 1},
+        .format = FORMAT_RGBA32_FLOAT,
+        .usage = static_cast<USAGE_FLAGS>(USAGE_STORAGE | USAGE_SAMPLED)};
+
+    GpuTextureSizeAlign albedoTextureSizeAlign = gpuTextureSizeAlign(albedoTextureDesc);
+    void *albedoTexturePtr = gpuMalloc(albedoTextureSizeAlign.size, MEMORY_GPU);
+    auto albedoTexture = gpuCreateTexture(albedoTextureDesc, albedoTexturePtr);
+
+    // normals
+     GpuTextureDesc normalsTextureDesc{
+        .type = TEXTURE_2D,
+        .dimensions = {static_cast<uint32_t>(swapchainDesc.dimensions.x), static_cast<uint32_t>(swapchainDesc.dimensions.y), 1},
+        .format = FORMAT_RGBA32_FLOAT,
+        .usage = static_cast<USAGE_FLAGS>(USAGE_STORAGE | USAGE_SAMPLED)};
+
+    GpuTextureSizeAlign normalsTextureSizeAlign = gpuTextureSizeAlign(normalsTextureDesc);
+    void *normalsTexturePtr = gpuMalloc(normalsTextureSizeAlign.size, MEMORY_GPU);
+    auto normalsTexture = gpuCreateTexture(normalsTextureDesc, normalsTexturePtr);
+
+    // motion vectors
+    GpuTextureDesc motionVectorsTextureDesc{
+        .type = TEXTURE_2D,
+        .dimensions = {static_cast<uint32_t>(swapchainDesc.dimensions.x), static_cast<uint32_t>(swapchainDesc.dimensions.y), 1},
+        .format = FORMAT_RGBA32_FLOAT,
+        .usage = static_cast<USAGE_FLAGS>(USAGE_STORAGE | USAGE_SAMPLED)};
+
+    GpuTextureSizeAlign motionVectorsTextureSizeAlign = gpuTextureSizeAlign(motionVectorsTextureDesc);
+    void *motionVectorsTexturePtr = gpuMalloc(motionVectorsTextureSizeAlign.size, MEMORY_GPU);
+    auto motionVectorsTexture = gpuCreateTexture(motionVectorsTextureDesc, motionVectorsTexturePtr);
+
+    enum HeapIndices
+    {
+        INDEX_CUBE = 0,
+        INDEX_CURRENT_FRAME = 1,
+        INDEX_ALBEDO = 2,
+        INDEX_NORMALS = 3,
+        INDEX_MOTION_VECTORS = 4,
+    };
+
     auto textureHeap = allocate<GpuTextureDescriptor>(1024);
-    textureHeap.cpu[0] = gpuTextureViewDescriptor(texture, GpuViewDesc{.format = FORMAT_RGBA8_UNORM});
-    textureHeap.cpu[1] = gpuRWTextureViewDescriptor(outputTexture, GpuViewDesc{.format = FORMAT_RGBA32_FLOAT});
+    textureHeap.cpu[INDEX_CUBE] = gpuTextureViewDescriptor(texture, GpuViewDesc{.format = FORMAT_RGBA8_UNORM});
+    textureHeap.cpu[INDEX_CURRENT_FRAME] = gpuRWTextureViewDescriptor(outputTexture, GpuViewDesc{.format = FORMAT_RGBA32_FLOAT});
+    textureHeap.cpu[INDEX_ALBEDO] = gpuRWTextureViewDescriptor(albedoTexture, GpuViewDesc{.format = FORMAT_RGBA32_FLOAT});
+    textureHeap.cpu[INDEX_NORMALS] = gpuRWTextureViewDescriptor(normalsTexture, GpuViewDesc{.format = FORMAT_RGBA32_FLOAT});
+    textureHeap.cpu[INDEX_MOTION_VECTORS] = gpuRWTextureViewDescriptor(motionVectorsTexture, GpuViewDesc{.format = FORMAT_RGBA32_FLOAT});
 
     ColorTarget colorTarget = {};
     colorTarget.format = swapchainDesc.format;
 
-    GpuRasterDesc rasterDesc = {
-        .cull = CULL_CW,
-        .colorTargets = Span<ColorTarget>(&colorTarget, 1)};
-
     auto referenceIR = loadIR("../Shaders/Raytracing/Raytracing.spv");
     auto referencePipeline = gpuCreateComputePipeline(ByteSpan(referenceIR));
 
-    auto restirIR = loadIR("../Shaders/Raytracing/ReSTIR.spv");
-    auto restirPipeline = gpuCreateComputePipeline(ByteSpan(restirIR));
+    auto risIR = loadIR("../Shaders/Raytracing/RIS.spv");
+    auto risPipeline = gpuCreateComputePipeline(ByteSpan(risIR));
+
+    auto reuseIR = loadIR("../Shaders/Raytracing/Reuse.spv");
+    auto reusePipeline = gpuCreateComputePipeline(ByteSpan(reuseIR));
+
+    auto shadeIR = loadIR("../Shaders/Raytracing/Shade.spv");
+    auto shadePipeline = gpuCreateComputePipeline(ByteSpan(shadeIR));
 
     size_t allocatorSize = 2 * 1024 * 1024; // 2 MB
     LinearAllocator allocator(allocatorSize);
-    auto raytracingData = allocator.allocate<RaytracingData>();
+    auto rtDataRingBufffer = allocator.allocate<RaytracingData>(FRAMES_IN_FLIGHT);
+    RaytracingData raytracingData = {};
 
     uint32_t numLights = 100;
     auto lightData = allocator.allocate<LightData>(numLights);
@@ -99,24 +150,26 @@ void raytracingSample()
         }
     }
 
-    auto camDataAlloc = allocator.allocate<CameraData>();
- 
-    auto setCamera = [&] {
-        lightData.cpu[0].position = {cameraPos.x, cameraPos.y, cameraPos.z, 1}; // first light follows the camera, so we can always see something
-        camDataAlloc.cpu->position = {cameraPos.x, cameraPos.y, cameraPos.z, 1};
+    auto camDataAlloc = allocator.allocate<CameraData>(FRAMES_IN_FLIGHT);
+
+    auto setCamera = [&](size_t frameIndex) {
+        camDataAlloc.cpu[frameIndex].position = {cameraPos.x, cameraPos.y, cameraPos.z, 1};
         auto view = glm::lookAt(cameraPos, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
         auto projection = glm::perspective(glm::radians(60.0f), swapchainDesc.dimensions.x / static_cast<float>(swapchainDesc.dimensions.y), 0.1f, 100.0f);
         auto invViewProjection = glm::inverse(projection * view);
-        memcpy(&camDataAlloc.cpu->invViewProjection, &invViewProjection, sizeof(float4x4));
+        memcpy(&camDataAlloc.cpu[frameIndex].invViewProjection, &invViewProjection, sizeof(float4x4));
 
         view = glm::lookAt(prevCameraPos, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
         auto viewProjection = projection * view;
-        memcpy(&camDataAlloc.cpu->prevViewProjection, &viewProjection, sizeof(float4x4));
+        memcpy(&camDataAlloc.cpu[frameIndex].prevViewProjection, &viewProjection, sizeof(float4x4));
 
         prevCameraPos = cameraPos;
     };
 
-    setCamera();
+    for (size_t i = 0; i < FRAMES_IN_FLIGHT; ++i)
+    {
+        setCamera(i);
+    }
 
     std::vector<float3> vertices;
     std::vector<float3> normals;
@@ -228,30 +281,35 @@ void raytracingSample()
     size_t scratchSize = std::max(blasSize.buildScratchSize, tlasSize.buildScratchSize);
     void *scratchPtr = gpuMalloc(scratchSize, MEMORY_GPU);
 
-    // ReSTIR reservoirs
-    auto reservoirs = allocate<Reservoir>(swapchainDesc.dimensions.x * swapchainDesc.dimensions.y);
-    auto history = allocate<Reservoir>(swapchainDesc.dimensions.x * swapchainDesc.dimensions.y);
+    // ReSTIR buffers
+    auto pixelSample = gpuMalloc<Sample>(swapchainDesc.dimensions.x * swapchainDesc.dimensions.y, MEMORY_GPU);
+    auto prevPixelSample = gpuMalloc<Sample>(swapchainDesc.dimensions.x * swapchainDesc.dimensions.y, MEMORY_GPU);
 
-    raytracingData.cpu->camData = camDataAlloc.gpu;
-    raytracingData.cpu->tlas = tlasPtr;
-    raytracingData.cpu->instanceToMesh = instanceToMesh.gpu;
-    raytracingData.cpu->meshes = meshData.gpu;
-    raytracingData.cpu->lights = lightData.gpu;
-    raytracingData.cpu->reservoirs = reservoirs.gpu;
-    raytracingData.cpu->history = history.gpu;
-    raytracingData.cpu->numLights = numLights;
-    raytracingData.cpu->dstTexture = 1;
-    raytracingData.cpu->frame = 0;
-    raytracingData.cpu->M = 8;
+    raytracingData.camData = camDataAlloc.gpu;
+    raytracingData.tlas = tlasPtr;
+    raytracingData.instanceToMesh = instanceToMesh.gpu;
+    raytracingData.meshes = meshData.gpu;
+    raytracingData.lights = lightData.gpu;
+    raytracingData.pixelSample = pixelSample;
+    raytracingData.prevPixelSample = prevPixelSample;
+    raytracingData.numLights = numLights;
+    raytracingData.albedo = INDEX_ALBEDO;
+    raytracingData.normals = INDEX_NORMALS;
+    raytracingData.motionVectors = INDEX_MOTION_VECTORS; 
+    raytracingData.dstTexture = INDEX_CURRENT_FRAME;
+    raytracingData.frame = 0;
+    raytracingData.M = 8;
 
     auto queue = gpuCreateQueue();
     auto semaphore = gpuCreateSemaphore(0);
     uint64_t nextFrame = 1;
 
-    auto pipeline = referencePipeline;
+    bool reference = true;
 
     glm::vec3 velocity = glm::vec3(0.f);
-    float velocityScale = 0.001f;
+    float velocityScale = 5.f;
+    float delta = 0.016f; // ~60 FPS
+    auto timestamp = std::chrono::high_resolution_clock::now();
 
     while (!exit)
     {
@@ -267,21 +325,30 @@ void raytracingSample()
             {
                 if (event.key.key == SDLK_A)
                 {
-                    raytracingData.cpu->accumulate = 1;
+                    if (raytracingData.accumulate == 0)
+                    {
+                        raytracingData.accumulate = 1;
+                        raytracingData.frame = 0;
+                        raytracingData.accumulatedFrames = 0;
+                    }
+                }
+                else if (event.key.key == SDLK_S)
+                {
+                    raytracingData.spatial = raytracingData.spatial == 0 ? 1 : 0;
+                    raytracingData.frame = 0;
+                    raytracingData.accumulatedFrames = 0;
+                }
+                else if (event.key.key == SDLK_T)
+                {
+                    raytracingData.temporal = raytracingData.temporal == 0 ? 1 : 0;
+                    raytracingData.frame = 0;
+                    raytracingData.accumulatedFrames = 0;
                 }
                 else if (event.key.key == SDLK_R)
                 {
-                    if (pipeline == restirPipeline)
-                    {
-                        // Reset history reservoir when switching back to reference pipeline
-                        memset(history.cpu, 0, sizeof(Reservoir) * swapchainDesc.dimensions.x * swapchainDesc.dimensions.y);
-                        pipeline = referencePipeline;
-                    }
-                    else
-                    {
-                        pipeline = restirPipeline;
-                    }
-                    raytracingData.cpu->accumulatedFrames = 0;
+                    reference = !reference;
+                    raytracingData.frame = 0;
+                    raytracingData.accumulatedFrames = 0;
                 }
                 else if (event.key.key == SDLK_LEFT)
                 {
@@ -304,8 +371,8 @@ void raytracingSample()
             {
                 if (event.key.key == SDLK_A)
                 {
-                    raytracingData.cpu->accumulate = 0;
-                    raytracingData.cpu->accumulatedFrames = 0;
+                    raytracingData.accumulate = 0;
+                    raytracingData.accumulatedFrames = 0;
                 }
                 else if (event.key.key == SDLK_LEFT || event.key.key == SDLK_RIGHT)
                 {
@@ -318,8 +385,13 @@ void raytracingSample()
             }
         }
 
-        cameraPos += velocity;
-        setCamera();
+        auto offset = (nextFrame - 1) % FRAMES_IN_FLIGHT;
+
+        cameraPos += velocity * delta;
+        setCamera(offset);
+        raytracingData.camData = camDataAlloc.gpu + offset;
+        rtDataRingBufffer.cpu[offset] = raytracingData;
+
         auto commandBuffer = gpuStartCommandRecording(queue);
 
         if (nextFrame == 1)
@@ -345,16 +417,34 @@ void raytracingSample()
         }
 
         auto image = gpuSwapchainImage(swapchain);
-        GpuRenderPassDesc renderPassDesc = {
-            .colorTargets = Span<GpuTexture>(&image, 1),
-            .depthStencilTarget = nullptr};
 
-        gpuSetPipeline(commandBuffer, pipeline);
-        gpuSetActiveTextureHeapPtr(commandBuffer, textureHeap.gpu);
 
-        // inline raytracing
-        gpuDispatch(commandBuffer, raytracingData.gpu, {(uint32_t)swapchainDesc.dimensions.x / 8, (uint32_t)swapchainDesc.dimensions.y / 8, 1});
-        gpuBarrier(commandBuffer, STAGE_COMPUTE, STAGE_TRANSFER);
+        if (reference)
+        {
+            gpuSetPipeline(commandBuffer, referencePipeline);
+            gpuSetActiveTextureHeapPtr(commandBuffer, textureHeap.gpu);
+            gpuDispatch(commandBuffer, rtDataRingBufffer.gpu + offset, {(uint32_t)swapchainDesc.dimensions.x / 8, (uint32_t)swapchainDesc.dimensions.y / 8, 1});
+            gpuBarrier(commandBuffer, STAGE_COMPUTE, STAGE_TRANSFER);
+        }
+        else // ReSTIR
+        {
+            gpuSetPipeline(commandBuffer, risPipeline);
+            gpuSetActiveTextureHeapPtr(commandBuffer, textureHeap.gpu);
+            gpuDispatch(commandBuffer, rtDataRingBufffer.gpu + offset, {(uint32_t)swapchainDesc.dimensions.x / 8, (uint32_t)swapchainDesc.dimensions.y / 8, 1});
+            gpuBarrier(commandBuffer, STAGE_COMPUTE, STAGE_COMPUTE);
+
+            gpuSetPipeline(commandBuffer, reusePipeline);
+            gpuDispatch(commandBuffer, rtDataRingBufffer.gpu + offset, {(uint32_t)swapchainDesc.dimensions.x / 8, (uint32_t)swapchainDesc.dimensions.y / 8, 1});
+            gpuBarrier(commandBuffer, STAGE_COMPUTE, STAGE_COMPUTE);
+
+            gpuSetPipeline(commandBuffer, shadePipeline);
+            gpuDispatch(commandBuffer, rtDataRingBufffer.gpu + offset, {(uint32_t)swapchainDesc.dimensions.x / 8, (uint32_t)swapchainDesc.dimensions.y / 8, 1});
+            gpuBarrier(commandBuffer, STAGE_COMPUTE, STAGE_TRANSFER);
+
+            gpuMemCpy(commandBuffer, prevPixelSample, pixelSample, sizeof(Sample) * swapchainDesc.dimensions.x * swapchainDesc.dimensions.y);
+        }
+
+        // Common barrier
 
         // copy to swapchain image
         gpuBlitTexture(commandBuffer, image, outputTexture);
@@ -362,15 +452,25 @@ void raytracingSample()
         gpuSubmit(queue, Span<GpuCommandBuffer>(&commandBuffer, 1), semaphore, nextFrame);
         gpuPresent(swapchain, semaphore, nextFrame++);
 
-        raytracingData.cpu->frame++;
-        if (raytracingData.cpu->accumulate == 1)
+        // Swap reservoir buffers
+        auto pixelSample = raytracingData.pixelSample;
+        raytracingData.pixelSample = raytracingData.prevPixelSample;
+        raytracingData.prevPixelSample = pixelSample;
+
+        raytracingData.frame = nextFrame;
+        if (raytracingData.accumulate == 1)
         {
-            raytracingData.cpu->accumulatedFrames++;
+            raytracingData.accumulatedFrames++;
         }
         else
         {
-            raytracingData.cpu->accumulatedFrames = 0;
+            raytracingData.accumulatedFrames = 0;
         }
+
+        // update delta time and timestamp
+        auto now = std::chrono::high_resolution_clock::now();
+        delta = std::chrono::duration<float>(now - timestamp).count();
+        timestamp = now;
     }
 
     gpuWaitSemaphore(semaphore, nextFrame - 1);
@@ -383,7 +483,10 @@ void raytracingSample()
     gpuDestroyTexture(outputTexture);
     gpuFree(outputTexturePtr);
     textureHeap.free();
-    gpuFreePipeline(pipeline);
+    gpuFreePipeline(referencePipeline);
+    gpuFreePipeline(risPipeline);
+    gpuFreePipeline(reusePipeline);
+    gpuFreePipeline(shadePipeline);
     gpuDestroyAccelerationStructure(blas);
     gpuFree(blasPtr);
     gpuDestroyAccelerationStructure(tlas);

@@ -25,8 +25,8 @@ add_executable(NoGraphicsAPI
     External/VkBootstrap.cpp
     SDL_gpu.cpp
     NoGraphicsAPI_Impl.cpp
-    Utilities.cpp
     Main.cpp
+    Samples/Common/Utilities.cpp
     Samples/Compute/Compute.cpp
     Samples/Graphics/Graphics.cpp
     Samples/Raytracing/Raytracing.cpp
@@ -48,21 +48,27 @@ else()
     set(SPV_OUTPUT_DIR "$<TARGET_FILE_DIR:NoGraphicsAPI>")
     set(ALL_SHADER_OUTPUTS "")
 
-    # compile_shader(SOURCE <path> STAGE <stage> OUTPUT <rel.spv> [EXTRA_DEPENDS ...])
+    # compile_shader(SOURCE <path> STAGE <stage> OUTPUT <rel.spv> [ENTRY <name>] [EXTRA_DEPENDS ...])
     #   SOURCE       – .slang path relative to CMAKE_SOURCE_DIR
     #   STAGE        – spirv stage (compute, vertex, fragment, …)
     #   OUTPUT       – output .spv path relative to Shaders/
-    #   EXTRA_DEPENDS – optional additional file dependencies
+    #   ENTRY        – optional entry point (assumes main otherwise)
     function(compile_shader)
-        cmake_parse_arguments(S "" "SOURCE;STAGE;OUTPUT" "EXTRA_DEPENDS" ${ARGN})
+        cmake_parse_arguments(S "" "SOURCE;STAGE;OUTPUT;ENTRY" "EXTRA_DEPENDS" ${ARGN})
         get_filename_component(SPV_DIR  "${S_OUTPUT}" DIRECTORY)
         get_filename_component(SPV_NAME "${S_OUTPUT}" NAME)
+
+        if(S_ENTRY)
+            set(ENTRY_ARG -entry ${S_ENTRY})
+        else()
+            set(ENTRY_ARG -entry main)
+        endif()
 
         add_custom_command(
             OUTPUT "${CMAKE_BINARY_DIR}/Shaders/${S_OUTPUT}"
             COMMAND ${CMAKE_COMMAND} -E make_directory "${SPV_OUTPUT_DIR}/Shaders/${SPV_DIR}"
             COMMAND "${SLANGC}" "${CMAKE_SOURCE_DIR}/${S_SOURCE}"
-                    -target spirv -stage ${S_STAGE} -entry main
+                    -target spirv -stage ${S_STAGE} ${ENTRY_ARG}
                     -I "${SHADER_INCLUDE_DIR}"
                     -o "${SPV_OUTPUT_DIR}/Shaders/${S_OUTPUT}"
             COMMAND ${CMAKE_COMMAND} -E copy
@@ -83,8 +89,12 @@ else()
     compile_shader(SOURCE Samples/Graphics/Vertex.slang       STAGE vertex   OUTPUT Graphics/Vertex.spv)
     compile_shader(SOURCE Samples/Graphics/Pixel.slang        STAGE fragment OUTPUT Graphics/Pixel.spv)
     compile_shader(SOURCE Samples/Common/TAA.slang            STAGE compute  OUTPUT Common/TAA.spv)
+    compile_shader(SOURCE Samples/Common/TextVertex.slang     STAGE vertex   OUTPUT Common/TextVertex.spv)
+    compile_shader(SOURCE Samples/Common/TextPixel.slang      STAGE fragment OUTPUT Common/TextPixel.spv)
     compile_shader(SOURCE Samples/Raytracing/Raytracing.slang STAGE compute  OUTPUT Raytracing/Raytracing.spv)
-    compile_shader(SOURCE Samples/Raytracing/ReSTIR.slang     STAGE compute  OUTPUT Raytracing/ReSTIR.spv)
+    compile_shader(SOURCE Samples/Raytracing/ReSTIR.slang     STAGE compute  OUTPUT Raytracing/RIS.spv    ENTRY RIS)
+    compile_shader(SOURCE Samples/Raytracing/ReSTIR.slang     STAGE compute  OUTPUT Raytracing/Reuse.spv  ENTRY Reuse)
+    compile_shader(SOURCE Samples/Raytracing/ReSTIR.slang     STAGE compute  OUTPUT Raytracing/Shade.spv  ENTRY Shade)
     compile_shader(SOURCE Shaders/PatchDescriptors.slang      STAGE compute  OUTPUT PatchDescriptors.spv)
 
     add_custom_target(Shaders ALL DEPENDS ${ALL_SHADER_OUTPUTS})

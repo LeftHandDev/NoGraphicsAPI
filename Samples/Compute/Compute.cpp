@@ -1,10 +1,11 @@
-#include "Compute.h"
-#include "../../Utilities.h"
 #include "../../External/stb_image.h"
 #include "../../External/stb_image_write.h"
 
 #include <SDL3/SDL.h>
 #include "../../SDL_gpu.h"
+
+#include "Compute.h"
+#include "../Common/Utilities.h"
 
 void computeSample()
 {

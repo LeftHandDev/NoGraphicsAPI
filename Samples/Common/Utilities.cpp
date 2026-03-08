@@ -107,3 +107,62 @@ void getCube(std::vector<float3> &vertices, std::vector<float3> &normals, std::v
         20, 21, 22, 22, 23, 20,  // Top
     };
 }
+
+TextRenderer::TextRenderer(GpuTexture textureTarget, GpuTextureDesc textureDesc)
+    : target(textureTarget), targetDesc(textureDesc)
+{
+    auto textIRVertex = loadIR("../Shaders/Common/TextVertex.spv");
+    auto textIRPixel = loadIR("../Shaders/Common/TextPixel.spv");
+
+    ColorTarget colorTarget = {};
+    colorTarget.format = textureDesc.format;
+
+    GpuRasterDesc rasterDesc = {
+        .cull = CULL_NONE,
+        .colorTargets = Span<ColorTarget>(&colorTarget, 1)
+    };
+
+    pipeline = gpuCreateGraphicsPipeline(ByteSpan(textIRVertex), ByteSpan(textIRPixel), rasterDesc);
+
+    std::vector<uint32_t> indices = { 0, 1, 2, 2, 3, 0 };
+    
+
+    vertexData = allocate<TextVertexData>();
+    pixelData = allocate<TextPixelData>();
+    indexData = allocate<uint32_t>(6);
+    textData = allocate<uint8_t>(maxTextLength);
+
+    memcpy(indexData.cpu, indices.data(), sizeof(uint32_t) * 6);
+
+}
+
+TextRenderer::~TextRenderer()
+{
+    gpuFreePipeline(pipeline);
+    vertexData.free();
+    pixelData.free();
+    indexData.free();
+    textData.free();
+}
+
+void TextRenderer::renderText(GpuCommandBuffer cmd, const std::string &text, float x, float y, float scale, float3 color)
+{
+    if (offset + text.size() > maxTextLength)
+    {
+        offset = 0;
+    }
+
+    memcpy(textData.cpu + offset, text.data(), std::min(text.size(), static_cast<size_t>(maxTextLength - offset)));
+    offset += text.size();
+
+    vertexData.cpu->width = targetDesc.dimensions.x;
+    vertexData.cpu->height = targetDesc.dimensions.y;
+    vertexData.cpu->textWidth = 16;
+    vertexData.cpu->textHeight = 16;
+    vertexData.cpu->text = textData.gpu + offset;
+
+    pixelData.cpu->atlas = 0;
+
+    gpuSetPipeline(cmd, pipeline);
+    gpuDrawIndexedInstanced(cmd, vertexData.gpu, pixelData.gpu, nullptr, 6, static_cast<uint32_t>(text.size()));
+}

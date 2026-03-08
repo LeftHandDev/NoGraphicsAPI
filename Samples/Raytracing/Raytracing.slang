@@ -50,6 +50,10 @@ void main(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
         uint index1 = primitive.indices[primitiveIndex * 3 + 1];
         uint index2 = primitive.indices[primitiveIndex * 3 + 2];
 
+        float3 vertex0 = primitive.vertices[index0];
+        float3 vertex1 = primitive.vertices[index1];
+        float3 vertex2 = primitive.vertices[index2];
+
         float2 uv0 = primitive.uvs[index0];
         float2 uv1 = primitive.uvs[index1];
         float2 uv2 = primitive.uvs[index2];
@@ -58,35 +62,26 @@ void main(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
 
         Texture2D<float4> tex = textureHeap[NonUniformResourceIndex(primitive.texture)];
         SamplerState sampler = samplerHeap[0];
-        float4 albedo = tex.SampleLevel(sampler, hitUV, 0);
+        float3 albedo = tex.SampleLevel(sampler, hitUV, 0).xyz;
 
         float3 normal0 = primitive.normals[index0];
         float3 normal1 = primitive.normals[index1];
         float3 normal2 = primitive.normals[index2];
 
         float3 normal = normalize(normal0 * (1.0 - barycentrics.x - barycentrics.y) + normal1 * barycentrics.x + normal2 * barycentrics.y);
-        normal = normalize(mul(rayQuery.CommittedWorldToObject4x3(), normal)).xyz;
+        normal = normalize(mul(rayQuery.CommittedWorldToObject4x3(), normal).xyz);
 
-        // Skip lighting if no lights
-        if (data->numLights == 0)
-        {
-            color.xyz = albedo.xyz;
-        }
-        else
-        {
-            uint seed = xxhash32(uint3(threadId.xy, data->frame));
-            uint lightIndex = pcg(seed) % data->numLights;
+        uint seed = xxhash32(uint3(threadId.xy, data->frame));
+        uint lightIndex = pcg(seed) % data->numLights;
 
-            LightData light = data->lights[lightIndex];
-            float3 hitT = rayQuery.WorldRayDirection() * rayQuery.CommittedRayT() + rayQuery.WorldRayOrigin();
-            float3 lightDir = normalize(light.position.xyz - hitT);
+        LightData light = data->lights[lightIndex];
+        float3 hitT = rayQuery.WorldRayDirection() * rayQuery.CommittedRayT() + rayQuery.WorldRayOrigin();
+        Path x;
+        x.x1 = hitT + normal * 0.001;
+        x.x2 = light.position.xyz;
+        x.light = lightIndex;
 
-            float NoL = max(dot(normal, lightDir), 0.0);
-            float V = shadowRay(tlas, hitT + normal * 0.001, light.position.xyz);
-            float3 Li = (albedo.xyz * light.color.xyz * light.intensity * NoL * V) / pow(distance(light.position.xyz, hitT), 2.0);
-            float pdf = 1.0 / float(data->numLights);
-            color.xyz = Li / pdf;
-        }
+        color.xyz = (albedo * BRDF() * Le(x, data->lights) * G(x, normal) * V(x, tlas)) / pdf(data->numLights);
     }
 
     if (data->accumulate == 1)

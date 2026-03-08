@@ -7,10 +7,7 @@
 #include <string>
 #include <sstream>
 
-#include "NoGraphicsAPI.h"
-
-#include "Samples/Graphics/Graphics.h"
-#include "Samples/Raytracing/Raytracing.h"
+#include "Text.h"
 
 template<typename T>
 struct Allocation
@@ -102,6 +99,30 @@ private:
     void* currentPtr = nullptr;
     size_t totalSize = 0;
     size_t usedSize = 0;
+};
+
+class TextRenderer
+{
+public:
+    TextRenderer(GpuTexture target, GpuTextureDesc desc);
+    ~TextRenderer();
+
+    void renderText(GpuCommandBuffer cmd, const std::string& text, float x, float y, float scale, float3 color);
+
+private:
+
+    GpuPipeline pipeline;
+    Allocation<GpuTextureDescriptor> textureHeap;
+    Allocation<TextVertexData> vertexData;
+    Allocation<TextPixelData> pixelData;
+    Allocation<uint32_t> indexData;
+    Allocation<uint8_t> textData;
+    uint offset = 0;
+
+    const GpuTexture target;
+    const GpuTextureDesc targetDesc;
+
+    const uint maxTextLength = 1024;
 };
 
 template<typename T>
