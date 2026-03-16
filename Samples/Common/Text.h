@@ -9,6 +9,8 @@ struct alignas(16) TextVertexData
     uint height;
     uint textWidth;
     uint textHeight;
+    uint atlasWidth;
+    uint atlasHeight;
     uint8_t* text; // per instance text data, 1 byte per character (ASCII)
 };
 

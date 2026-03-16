@@ -1,5 +1,7 @@
 #include "Utilities.h"
 
+#include "../../External/stb_image.h"
+
 std::vector<uint8_t> loadIR(const std::filesystem::path &path)
 {
     std::ifstream file { path, std::ios::binary | std::ios::ate };
@@ -108,8 +110,8 @@ void getCube(std::vector<float3> &vertices, std::vector<float3> &normals, std::v
     };
 }
 
-TextRenderer::TextRenderer(GpuTexture textureTarget, GpuTextureDesc textureDesc)
-    : target(textureTarget), targetDesc(textureDesc)
+TextRenderer::TextRenderer(GpuTextureDesc textureDesc)
+    : targetDesc(textureDesc)
 {
     auto textIRVertex = loadIR("../Shaders/Common/TextVertex.spv");
     auto textIRPixel = loadIR("../Shaders/Common/TextPixel.spv");
@@ -126,7 +128,6 @@ TextRenderer::TextRenderer(GpuTexture textureTarget, GpuTextureDesc textureDesc)
 
     std::vector<uint32_t> indices = { 0, 1, 2, 2, 3, 0 };
     
-
     vertexData = allocate<TextVertexData>();
     pixelData = allocate<TextPixelData>();
     indexData = allocate<uint32_t>(6);
@@ -134,18 +135,54 @@ TextRenderer::TextRenderer(GpuTexture textureTarget, GpuTextureDesc textureDesc)
 
     memcpy(indexData.cpu, indices.data(), sizeof(uint32_t) * 6);
 
+    int atlasChannels;
+    stbi_uc* atlasData = stbi_load("./Assets/Atlas.png", &atlasWidth, &atlasHeight, &atlasChannels, 4);
+    if (atlasData)
+    {
+        auto atlasUpload = allocate<uint8_t>(atlasWidth * atlasHeight * 4);
+        memcpy(atlasUpload.cpu, atlasData, atlasWidth * atlasHeight * 4);
+
+        GpuTextureDesc atlasDesc{
+            .type = TEXTURE_2D,
+            .dimensions = {static_cast<uint32_t>(atlasWidth), static_cast<uint32_t>(atlasHeight), 1},
+            .format = FORMAT_RGBA8_UNORM,
+            .usage = static_cast<USAGE_FLAGS>(USAGE_SAMPLED | USAGE_TRANSFER_DST)};
+
+        GpuTextureSizeAlign atlasSizeAlign = gpuTextureSizeAlign(atlasDesc);
+        atlasPtr = gpuMalloc(atlasSizeAlign.size, MEMORY_GPU);
+        atlas = gpuCreateTexture(atlasDesc, atlasPtr);
+
+        auto semaphore = gpuCreateSemaphore(0);
+        auto queue = gpuCreateQueue();
+        auto cmd = gpuStartCommandRecording(queue);
+        
+        gpuCopyToTexture(cmd, atlasUpload.gpu, atlas);
+
+        gpuSubmit(queue, Span<GpuCommandBuffer>(&cmd, 1), semaphore, 1);
+        gpuWaitSemaphore(semaphore, 1);
+
+        gpuDestroySemaphore(semaphore);
+        gpuFree(atlasUpload.cpu);
+        stbi_image_free(atlasData);
+
+        textureHeap = allocate<GpuTextureDescriptor>(1024);
+        textureHeap.cpu[0] = gpuTextureViewDescriptor(atlas, GpuViewDesc{.format = FORMAT_RGBA8_UNORM});
+    }
 }
 
 TextRenderer::~TextRenderer()
 {
     gpuFreePipeline(pipeline);
+    gpuDestroyTexture(atlas);
+    gpuFree(atlasPtr);
+    gpuFree(textureHeap.cpu);
     vertexData.free();
     pixelData.free();
     indexData.free();
     textData.free();
 }
 
-void TextRenderer::renderText(GpuCommandBuffer cmd, const std::string &text, float x, float y, float scale, float3 color)
+void TextRenderer::renderText(GpuCommandBuffer cmd, GpuTexture target, const std::string &text, float x, float y, float scale, float3 color)
 {
     if (offset + text.size() > maxTextLength)
     {
@@ -153,16 +190,28 @@ void TextRenderer::renderText(GpuCommandBuffer cmd, const std::string &text, flo
     }
 
     memcpy(textData.cpu + offset, text.data(), std::min(text.size(), static_cast<size_t>(maxTextLength - offset)));
-    offset += text.size();
 
     vertexData.cpu->width = targetDesc.dimensions.x;
     vertexData.cpu->height = targetDesc.dimensions.y;
-    vertexData.cpu->textWidth = 16;
-    vertexData.cpu->textHeight = 16;
+    vertexData.cpu->textWidth = atlasWidth / 256;
+    vertexData.cpu->textHeight = atlasHeight;
+    vertexData.cpu->atlasWidth = atlasWidth;
+    vertexData.cpu->atlasHeight = atlasHeight;
     vertexData.cpu->text = textData.gpu + offset;
+
+    offset += text.size();
 
     pixelData.cpu->atlas = 0;
 
+    GpuTexture colorTargets[] = { target };
+    GpuRenderPassDesc renderPassDesc = {
+        .colorTargets = Span<GpuTexture>(colorTargets, 1),
+        .loadOp = LOAD_OP_LOAD
+    };
+
     gpuSetPipeline(cmd, pipeline);
-    gpuDrawIndexedInstanced(cmd, vertexData.gpu, pixelData.gpu, nullptr, 6, static_cast<uint32_t>(text.size()));
+    gpuSetActiveTextureHeapPtr(cmd, textureHeap.gpu);
+    gpuBeginRenderPass(cmd, renderPassDesc);
+    gpuDrawIndexedInstanced(cmd, vertexData.gpu, pixelData.gpu, indexData.gpu, 6, static_cast<uint32_t>(text.size()));
+    gpuEndRenderPass(cmd);
 }

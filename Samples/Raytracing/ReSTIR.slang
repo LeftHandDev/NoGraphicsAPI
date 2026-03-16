@@ -171,6 +171,8 @@ void Reuse(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
     int2 motionVector = int4(rwTextureHeap[data->motionVectors][threadId.xy]).xy;
     int2 prevThreadId = int2(threadId.xy) - motionVector;
     bool valid = prevThreadId.x >= 0 && prevThreadId.x < imgSize.x && prevThreadId.y >= 0 && prevThreadId.y < imgSize.y;
+    uint q = imgSize.x * threadId.y + threadId.x;
+    Sample cur = data->pixelSample[q];
 
     if (length(albedo) == 0.0 || length(normal) == 0.0)
     {
@@ -178,12 +180,10 @@ void Reuse(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
         return;
     }
 
-    // Spatial
     if (data->spatial == 1)
     {
         Reservoir r;
 
-        uint q = imgSize.x * threadId.y + threadId.x;
         const uint k = 8;
         float sum = 0.0;
         Sample neighbors[k];
@@ -204,7 +204,6 @@ void Reuse(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
             neighbors[i] = s;
         }
 
-        Sample cur = data->pixelSample[q];
         float w = m * p(cur.x, albedo, normal, data->lights) * cur.w;
         r.addSample(cur.x, w, seed);
 
@@ -223,44 +222,41 @@ void Reuse(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
         if (p_hat > 0.0)
         {
             y.w = r.w / p_hat;
-            data->pixelSample[q] = y;
+            cur = y;
         }
     }
 
-    // Temporal
     if (data->temporal == 1 && valid && data->frame > 0)
     {
-        // Index into samples
-        uint q = imgSize.x * threadId.y + threadId.x;
         uint Q = imgSize.x * prevThreadId.y + prevThreadId.x;
+        Sample prev = data->prevPixelSample[Q];
 
         Reservoir r;
-        float m;
+        float m = 1.0 / 2.0;
         float w;
-
-        Sample cur = data->pixelSample[q];
-        Sample prev = data->prevPixelSample[Q];
 
         float pCur = p(cur.x, albedo, normal, data->lights);
         float pPrev = p(prev.x, albedo, normal, data->lights);
 
-        // MIS denominator
-        float d = (data->M * (data->frame + 1));
-
-        m = pCur / d;
         w = m * pCur * cur.w;
-        r.addSample(cur.x, cur.w / d, seed);
+        r.addSample(cur.x, w, seed);
 
-        m = pPrev / d;
         w = m * pPrev * prev.w;
-        r.addSample(prev.x, prev.w / d, seed);
+        r.addSample(prev.x, w, seed);
 
         Sample y;
         y.x = r.sampleOut;
-        y.w = r.w / p(y.x, albedo, normal, data->lights);
 
-        data->pixelSample[q] = y;
+        float p_hat = p(y.x, albedo, normal, data->lights);
+
+        if (p_hat > 0.0)
+        {
+            y.w = r.w / p_hat;
+            cur = y;
+        }
     }
+
+    data->pixelSample[q] = cur;
 }
 
 [numthreads(8, 8, 1)]

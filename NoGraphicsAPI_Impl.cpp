@@ -1713,7 +1713,7 @@ void gpuBeginRenderPass(GpuCommandBuffer cb, GpuRenderPassDesc desc)
         colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
         colorAttachment.imageView = colorTarget->view;
         colorAttachment.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-        colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        colorAttachment.loadOp = desc.loadOp == LOAD_OP_LOAD ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
         colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         colorAttachment.clearValue.color = { 0.0f, 0.0f, 0.0f, 1.0f };
         colorAttachments.push_back(colorAttachment);

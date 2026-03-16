@@ -104,14 +104,15 @@ private:
 class TextRenderer
 {
 public:
-    TextRenderer(GpuTexture target, GpuTextureDesc desc);
+    TextRenderer(GpuTextureDesc desc);
     ~TextRenderer();
 
-    void renderText(GpuCommandBuffer cmd, const std::string& text, float x, float y, float scale, float3 color);
+    void renderText(GpuCommandBuffer cmd, GpuTexture target, const std::string& text, float x, float y, float scale, float3 color);
 
 private:
 
     GpuPipeline pipeline;
+    
     Allocation<GpuTextureDescriptor> textureHeap;
     Allocation<TextVertexData> vertexData;
     Allocation<TextPixelData> pixelData;
@@ -119,8 +120,13 @@ private:
     Allocation<uint8_t> textData;
     uint offset = 0;
 
-    const GpuTexture target;
     const GpuTextureDesc targetDesc;
+
+    GpuTexture atlas;
+    void* atlasPtr = nullptr;
+
+    int atlasWidth = 0;
+    int atlasHeight = 0;
 
     const uint maxTextLength = 1024;
 };

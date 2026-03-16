@@ -10,10 +10,23 @@
 #include <glm/gtx/quaternion.hpp>
 
 #include <random>
+#include <string>
 
 #include "Raytracing.h"
 #include "../Common/Utilities.h"
 #include "../Common/Text.h"
+
+static std::string getModeText(bool reference, bool spatial, bool temporal)
+{
+    if (reference)
+        return "Reference [R: RIS]";
+
+    std::string text = "RIS [R: Reference";
+    text += spatial  ? " | S: Spatial On"  : " | S: Spatial Off";
+    text += temporal ? " | T: Temporal On" : " | T: Temporal Off";
+    text += "]";
+    return text;
+}
 
 void raytracingSample()
 {
@@ -21,12 +34,19 @@ void raytracingSample()
 
     const uint FRAMES_IN_FLIGHT = 2;
 
-    auto window = SDL_CreateWindow("Test Window", 1920, 1080, SDL_WINDOW_GPU | SDL_WINDOW_BORDERLESS | SDL_WINDOW_MAXIMIZED);
+    if (!SDL_Init(SDL_INIT_VIDEO))
+    {
+        return;
+    }
+
+    SDL_DisplayID display = SDL_GetPrimaryDisplay();
+    const SDL_DisplayMode *displayMode = SDL_GetCurrentDisplayMode(display);
+    auto window = SDL_CreateWindow("Test Window", displayMode->w, displayMode->h, SDL_WINDOW_GPU | SDL_WINDOW_BORDERLESS);
     auto surface = SDL_Gpu_CreateSurface(window);
     bool exit = false;
 
     int width, height, channels;
-    stbi_uc *inputImage = stbi_load("Assets/NoGraphicsAPI.png", &width, &height, &channels, 4);
+    stbi_uc *inputImage = stbi_load("Assets/Default.png", &width, &height, &channels, 4);
 
     auto upload = allocate<uint8_t>(width * height * 4);
     memcpy(upload.cpu, inputImage, width * height * 4);
@@ -49,7 +69,7 @@ void raytracingSample()
         .type = TEXTURE_2D,
         .dimensions = {static_cast<uint32_t>(swapchainDesc.dimensions.x), static_cast<uint32_t>(swapchainDesc.dimensions.y), 1},
         .format = FORMAT_RGBA32_FLOAT,
-        .usage = static_cast<USAGE_FLAGS>(USAGE_STORAGE | USAGE_TRANSFER_SRC)};
+        .usage = static_cast<USAGE_FLAGS>(USAGE_STORAGE | USAGE_TRANSFER_SRC | USAGE_COLOR_ATTACHMENT)};
 
     GpuTextureSizeAlign outputTextureSizeAlign = gpuTextureSizeAlign(outputTextureDesc);
     void *outputTexturePtr = gpuMalloc(outputTextureSizeAlign.size, MEMORY_GPU);
@@ -311,6 +331,8 @@ void raytracingSample()
     float delta = 0.016f; // ~60 FPS
     auto timestamp = std::chrono::high_resolution_clock::now();
 
+    TextRenderer* textRenderer = new TextRenderer(outputTextureDesc);
+
     while (!exit)
     {
         SDL_Event event;
@@ -365,6 +387,11 @@ void raytracingSample()
                 else if (event.key.key == SDLK_DOWN)
                 {
                     velocity.y = -velocityScale;
+                }
+                else if (event.key.key == SDLK_ESCAPE)
+                {
+                    exit = true;
+                    break;
                 }
             }
             else if (event.type == SDL_EVENT_KEY_UP)
@@ -424,7 +451,6 @@ void raytracingSample()
             gpuSetPipeline(commandBuffer, referencePipeline);
             gpuSetActiveTextureHeapPtr(commandBuffer, textureHeap.gpu);
             gpuDispatch(commandBuffer, rtDataRingBufffer.gpu + offset, {(uint32_t)swapchainDesc.dimensions.x / 8, (uint32_t)swapchainDesc.dimensions.y / 8, 1});
-            gpuBarrier(commandBuffer, STAGE_COMPUTE, STAGE_TRANSFER);
         }
         else // ReSTIR
         {
@@ -439,15 +465,16 @@ void raytracingSample()
 
             gpuSetPipeline(commandBuffer, shadePipeline);
             gpuDispatch(commandBuffer, rtDataRingBufffer.gpu + offset, {(uint32_t)swapchainDesc.dimensions.x / 8, (uint32_t)swapchainDesc.dimensions.y / 8, 1});
-            gpuBarrier(commandBuffer, STAGE_COMPUTE, STAGE_TRANSFER);
-
-            gpuMemCpy(commandBuffer, prevPixelSample, pixelSample, sizeof(Sample) * swapchainDesc.dimensions.x * swapchainDesc.dimensions.y);
         }
-
-        // Common barrier
+        gpuBarrier(commandBuffer, STAGE_COMPUTE, STAGE_TRANSFER);
 
         // copy to swapchain image
         gpuBlitTexture(commandBuffer, image, outputTexture);
+
+        // Render text to swapchain image
+        auto modeText = getModeText(reference, raytracingData.spatial, raytracingData.temporal);
+        textRenderer->renderText(commandBuffer, image,
+            modeText.c_str(), 10.0f, 10.0f, 1.0f, float3(1, 1, 1));
 
         gpuSubmit(queue, Span<GpuCommandBuffer>(&commandBuffer, 1), semaphore, nextFrame);
         gpuPresent(swapchain, semaphore, nextFrame++);
@@ -475,6 +502,7 @@ void raytracingSample()
 
     gpuWaitSemaphore(semaphore, nextFrame - 1);
 
+    delete textRenderer;
     stbi_image_free(inputImage);
     upload.free();
     allocator.free();
@@ -497,6 +525,7 @@ void raytracingSample()
     gpuDestroySwapchain(swapchain);
     SDL_Gpu_DestroySurface(surface);
     SDL_DestroyWindow(window);
+    SDL_Quit();
 
     gpuDestroyDevice();
 }

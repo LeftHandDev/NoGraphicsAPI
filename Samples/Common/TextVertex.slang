@@ -23,14 +23,13 @@ VertexOut main(uint vertexId: SV_VertexID, uint instanceId: SV_InstanceID, TextV
     // calculate position based on instance id, multiply by text width, add text height for y
     float2 position = float2(instanceId * data->textWidth, 0.0) + quadPos * float2(data->textWidth, data->textHeight);
     outVertex.position = float4(position / float2(data->width, data->height) * 2.0 - 1.0, 0.0, 1.0);
-    outVertex.position.y = -outVertex.position.y; // flip y for screen space
 
-    // use the char code form data->text to calculate UVs, assuming a texture atlas with textWidthxtextHeight characters
+    // use the char code to calculate UVs into the atlas
     uint charCode = data->text[instanceId];
-    uint charsPerRow = 256 / data->textWidth; // assuming 256 characters in the atlas
+    uint charsPerRow = data->atlasWidth / data->textWidth;
     uint charX = charCode % charsPerRow;
     uint charY = charCode / charsPerRow;
-    outVertex.uv = float2(charX, charY) * float2(data->textWidth, data->textHeight) / 256.0 + quadPos * float2(data->textWidth, data->textHeight) / 256.0;
+    outVertex.uv = (float2(charX, charY) + quadPos) * float2(data->textWidth, data->textHeight) / float2(data->atlasWidth, data->atlasHeight);
     
     return outVertex;
 }

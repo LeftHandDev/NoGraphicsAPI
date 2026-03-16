@@ -30,7 +30,7 @@ void computeSample()
     
     // Load input image
     int width, height, channels;
-    stbi_uc* inputImage = stbi_load("Assets/NoGraphicsAPI.png", &width, &height, &channels, 4);
+    stbi_uc* inputImage = stbi_load("Assets/Default.png", &width, &height, &channels, 4);
 
     auto upload = allocate<uint8_t>(width * height * 4);
     memcpy(upload.cpu, inputImage, width * height * 4);

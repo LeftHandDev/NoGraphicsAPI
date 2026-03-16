@@ -67,6 +67,7 @@ enum INDEX_TYPE { INDEX_TYPE_UINT16, INDEX_TYPE_UINT32 };
 enum GEOMETRY_TYPE { GEOMETRY_TYPE_TRIANGLES, GEOMETRY_TYPE_AABBS };
 enum MODE { MODE_BUILD, MODE_UPDATE };
 enum TYPE { TYPE_BOTTOM_LEVEL, TYPE_TOP_LEVEL };
+enum LOAD_OP { LOAD_OP_CLEAR, LOAD_OP_LOAD };
 #endif // GPU_RAY_TRACING_EXTENSION
 
 // View descriptor constants
@@ -149,6 +150,7 @@ struct GpuRenderPassDesc
 {
     Span<GpuTexture> colorTargets = {};
     GpuTexture depthStencilTarget = nullptr;
+    LOAD_OP loadOp = LOAD_OP_CLEAR;
 };
 
 struct GpuIndirectDrawArgs
