@@ -7,12 +7,13 @@
 #include "Samples/Compute/Compute.h"
 #include "Samples/Graphics/Graphics.h"
 #include "Samples/Raytracing/Raytracing.h"
+#include "Samples/MultipleGPUs/MultipleGPUs.h"
 
 #include <iostream>
 
 int main()
 {
-    std::cout << "Pick a sample to run:\n1. Compute\n2. Graphics\n3. Raytracing\n> ";
+    std::cout << "Pick a sample to run:\n1. Compute\n2. Graphics\n3. Raytracing\n4. Multiple GPUs\n> ";
     int choice;
     std::cin >> choice;
 
@@ -28,6 +29,10 @@ int main()
 
         case 3:
             raytracingSample();
+            break;
+
+        case 4:
+            multipleGPUsSample();
             break;
         default:
             std::cout << "Invalid choice\n";

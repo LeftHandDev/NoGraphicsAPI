@@ -31,6 +31,8 @@ using Span = std::span<T>;
 using ByteSpan = Span<uint8_t>;
 
 // Opaque handles
+GPU_DEFINE_HANDLE(GpuDevice)
+GPU_DEFINE_HANDLE(GpuPipeline)
 GPU_DEFINE_HANDLE(GpuPipeline)
 GPU_DEFINE_HANDLE(GpuTexture)
 GPU_DEFINE_HANDLE(GpuDepthStencilState)
@@ -162,6 +164,14 @@ struct GpuIndirectDrawArgs
     uint32_t firstInstance;
 };
 
+struct GpuDeviceDesc
+{
+    char name[256];
+    uint32_t vendorID;
+    uint64_t dedicatedMemory;
+    bool discrete;
+};
+
 struct GpuTextureSizeAlign { size_t size; size_t align; };
 struct GpuTextureDescriptor { uint64_t data[4]; };
 
@@ -238,27 +248,35 @@ void* gpuVulkanSurface(GpuSurface surface);
 void gpuDestroySurface(GpuSurface surface);
 #endif // GPU_EXPOSE_INTERNAL
 
+// Instance
+RESULT gpuCreateInstance();
+void gpuDestroyInstance();
+
+// Device enumeration
+uint32_t gpuDeviceCount();
+GpuDeviceDesc gpuDeviceDesc(uint32_t index);
+
 // Device
-RESULT gpuCreateDevice(/* DEVICE CREATION DETAILS OMITTED */);
-void gpuDestroyDevice();
+GpuDevice gpuCreateDevice(uint32_t deviceIndex);
+void gpuDestroyDevice(GpuDevice device);
 
 // Memory
-void* gpuMalloc(size_t bytes, MEMORY memory = MEMORY_DEFAULT);
-void* gpuMalloc(size_t bytes, size_t align, MEMORY memory = MEMORY_DEFAULT);
-void gpuFree(void *ptr);
-void* gpuHostToDevicePointer(void *ptr);
+void* gpuMalloc(GpuDevice device, size_t bytes, MEMORY memory = MEMORY_DEFAULT);
+void* gpuMalloc(GpuDevice device, size_t bytes, size_t align, MEMORY memory = MEMORY_DEFAULT);
+void gpuFree(GpuDevice device, void *ptr);
+void* gpuHostToDevicePointer(GpuDevice device, void *ptr);
 
 // Textures
-GpuTextureSizeAlign gpuTextureSizeAlign(GpuTextureDesc desc);
-GpuTexture gpuCreateTexture(GpuTextureDesc desc, void* ptrGpu);
+GpuTextureSizeAlign gpuTextureSizeAlign(GpuDevice device, GpuTextureDesc desc);
+GpuTexture gpuCreateTexture(GpuDevice device, GpuTextureDesc desc, void* ptrGpu);
 void gpuDestroyTexture(GpuTexture texture);
 GpuTextureDescriptor gpuTextureViewDescriptor(GpuTexture texture, GpuViewDesc desc);
 GpuTextureDescriptor gpuRWTextureViewDescriptor(GpuTexture texture, GpuViewDesc desc);
 
 // Pipelines
-GpuPipeline gpuCreateComputePipeline(ByteSpan computeIR);
-GpuPipeline gpuCreateGraphicsPipeline(ByteSpan vertexIR, ByteSpan pixelIR, GpuRasterDesc desc);
-GpuPipeline gpuCreateGraphicsMeshletPipeline(ByteSpan meshletIR, ByteSpan pixelIR, GpuRasterDesc desc);
+GpuPipeline gpuCreateComputePipeline(GpuDevice device, ByteSpan computeIR);
+GpuPipeline gpuCreateGraphicsPipeline(GpuDevice device, ByteSpan vertexIR, ByteSpan pixelIR, GpuRasterDesc desc);
+GpuPipeline gpuCreateGraphicsMeshletPipeline(GpuDevice device, ByteSpan meshletIR, ByteSpan pixelIR, GpuRasterDesc desc);
 void gpuFreePipeline(GpuPipeline pipeline);
 
 // State objects
@@ -268,12 +286,13 @@ void gpuFreeDepthStencilState(GpuDepthStencilState state);
 void gpuFreeBlendState(GpuBlendState state);
 
 // Queue
-GpuQueue gpuCreateQueue(/* QUEUE CREATION DETAILS OMITTED */);
+GpuQueue gpuCreateQueue(GpuDevice device);
+void gpuDestroyQueue(GpuQueue queue);
 GpuCommandBuffer gpuStartCommandRecording(GpuQueue queue);
 void gpuSubmit(GpuQueue queue, Span<GpuCommandBuffer> commandBuffers, GpuSemaphore semaphore, uint64_t value);
 
 // Semaphores
-GpuSemaphore gpuCreateSemaphore(uint64_t initValue);
+GpuSemaphore gpuCreateSemaphore(GpuDevice device, uint64_t initValue);
 void gpuWaitSemaphore(GpuSemaphore sema, uint64_t value, uint64_t timeout = UINT64_MAX);
 void gpuDestroySemaphore(GpuSemaphore sema);
 
@@ -307,9 +326,9 @@ void gpuDrawMeshlets(GpuCommandBuffer cb, void* meshletDataGpu, void* pixelDataG
 void gpuDrawMeshletsIndirect(GpuCommandBuffer cb, void* meshletDataGpu, void* pixelDataGpu, void *dimGpu);
 
 #ifdef GPU_SURFACE_EXTENSION
-Span<FORMAT> gpuSurfaceFormats(GpuSurface surface);
+Span<FORMAT> gpuSurfaceFormats(GpuDevice device, GpuSurface surface);
 
-GpuSwapchain gpuCreateSwapchain(GpuSurface surface, uint32_t images);
+GpuSwapchain gpuCreateSwapchain(GpuDevice device, GpuSurface surface, uint32_t images);
 void gpuDestroySwapchain(GpuSwapchain swapchain);
 
 GpuTextureDesc gpuSwapchainDesc(GpuSwapchain swapchain);
@@ -319,8 +338,8 @@ void gpuPresent(GpuSwapchain swapchain, GpuSemaphore sema, uint64_t value);
 #endif // GPU_SURFACE_EXTENSION
 
 #ifdef GPU_RAY_TRACING_EXTENSION
-GpuAccelerationStructureSizes gpuAccelerationStructureSizes(GpuAccelerationStructureDesc desc);
-GpuAccelerationStructure gpuCreateAccelerationStructure(GpuAccelerationStructureDesc desc, void* ptrGpu, uint64_t size);
+GpuAccelerationStructureSizes gpuAccelerationStructureSizes(GpuDevice device, GpuAccelerationStructureDesc desc);
+GpuAccelerationStructure gpuCreateAccelerationStructure(GpuDevice device, GpuAccelerationStructureDesc desc, void* ptrGpu, uint64_t size);
 void gpuBuildAccelerationStructures(GpuCommandBuffer cb, Span<GpuAccelerationStructure> as, void* scratchGpu, MODE mode);
 void gpuDestroyAccelerationStructure(GpuAccelerationStructure as);
 

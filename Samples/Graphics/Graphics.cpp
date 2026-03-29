@@ -44,7 +44,8 @@ std::vector<glm::vec2> haltonSequence(uint length = 16)
 
 void graphicsSample()
 {
-    gpuCreateDevice();
+    gpuCreateInstance();
+    auto device = gpuCreateDevice(0);
 
     const uint FRAMES_IN_FLIGHT = 2;
 
@@ -55,7 +56,7 @@ void graphicsSample()
     int width, height, channels;
     stbi_uc* inputImage = stbi_load("Assets/Default.png", &width, &height, &channels, 4);
 
-    auto upload = allocate<uint8_t>(width * height * 4);
+    auto upload = allocate<uint8_t>(device, width * height * 4);
     memcpy(upload.cpu, inputImage, width * height * 4);
 
     // Cube texture
@@ -66,12 +67,12 @@ void graphicsSample()
         .usage = static_cast<USAGE_FLAGS>(USAGE_SAMPLED | USAGE_TRANSFER_DST)
     };
 
-    auto swapchain = gpuCreateSwapchain(surface, FRAMES_IN_FLIGHT);
+    auto swapchain = gpuCreateSwapchain(device, surface, FRAMES_IN_FLIGHT);
     auto swapchainDesc = gpuSwapchainDesc(swapchain);
 
-    GpuTextureSizeAlign textureSizeAlign = gpuTextureSizeAlign(textureDesc);
-    void* texturePtr = gpuMalloc(textureSizeAlign.size, MEMORY_GPU);
-    auto texture = gpuCreateTexture(textureDesc, texturePtr);
+    GpuTextureSizeAlign textureSizeAlign = gpuTextureSizeAlign(device, textureDesc);
+    void* texturePtr = gpuMalloc(device, textureSizeAlign.size, MEMORY_GPU);
+    auto texture = gpuCreateTexture(device, textureDesc, texturePtr);
 
     // Depth texture
     GpuTextureDesc depthDesc = {
@@ -81,9 +82,9 @@ void graphicsSample()
         .usage = static_cast<USAGE_FLAGS>(USAGE_DEPTH_STENCIL_ATTACHMENT | USAGE_SAMPLED)
     };
     
-    GpuTextureSizeAlign depthSizeAlign = gpuTextureSizeAlign(depthDesc);
-    void* depthPtr = gpuMalloc(depthSizeAlign.size, MEMORY_GPU);
-    auto depthTexture = gpuCreateTexture(depthDesc, depthPtr);
+    GpuTextureSizeAlign depthSizeAlign = gpuTextureSizeAlign(device, depthDesc);
+    void* depthPtr = gpuMalloc(device, depthSizeAlign.size, MEMORY_GPU);
+    auto depthTexture = gpuCreateTexture(device, depthDesc, depthPtr);
 
     // History texture
     GpuTextureDesc historyTexture{
@@ -93,9 +94,9 @@ void graphicsSample()
         .usage = static_cast<USAGE_FLAGS>(USAGE_STORAGE | USAGE_SAMPLED | USAGE_TRANSFER_SRC | USAGE_TRANSFER_DST)
     };
 
-    GpuTextureSizeAlign historyTextureSizeAlign = gpuTextureSizeAlign(historyTexture);
-    void* historyTexturePtr = gpuMalloc(historyTextureSizeAlign.size, MEMORY_GPU);
-    auto historyTextureGpu = gpuCreateTexture(historyTexture, historyTexturePtr);
+    GpuTextureSizeAlign historyTextureSizeAlign = gpuTextureSizeAlign(device, historyTexture);
+    void* historyTexturePtr = gpuMalloc(device, historyTextureSizeAlign.size, MEMORY_GPU);
+    auto historyTextureGpu = gpuCreateTexture(device, historyTexture, historyTexturePtr);
 
     // Raster output texture (separate from swapchain to avoid feedback loop in TAA)
     GpuTextureDesc rasterOutputDesc{
@@ -105,9 +106,9 @@ void graphicsSample()
         .usage = static_cast<USAGE_FLAGS>(USAGE_COLOR_ATTACHMENT | USAGE_SAMPLED)
     };
 
-    GpuTextureSizeAlign rasterOutputSizeAlign = gpuTextureSizeAlign(rasterOutputDesc);
-    void* rasterOutputPtr = gpuMalloc(rasterOutputSizeAlign.size, MEMORY_GPU);
-    auto rasterOutputGpu = gpuCreateTexture(rasterOutputDesc, rasterOutputPtr);
+    GpuTextureSizeAlign rasterOutputSizeAlign = gpuTextureSizeAlign(device, rasterOutputDesc);
+    void* rasterOutputPtr = gpuMalloc(device, rasterOutputSizeAlign.size, MEMORY_GPU);
+    auto rasterOutputGpu = gpuCreateTexture(device, rasterOutputDesc, rasterOutputPtr);
 
     // TAA output texture
     GpuTextureDesc taaOutput{
@@ -117,9 +118,9 @@ void graphicsSample()
         .usage = static_cast<USAGE_FLAGS>(USAGE_STORAGE | USAGE_TRANSFER_SRC)
     };
 
-    GpuTextureSizeAlign taaOutputSizeAlign = gpuTextureSizeAlign(taaOutput);
-    void* taaOutputPtr = gpuMalloc(taaOutputSizeAlign.size, MEMORY_GPU);
-    auto taaOutputGpu = gpuCreateTexture(taaOutput, taaOutputPtr);
+    GpuTextureSizeAlign taaOutputSizeAlign = gpuTextureSizeAlign(device, taaOutput);
+    void* taaOutputPtr = gpuMalloc(device, taaOutputSizeAlign.size, MEMORY_GPU);
+    auto taaOutputGpu = gpuCreateTexture(device, taaOutput, taaOutputPtr);
 
     // Motion vectors
     GpuTextureDesc motionVectorsTexture{
@@ -129,9 +130,9 @@ void graphicsSample()
         .usage = static_cast<USAGE_FLAGS>(USAGE_COLOR_ATTACHMENT | USAGE_SAMPLED)
     };
 
-    GpuTextureSizeAlign motionVectorsTextureSizeAlign = gpuTextureSizeAlign(motionVectorsTexture);
-    void* motionVectorsTexturePtr = gpuMalloc(motionVectorsTextureSizeAlign.size, MEMORY_GPU);
-    auto motionVectorsTextureGpu = gpuCreateTexture(motionVectorsTexture, motionVectorsTexturePtr);
+    GpuTextureSizeAlign motionVectorsTextureSizeAlign = gpuTextureSizeAlign(device, motionVectorsTexture);
+    void* motionVectorsTexturePtr = gpuMalloc(device, motionVectorsTextureSizeAlign.size, MEMORY_GPU);
+    auto motionVectorsTextureGpu = gpuCreateTexture(device, motionVectorsTexture, motionVectorsTexturePtr);
 
     enum HeapIndices
     {
@@ -144,7 +145,7 @@ void graphicsSample()
     };
 
     // Texture Heap
-    auto textureHeap = allocate<GpuTextureDescriptor>(1024);
+    auto textureHeap = allocate<GpuTextureDescriptor>(device, 1024);
     textureHeap.cpu[HeapIndices::INDEX_CUBE] = gpuTextureViewDescriptor(texture, GpuViewDesc{.format = textureDesc.format });
     textureHeap.cpu[HeapIndices::INDEX_CURRENT_FRAME] = gpuTextureViewDescriptor(rasterOutputGpu, GpuViewDesc{ .format = rasterOutputDesc.format });
     textureHeap.cpu[HeapIndices::INDEX_HISTORY] = gpuTextureViewDescriptor(historyTextureGpu, GpuViewDesc{ .format = historyTexture.format });
@@ -165,6 +166,7 @@ void graphicsSample()
     auto vertexIR = loadIR("../Shaders/Graphics/Vertex.spv");
     auto pixelIR = loadIR("../Shaders/Graphics/Pixel.spv");
     auto pipeline = gpuCreateGraphicsPipeline(
+        device,
         ByteSpan(vertexIR),
         ByteSpan(pixelIR),
         rasterDesc
@@ -178,6 +180,7 @@ void graphicsSample()
 
     auto taaIR = loadIR("../Shaders/Common/TAA.spv");
     auto taaPipeline = gpuCreateComputePipeline(
+        device,
         ByteSpan(taaIR)
     );
 
@@ -187,19 +190,19 @@ void graphicsSample()
     std::vector<uint32_t> cubeIndices;
     getCube(cubeVertices, cubeNormals, cubeUVs, cubeIndices);
 
-    auto vertices = allocate<float3>(cubeVertices.size());
+    auto vertices = allocate<float3>(device, cubeVertices.size());
     memcpy(vertices.cpu, cubeVertices.data(), sizeof(float3) * cubeVertices.size());
 
-    auto uvs = allocate<float2>(cubeUVs.size());
+    auto uvs = allocate<float2>(device, cubeUVs.size());
     memcpy(uvs.cpu, cubeUVs.data(), sizeof(float2) * cubeUVs.size());
 
-    auto indices = allocate<uint32_t>(cubeIndices.size());
+    auto indices = allocate<uint32_t>(device, cubeIndices.size());
     memcpy(indices.cpu, cubeIndices.data(), sizeof(uint32_t) * cubeIndices.size());
 
-    auto instances = allocate<Instance>(2);
+    auto instances = allocate<Instance>(device, 2);
 
-    auto vertexData = allocate<VertexData>();
-    auto pixelData = allocate<PixelData>();
+    auto vertexData = allocate<VertexData>(device);
+    auto pixelData = allocate<PixelData>(device);
     vertexData.cpu->vertices = vertices.gpu;
     vertexData.cpu->uvs = uvs.gpu;
     vertexData.cpu->instances = instances.gpu;
@@ -221,7 +224,7 @@ void graphicsSample()
     memcpy(&instances.cpu[1].prevModel, &instance1, sizeof(float4x4));
 
     // TAA data
-    auto taaData = allocate<TAAData>();
+    auto taaData = allocate<TAAData>(device);
     taaData.cpu->width = swapchainDesc.dimensions.x;
     taaData.cpu->height = swapchainDesc.dimensions.y;
     taaData.cpu->frame = 0;
@@ -231,8 +234,8 @@ void graphicsSample()
     taaData.cpu->srcMotionVectors = HeapIndices::INDEX_MOTION_VECTORS;
     taaData.cpu->dstTexture = HeapIndices::INDEX_TAA_OUTPUT;
 
-    auto queue = gpuCreateQueue();
-    auto semaphore = gpuCreateSemaphore(0);
+    auto queue = gpuCreateQueue(device);
+    auto semaphore = gpuCreateSemaphore(device, 0);
     uint64_t nextFrame = 1;
 
     bool taaOn = true;
@@ -355,17 +358,17 @@ void graphicsSample()
     stbi_image_free(inputImage);
     upload.free();
     gpuDestroyTexture(texture);
-    gpuFree(texturePtr);
+    gpuFree(device, texturePtr);
     gpuDestroyTexture(depthTexture);
-    gpuFree(depthPtr);
+    gpuFree(device, depthPtr);
     gpuDestroyTexture(historyTextureGpu);
-    gpuFree(historyTexturePtr);
+    gpuFree(device, historyTexturePtr);
     gpuDestroyTexture(rasterOutputGpu);
-    gpuFree(rasterOutputPtr);
+    gpuFree(device, rasterOutputPtr);
     gpuDestroyTexture(taaOutputGpu);
-    gpuFree(taaOutputPtr);
+    gpuFree(device, taaOutputPtr);
     gpuDestroyTexture(motionVectorsTextureGpu);
-    gpuFree(motionVectorsTexturePtr);
+    gpuFree(device, motionVectorsTexturePtr);
     textureHeap.free();
     gpuFreePipeline(pipeline);
     gpuFreePipeline(taaPipeline);
@@ -378,9 +381,11 @@ void graphicsSample()
     pixelData.free();
     taaData.free();
     gpuDestroySemaphore(semaphore);
+    gpuDestroyQueue(queue);
     gpuDestroySwapchain(swapchain);
     SDL_Gpu_DestroySurface(surface);
     SDL_DestroyWindow(window);
 
-    gpuDestroyDevice();
+    gpuDestroyDevice(device);
+    gpuDestroyInstance();
 }

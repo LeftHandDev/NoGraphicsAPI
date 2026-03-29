@@ -14,20 +14,22 @@ struct Allocation
 {
     T* cpu;
     T* gpu;
+    GpuDevice device;
 
     void free()
     {
-        gpuFree(cpu);
+        gpuFree(device, cpu);
     }
 };
 
 template<typename T>
-Allocation<T> allocate(int count = 1, MEMORY type = MEMORY_DEFAULT)
+Allocation<T> allocate(GpuDevice device, int count = 1, MEMORY type = MEMORY_DEFAULT)
 {
-    auto addr = gpuMalloc(sizeof(T) * count, type);
+    auto addr = gpuMalloc(device, sizeof(T) * count, type);
     return { 
         .cpu = static_cast<T*>(addr), 
-        .gpu = static_cast<T*>(gpuHostToDevicePointer(addr)) 
+        .gpu = static_cast<T*>(gpuHostToDevicePointer(device, addr)),
+        .device = device
     };
 }
 
@@ -35,10 +37,11 @@ class LinearAllocator
 {
 public:
 
-    LinearAllocator(size_t size, MEMORY memory = MEMORY_DEFAULT)
+    LinearAllocator(GpuDevice gpuDevice, size_t size, MEMORY memory = MEMORY_DEFAULT)
+        : device(gpuDevice)
     {
-        basePtr = gpuMalloc(size, memory);
-        baseGpuPtr = gpuHostToDevicePointer(basePtr);
+        basePtr = gpuMalloc(device, size, memory);
+        baseGpuPtr = gpuHostToDevicePointer(device, basePtr);
         currentPtr = basePtr;
         totalSize = size;
         usedSize = 0;
@@ -85,7 +88,7 @@ public:
             return;
         }
 
-        gpuFree(basePtr);
+        gpuFree(device, basePtr);
         basePtr = nullptr;
         baseGpuPtr = nullptr;
         currentPtr = nullptr;
@@ -94,6 +97,7 @@ public:
     }
 
 private:
+    GpuDevice device;
     void* basePtr = nullptr;
     void* baseGpuPtr = nullptr;
     void* currentPtr = nullptr;
@@ -104,7 +108,7 @@ private:
 class TextRenderer
 {
 public:
-    TextRenderer(GpuTextureDesc desc);
+    TextRenderer(GpuDevice device, GpuTextureDesc desc);
     ~TextRenderer();
 
     void renderText(GpuCommandBuffer cmd, GpuTexture target, const std::string& text, float x, float y, float scale, float3 color);
@@ -119,6 +123,7 @@ private:
     Allocation<uint32_t> indexData;
     Allocation<uint8_t> textData;
     uint offset = 0;
+    GpuDevice device;
 
     const GpuTextureDesc targetDesc;
 
@@ -132,9 +137,9 @@ private:
 };
 
 template<typename T>
-T* gpuMalloc(int count = 1, MEMORY type = MEMORY_DEFAULT)
+T* gpuMalloc(GpuDevice device, int count = 1, MEMORY type = MEMORY_DEFAULT)
 {
-    return static_cast<T*>(::gpuMalloc(sizeof(T) * count, type));
+    return static_cast<T*>(::gpuMalloc(device, sizeof(T) * count, type));
 }
 
 std::vector<uint8_t> loadIR(const std::filesystem::path& path);

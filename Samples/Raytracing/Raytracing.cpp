@@ -30,7 +30,8 @@ static std::string getModeText(bool reference, bool spatial, bool temporal)
 
 void raytracingSample()
 {
-    gpuCreateDevice();
+    gpuCreateInstance();
+    auto device = gpuCreateDevice(0);
 
     const uint FRAMES_IN_FLIGHT = 2;
 
@@ -48,10 +49,10 @@ void raytracingSample()
     int width, height, channels;
     stbi_uc *inputImage = stbi_load("Assets/Default.png", &width, &height, &channels, 4);
 
-    auto upload = allocate<uint8_t>(width * height * 4);
+    auto upload = allocate<uint8_t>(device, width * height * 4);
     memcpy(upload.cpu, inputImage, width * height * 4);
 
-    auto swapchain = gpuCreateSwapchain(surface, FRAMES_IN_FLIGHT);
+    auto swapchain = gpuCreateSwapchain(device, surface, FRAMES_IN_FLIGHT);
     auto swapchainDesc = gpuSwapchainDesc(swapchain);
 
     GpuTextureDesc textureDesc{
@@ -60,9 +61,9 @@ void raytracingSample()
         .format = FORMAT_RGBA8_UNORM,
         .usage = static_cast<USAGE_FLAGS>(USAGE_SAMPLED | USAGE_TRANSFER_DST)};
 
-    GpuTextureSizeAlign textureSizeAlign = gpuTextureSizeAlign(textureDesc);
-    void *texturePtr = gpuMalloc(textureSizeAlign.size, MEMORY_GPU);
-    auto texture = gpuCreateTexture(textureDesc, texturePtr);
+    GpuTextureSizeAlign textureSizeAlign = gpuTextureSizeAlign(device, textureDesc);
+    void *texturePtr = gpuMalloc(device, textureSizeAlign.size, MEMORY_GPU);
+    auto texture = gpuCreateTexture(device, textureDesc, texturePtr);
 
     // output texture
     GpuTextureDesc outputTextureDesc{
@@ -71,9 +72,9 @@ void raytracingSample()
         .format = FORMAT_RGBA32_FLOAT,
         .usage = static_cast<USAGE_FLAGS>(USAGE_STORAGE | USAGE_TRANSFER_SRC | USAGE_COLOR_ATTACHMENT)};
 
-    GpuTextureSizeAlign outputTextureSizeAlign = gpuTextureSizeAlign(outputTextureDesc);
-    void *outputTexturePtr = gpuMalloc(outputTextureSizeAlign.size, MEMORY_GPU);
-    auto outputTexture = gpuCreateTexture(outputTextureDesc, outputTexturePtr);
+    GpuTextureSizeAlign outputTextureSizeAlign = gpuTextureSizeAlign(device, outputTextureDesc);
+    void *outputTexturePtr = gpuMalloc(device, outputTextureSizeAlign.size, MEMORY_GPU);
+    auto outputTexture = gpuCreateTexture(device, outputTextureDesc, outputTexturePtr);
 
     // albedo texture
     GpuTextureDesc albedoTextureDesc{
@@ -82,9 +83,9 @@ void raytracingSample()
         .format = FORMAT_RGBA32_FLOAT,
         .usage = static_cast<USAGE_FLAGS>(USAGE_STORAGE | USAGE_SAMPLED)};
 
-    GpuTextureSizeAlign albedoTextureSizeAlign = gpuTextureSizeAlign(albedoTextureDesc);
-    void *albedoTexturePtr = gpuMalloc(albedoTextureSizeAlign.size, MEMORY_GPU);
-    auto albedoTexture = gpuCreateTexture(albedoTextureDesc, albedoTexturePtr);
+    GpuTextureSizeAlign albedoTextureSizeAlign = gpuTextureSizeAlign(device, albedoTextureDesc);
+    void *albedoTexturePtr = gpuMalloc(device, albedoTextureSizeAlign.size, MEMORY_GPU);
+    auto albedoTexture = gpuCreateTexture(device, albedoTextureDesc, albedoTexturePtr);
 
     // normals
      GpuTextureDesc normalsTextureDesc{
@@ -93,9 +94,9 @@ void raytracingSample()
         .format = FORMAT_RGBA32_FLOAT,
         .usage = static_cast<USAGE_FLAGS>(USAGE_STORAGE | USAGE_SAMPLED)};
 
-    GpuTextureSizeAlign normalsTextureSizeAlign = gpuTextureSizeAlign(normalsTextureDesc);
-    void *normalsTexturePtr = gpuMalloc(normalsTextureSizeAlign.size, MEMORY_GPU);
-    auto normalsTexture = gpuCreateTexture(normalsTextureDesc, normalsTexturePtr);
+    GpuTextureSizeAlign normalsTextureSizeAlign = gpuTextureSizeAlign(device, normalsTextureDesc);
+    void *normalsTexturePtr = gpuMalloc(device, normalsTextureSizeAlign.size, MEMORY_GPU);
+    auto normalsTexture = gpuCreateTexture(device, normalsTextureDesc, normalsTexturePtr);
 
     // motion vectors
     GpuTextureDesc motionVectorsTextureDesc{
@@ -104,9 +105,9 @@ void raytracingSample()
         .format = FORMAT_RGBA32_FLOAT,
         .usage = static_cast<USAGE_FLAGS>(USAGE_STORAGE | USAGE_SAMPLED)};
 
-    GpuTextureSizeAlign motionVectorsTextureSizeAlign = gpuTextureSizeAlign(motionVectorsTextureDesc);
-    void *motionVectorsTexturePtr = gpuMalloc(motionVectorsTextureSizeAlign.size, MEMORY_GPU);
-    auto motionVectorsTexture = gpuCreateTexture(motionVectorsTextureDesc, motionVectorsTexturePtr);
+    GpuTextureSizeAlign motionVectorsTextureSizeAlign = gpuTextureSizeAlign(device, motionVectorsTextureDesc);
+    void *motionVectorsTexturePtr = gpuMalloc(device, motionVectorsTextureSizeAlign.size, MEMORY_GPU);
+    auto motionVectorsTexture = gpuCreateTexture(device, motionVectorsTextureDesc, motionVectorsTexturePtr);
 
     enum HeapIndices
     {
@@ -117,7 +118,7 @@ void raytracingSample()
         INDEX_MOTION_VECTORS = 4,
     };
 
-    auto textureHeap = allocate<GpuTextureDescriptor>(1024);
+    auto textureHeap = allocate<GpuTextureDescriptor>(device, 1024);
     textureHeap.cpu[INDEX_CUBE] = gpuTextureViewDescriptor(texture, GpuViewDesc{.format = FORMAT_RGBA8_UNORM});
     textureHeap.cpu[INDEX_CURRENT_FRAME] = gpuRWTextureViewDescriptor(outputTexture, GpuViewDesc{.format = FORMAT_RGBA32_FLOAT});
     textureHeap.cpu[INDEX_ALBEDO] = gpuRWTextureViewDescriptor(albedoTexture, GpuViewDesc{.format = FORMAT_RGBA32_FLOAT});
@@ -128,19 +129,19 @@ void raytracingSample()
     colorTarget.format = swapchainDesc.format;
 
     auto referenceIR = loadIR("../Shaders/Raytracing/Raytracing.spv");
-    auto referencePipeline = gpuCreateComputePipeline(ByteSpan(referenceIR));
+    auto referencePipeline = gpuCreateComputePipeline(device, ByteSpan(referenceIR));
 
     auto risIR = loadIR("../Shaders/Raytracing/RIS.spv");
-    auto risPipeline = gpuCreateComputePipeline(ByteSpan(risIR));
+    auto risPipeline = gpuCreateComputePipeline(device, ByteSpan(risIR));
 
     auto reuseIR = loadIR("../Shaders/Raytracing/Reuse.spv");
-    auto reusePipeline = gpuCreateComputePipeline(ByteSpan(reuseIR));
+    auto reusePipeline = gpuCreateComputePipeline(device, ByteSpan(reuseIR));
 
     auto shadeIR = loadIR("../Shaders/Raytracing/Shade.spv");
-    auto shadePipeline = gpuCreateComputePipeline(ByteSpan(shadeIR));
+    auto shadePipeline = gpuCreateComputePipeline(device, ByteSpan(shadeIR));
 
     size_t allocatorSize = 2 * 1024 * 1024; // 2 MB
-    LinearAllocator allocator(allocatorSize);
+    LinearAllocator allocator(device, allocatorSize);
     auto rtDataRingBufffer = allocator.allocate<RaytracingData>(FRAMES_IN_FLIGHT);
     RaytracingData raytracingData = {};
 
@@ -249,11 +250,11 @@ void raytracingSample()
         .blasDesc = blasDesc,
         .buildRanges = Span<GpuAccelerationStructureBuildRange>(&blasBuildRange, 1)};
 
-    auto blasSize = gpuAccelerationStructureSizes(blasASDesc);
-    void *blasPtr = gpuMalloc(blasSize.size, MEMORY_GPU);
-    auto blas = gpuCreateAccelerationStructure(blasASDesc, blasPtr, blasSize.size);
+    auto blasSize = gpuAccelerationStructureSizes(device, blasASDesc);
+    void *blasPtr = gpuMalloc(device, blasSize.size, MEMORY_GPU);
+    auto blas = gpuCreateAccelerationStructure(device, blasASDesc, blasPtr, blasSize.size);
 
-    auto instances = gpuMalloc<GpuAccelerationStructureInstanceDesc>(cubeCount);
+    auto instances = gpuMalloc<GpuAccelerationStructureInstanceDesc>(device, cubeCount);
     const float scale = 0.5f;
 
     {
@@ -291,19 +292,19 @@ void raytracingSample()
         .type = TYPE_TOP_LEVEL,
         .tlasDesc = {
             .arrayOfPointers = false,
-            .instancesGpu = gpuHostToDevicePointer(instances)},
+            .instancesGpu = gpuHostToDevicePointer(device, instances)},
         .buildRanges = Span<GpuAccelerationStructureBuildRange>(&tlasBuildRange, 1)};
 
-    auto tlasSize = gpuAccelerationStructureSizes(tlasDesc);
-    void *tlasPtr = gpuMalloc(tlasSize.size, MEMORY_GPU);
-    auto tlas = gpuCreateAccelerationStructure(tlasDesc, tlasPtr, tlasSize.size);
+    auto tlasSize = gpuAccelerationStructureSizes(device, tlasDesc);
+    void *tlasPtr = gpuMalloc(device, tlasSize.size, MEMORY_GPU);
+    auto tlas = gpuCreateAccelerationStructure(device, tlasDesc, tlasPtr, tlasSize.size);
 
     size_t scratchSize = std::max(blasSize.buildScratchSize, tlasSize.buildScratchSize);
-    void *scratchPtr = gpuMalloc(scratchSize, MEMORY_GPU);
+    void *scratchPtr = gpuMalloc(device, scratchSize, MEMORY_GPU);
 
     // ReSTIR buffers
-    auto pixelSample = gpuMalloc<Sample>(swapchainDesc.dimensions.x * swapchainDesc.dimensions.y, MEMORY_GPU);
-    auto prevPixelSample = gpuMalloc<Sample>(swapchainDesc.dimensions.x * swapchainDesc.dimensions.y, MEMORY_GPU);
+    auto pixelSample = gpuMalloc<Sample>(device, swapchainDesc.dimensions.x * swapchainDesc.dimensions.y, MEMORY_GPU);
+    auto prevPixelSample = gpuMalloc<Sample>(device, swapchainDesc.dimensions.x * swapchainDesc.dimensions.y, MEMORY_GPU);
 
     raytracingData.camData = camDataAlloc.gpu;
     raytracingData.tlas = tlasPtr;
@@ -320,8 +321,8 @@ void raytracingSample()
     raytracingData.frame = 0;
     raytracingData.M = 8;
 
-    auto queue = gpuCreateQueue();
-    auto semaphore = gpuCreateSemaphore(0);
+    auto queue = gpuCreateQueue(device);
+    auto semaphore = gpuCreateSemaphore(device, 0);
     uint64_t nextFrame = 1;
 
     bool reference = true;
@@ -331,7 +332,7 @@ void raytracingSample()
     float delta = 0.016f; // ~60 FPS
     auto timestamp = std::chrono::high_resolution_clock::now();
 
-    TextRenderer* textRenderer = new TextRenderer(outputTextureDesc);
+    TextRenderer* textRenderer = new TextRenderer(device, outputTextureDesc);
 
     while (!exit)
     {
@@ -507,25 +508,27 @@ void raytracingSample()
     upload.free();
     allocator.free();
     gpuDestroyTexture(texture);
-    gpuFree(texturePtr);
+    gpuFree(device, texturePtr);
     gpuDestroyTexture(outputTexture);
-    gpuFree(outputTexturePtr);
+    gpuFree(device, outputTexturePtr);
     textureHeap.free();
     gpuFreePipeline(referencePipeline);
     gpuFreePipeline(risPipeline);
     gpuFreePipeline(reusePipeline);
     gpuFreePipeline(shadePipeline);
     gpuDestroyAccelerationStructure(blas);
-    gpuFree(blasPtr);
+    gpuFree(device, blasPtr);
     gpuDestroyAccelerationStructure(tlas);
-    gpuFree(tlasPtr);
-    gpuFree(instances);
-    gpuFree(scratchPtr);
+    gpuFree(device, tlasPtr);
+    gpuFree(device, instances);
+    gpuFree(device, scratchPtr);
     gpuDestroySemaphore(semaphore);
+    gpuDestroyQueue(queue);
     gpuDestroySwapchain(swapchain);
     SDL_Gpu_DestroySurface(surface);
     SDL_DestroyWindow(window);
     SDL_Quit();
 
-    gpuDestroyDevice();
+    gpuDestroyDevice(device);
+    gpuDestroyInstance();
 }

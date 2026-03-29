@@ -110,8 +110,8 @@ void getCube(std::vector<float3> &vertices, std::vector<float3> &normals, std::v
     };
 }
 
-TextRenderer::TextRenderer(GpuTextureDesc textureDesc)
-    : targetDesc(textureDesc)
+TextRenderer::TextRenderer(GpuDevice gpuDevice, GpuTextureDesc textureDesc)
+    : device(gpuDevice), targetDesc(textureDesc)
 {
     auto textIRVertex = loadIR("../Shaders/Common/TextVertex.spv");
     auto textIRPixel = loadIR("../Shaders/Common/TextPixel.spv");
@@ -124,14 +124,14 @@ TextRenderer::TextRenderer(GpuTextureDesc textureDesc)
         .colorTargets = Span<ColorTarget>(&colorTarget, 1)
     };
 
-    pipeline = gpuCreateGraphicsPipeline(ByteSpan(textIRVertex), ByteSpan(textIRPixel), rasterDesc);
+    pipeline = gpuCreateGraphicsPipeline(device, ByteSpan(textIRVertex), ByteSpan(textIRPixel), rasterDesc);
 
     std::vector<uint32_t> indices = { 0, 1, 2, 2, 3, 0 };
     
-    vertexData = allocate<TextVertexData>();
-    pixelData = allocate<TextPixelData>();
-    indexData = allocate<uint32_t>(6);
-    textData = allocate<uint8_t>(maxTextLength);
+    vertexData = allocate<TextVertexData>(device);
+    pixelData = allocate<TextPixelData>(device);
+    indexData = allocate<uint32_t>(device, 6);
+    textData = allocate<uint8_t>(device, maxTextLength);
 
     memcpy(indexData.cpu, indices.data(), sizeof(uint32_t) * 6);
 
@@ -139,7 +139,7 @@ TextRenderer::TextRenderer(GpuTextureDesc textureDesc)
     stbi_uc* atlasData = stbi_load("./Assets/Atlas.png", &atlasWidth, &atlasHeight, &atlasChannels, 4);
     if (atlasData)
     {
-        auto atlasUpload = allocate<uint8_t>(atlasWidth * atlasHeight * 4);
+        auto atlasUpload = allocate<uint8_t>(device, atlasWidth * atlasHeight * 4);
         memcpy(atlasUpload.cpu, atlasData, atlasWidth * atlasHeight * 4);
 
         GpuTextureDesc atlasDesc{
@@ -148,12 +148,12 @@ TextRenderer::TextRenderer(GpuTextureDesc textureDesc)
             .format = FORMAT_RGBA8_UNORM,
             .usage = static_cast<USAGE_FLAGS>(USAGE_SAMPLED | USAGE_TRANSFER_DST)};
 
-        GpuTextureSizeAlign atlasSizeAlign = gpuTextureSizeAlign(atlasDesc);
-        atlasPtr = gpuMalloc(atlasSizeAlign.size, MEMORY_GPU);
-        atlas = gpuCreateTexture(atlasDesc, atlasPtr);
+        GpuTextureSizeAlign atlasSizeAlign = gpuTextureSizeAlign(device, atlasDesc);
+        atlasPtr = gpuMalloc(device, atlasSizeAlign.size, MEMORY_GPU);
+        atlas = gpuCreateTexture(device, atlasDesc, atlasPtr);
 
-        auto semaphore = gpuCreateSemaphore(0);
-        auto queue = gpuCreateQueue();
+        auto semaphore = gpuCreateSemaphore(device, 0);
+        auto queue = gpuCreateQueue(device);
         auto cmd = gpuStartCommandRecording(queue);
         
         gpuCopyToTexture(cmd, atlasUpload.gpu, atlas);
@@ -162,10 +162,10 @@ TextRenderer::TextRenderer(GpuTextureDesc textureDesc)
         gpuWaitSemaphore(semaphore, 1);
 
         gpuDestroySemaphore(semaphore);
-        gpuFree(atlasUpload.cpu);
+        atlasUpload.free();
         stbi_image_free(atlasData);
 
-        textureHeap = allocate<GpuTextureDescriptor>(1024);
+        textureHeap = allocate<GpuTextureDescriptor>(device, 1024);
         textureHeap.cpu[0] = gpuTextureViewDescriptor(atlas, GpuViewDesc{.format = FORMAT_RGBA8_UNORM});
     }
 }
@@ -174,8 +174,8 @@ TextRenderer::~TextRenderer()
 {
     gpuFreePipeline(pipeline);
     gpuDestroyTexture(atlas);
-    gpuFree(atlasPtr);
-    gpuFree(textureHeap.cpu);
+    gpuFree(device, atlasPtr);
+    textureHeap.free();
     vertexData.free();
     pixelData.free();
     indexData.free();

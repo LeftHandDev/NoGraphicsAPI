@@ -9,6 +9,7 @@
 #include <vector>
 #include <fstream>
 #include <filesystem>
+#include "NoGraphicsAPI_Impl.h"
 
 std::vector<uint8_t> gpuHiddenLoadIR(const std::filesystem::path &path)
 {
@@ -28,20 +29,24 @@ struct GpuPipeline_T
 { 
     VkPipeline pipeline; 
     VkPipelineBindPoint bindPoint;
+    GpuDevice device;
 };
 struct GpuTexture_T 
 { 
     GpuTextureDesc desc = {}; 
     VkImage image = VK_NULL_HANDLE; 
     VkImageView view = VK_NULL_HANDLE;
+    GpuDevice device;
 };
+struct VulkanDevice;
+struct GpuDevice_T { VulkanDevice* vulkanDevice = nullptr; };
 struct GpuDepthStencilState_T { GpuDepthStencilDesc desc; };
 struct GpuBlendState_T { GpuBlendDesc desc; };
-struct GpuQueue_T { VkQueue queue; };
-struct GpuCommandBuffer_T { VkCommandBuffer commandBuffer; };
-struct GpuSemaphore_T { VkSemaphore semaphore; };
+struct GpuQueue_T { VkQueue queue; GpuDevice device; };
+struct GpuCommandBuffer_T { VkCommandBuffer commandBuffer; GpuDevice device; };
+struct GpuSemaphore_T { VkSemaphore semaphore; GpuDevice device; };
 #ifdef GPU_SURFACE_EXTENSION
-struct GpuSurface_T { VkSurfaceKHR surface = VK_NULL_HANDLE; std::vector<FORMAT> formats; };
+struct GpuSurface_T { VkSurfaceKHR surface = VK_NULL_HANDLE; std::vector<FORMAT> formats; GpuDevice device; };
 struct GpuSwapchain_T 
 { 
     VkSwapchainKHR swapchain = VK_NULL_HANDLE; 
@@ -50,6 +55,7 @@ struct GpuSwapchain_T
     GpuTextureDesc desc = {};
     std::vector<GpuTexture> images;
     std::vector<VkSemaphore> presentSemaphores;
+    GpuDevice device;
 };
 #endif // GPU_SURFACE_EXTENSION
 #ifdef GPU_RAY_TRACING_EXTENSION
@@ -58,6 +64,7 @@ struct GpuAccelerationStructure_T
     VkAccelerationStructureBuildGeometryInfoKHR buildInfo = {};
     std::vector<VkAccelerationStructureBuildRangeInfoKHR> buildRanges; 
     std::vector<VkAccelerationStructureGeometryKHR> geometries;
+    GpuDevice device;
 };
 #endif // GPU_RAY_TRACING_EXTENSION
 
@@ -226,11 +233,75 @@ struct Allocation
     void* ptr = nullptr;
 };
 
-struct Vulkan
+struct VulkanInstance
 {
-    // VkBootstrap objects
     vkb::Instance instance;
     vkb::InstanceDispatchTable instanceDispatchTable;
+    std::vector<const char*> requiredDeviceExtensions;
+    std::vector<GpuDeviceDesc> deviceDescs;
+
+    static VulkanInstance* create()
+    {
+        VulkanInstance* inst = new VulkanInstance();
+
+        std::vector<const char*> requiredInstanceExtensions = {};
+        inst->requiredDeviceExtensions = {
+            VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME,
+            VK_EXT_MESH_SHADER_EXTENSION_NAME,
+            VK_KHR_SHADER_DRAW_PARAMETERS_EXTENSION_NAME
+        };
+
+#ifdef GPU_SURFACE_EXTENSION
+        requiredInstanceExtensions.push_back(VK_KHR_SURFACE_EXTENSION_NAME);
+#ifdef _WIN32
+        requiredInstanceExtensions.push_back("VK_KHR_win32_surface");
+#else
+        requiredInstanceExtensions.push_back(VK_KHR_DISPLAY_EXTENSION_NAME);
+        inst->requiredDeviceExtensions.push_back(VK_KHR_DISPLAY_SWAPCHAIN_EXTENSION_NAME);
+#endif
+        inst->requiredDeviceExtensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+#endif // GPU_SURFACE_EXTENSION
+#ifdef GPU_RAY_TRACING_EXTENSION
+        inst->requiredDeviceExtensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+        inst->requiredDeviceExtensions.push_back(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
+        inst->requiredDeviceExtensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+        inst->requiredDeviceExtensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+#endif // GPU_RAY_TRACING_EXTENSION
+
+        vkb::InstanceBuilder instanceBuilder;
+
+        auto instanceRet = instanceBuilder
+            .request_validation_layers(true)
+            .require_api_version(VK_API_VERSION_1_4)
+            .enable_extensions(requiredInstanceExtensions)
+            .build();
+
+        if (!instanceRet.has_value())
+        {
+            delete inst;
+            return nullptr;
+        }
+
+        inst->instance = instanceRet.value();
+        inst->instanceDispatchTable = inst->instance.make_table();
+
+        return inst;
+    }
+
+    ~VulkanInstance()
+    {
+        vkb::destroy_instance(instance);
+    }
+};
+
+VulkanInstance* vulkanInstance = nullptr;
+
+struct VulkanDevice
+{
+    // Back-reference to the global instance
+    VulkanInstance* inst = nullptr;
+
+    // VkBootstrap objects
     vkb::PhysicalDevice physicalDevice;
     vkb::Device device;
     vkb::DispatchTable dispatchTable;
@@ -255,7 +326,6 @@ struct Vulkan
     Allocation samplerDescriptors;
 
     // Opaque handles
-    GpuQueue graphicsQueue = nullptr;
     std::map<GpuCommandBuffer, GpuPipeline> currentPipeline;
 
     // Buffer descriptor sets
@@ -277,63 +347,28 @@ struct Vulkan
     uint32_t descriptorsUsed = 0;
     uint32_t rwDescriptorsUsed = 0;
 
-    static Vulkan* createVulkan()
+    static VulkanDevice* createVulkan(uint32_t deviceIndex)
     {
-        Vulkan* vulkan = new Vulkan();
-
-        std::vector<const char*> requiredInstanceExtensions = {};
-        std::vector<const char*> requiredDeviceExtensions = {
-            VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME,
-            VK_EXT_MESH_SHADER_EXTENSION_NAME,
-            VK_KHR_SHADER_DRAW_PARAMETERS_EXTENSION_NAME
-        };
-
-#ifdef GPU_SURFACE_EXTENSION
-        requiredInstanceExtensions.push_back(VK_KHR_SURFACE_EXTENSION_NAME);
-#ifdef _WIN32
-        requiredInstanceExtensions.push_back("VK_KHR_win32_surface");
-#else
-        requiredInstanceExtensions.push_back(VK_KHR_DISPLAY_EXTENSION_NAME);
-        requiredDeviceExtensions.push_back(VK_KHR_DISPLAY_SWAPCHAIN_EXTENSION_NAME);
-#endif
-        requiredDeviceExtensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
-#endif // GPU_SURFACE_EXTENSION
-#ifdef GPU_RAY_TRACING_EXTENSION
-        requiredDeviceExtensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
-        requiredDeviceExtensions.push_back(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
-        requiredDeviceExtensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
-        requiredDeviceExtensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
-#endif // GPU_RAY_TRACING_EXTENSION
-
-        vkb::InstanceBuilder instanceBuilder;
-
-        auto instanceRet = instanceBuilder
-            .request_validation_layers(true)
-            .require_api_version(VK_API_VERSION_1_4)
-            .enable_extensions(requiredInstanceExtensions)
-            .build();
-
-        if (!instanceRet.has_value())
+        if (vulkanInstance == nullptr)
         {
-            delete vulkan;
             return nullptr;
         }
 
-        vulkan->instance = instanceRet.value();
-        vulkan->instanceDispatchTable = vulkan->instance.make_table();
+        VulkanDevice* vulkanDevice = new VulkanDevice();
+        vulkanDevice->inst = vulkanInstance;
 
-        vkb::PhysicalDeviceSelector deviceSelector{ vulkan->instance };
-        auto physicalDeviceRet = deviceSelector
-            .add_required_extensions(requiredDeviceExtensions)
+        vkb::PhysicalDeviceSelector deviceSelector{ vulkanInstance->instance };
+        auto physicalDevicesRet = deviceSelector
+            .add_required_extensions(vulkanInstance->requiredDeviceExtensions)
             .defer_surface_initialization()
-            .select();
-        if (!physicalDeviceRet.has_value())
+            .select_devices();
+        if (!physicalDevicesRet.has_value() || deviceIndex >= physicalDevicesRet.value().size())
         {
-            delete vulkan;
+            delete vulkanDevice;
             return nullptr;
         }
 
-        vulkan->physicalDevice = physicalDeviceRet.value();
+        vulkanDevice->physicalDevice = physicalDevicesRet.value()[deviceIndex];
 
 #ifdef GPU_RAY_TRACING_EXTENSION
         VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures = {};
@@ -361,18 +396,18 @@ struct Vulkan
         physicalDeviceVulkan12Features.runtimeDescriptorArray = VK_TRUE;
         physicalDeviceVulkan12Features.shaderInt8 = VK_TRUE;
 
-        vulkan->physicalDevice.features.shaderInt64 = VK_TRUE;
+        vulkanDevice->physicalDevice.features.shaderInt64 = VK_TRUE;
 
 #ifdef GPU_RAY_TRACING_EXTENSION
 #endif // GPU_RAY_TRACING_EXTENSION
-        vulkan->instanceDispatchTable.getPhysicalDeviceMemoryProperties(vulkan->physicalDevice, &vulkan->memoryProperties);
+        vulkanInstance->instanceDispatchTable.getPhysicalDeviceMemoryProperties(vulkanDevice->physicalDevice, &vulkanDevice->memoryProperties);
 
-        vulkan->descriptorBufferProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT;
-        vulkan->physicalDeviceProperties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-        vulkan->physicalDeviceProperties2.pNext = &vulkan->descriptorBufferProperties;
-        vulkan->instanceDispatchTable.getPhysicalDeviceProperties2(vulkan->physicalDevice, &vulkan->physicalDeviceProperties2);
+        vulkanDevice->descriptorBufferProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT;
+        vulkanDevice->physicalDeviceProperties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+        vulkanDevice->physicalDeviceProperties2.pNext = &vulkanDevice->descriptorBufferProperties;
+        vulkanInstance->instanceDispatchTable.getPhysicalDeviceProperties2(vulkanDevice->physicalDevice, &vulkanDevice->physicalDeviceProperties2);
 
-        vkb::DeviceBuilder deviceBuilder{ vulkan->physicalDevice };
+        vkb::DeviceBuilder deviceBuilder{ vulkanDevice->physicalDevice };
         deviceBuilder
             .add_pNext(&physicalDeviceVulkan12Features)
             .add_pNext(&physicalDeviceVulkan13Features)
@@ -383,16 +418,14 @@ struct Vulkan
             .add_pNext(&accelerationStructureFeatures);
 #endif // GPU_RAY_TRACING_EXTENSION
         auto deviceRet = deviceBuilder.build();
-        vulkan->device = deviceRet.value();
-        vulkan->dispatchTable = vulkan->device.make_table();
+        vulkanDevice->device = deviceRet.value();
+        vulkanDevice->dispatchTable = vulkanDevice->device.make_table();
 
         VkCommandPoolCreateInfo poolInfo = {};
         poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-        poolInfo.queueFamilyIndex = vulkan->device.get_queue_index(vkb::QueueType::graphics).value();
+        poolInfo.queueFamilyIndex = vulkanDevice->device.get_queue_index(vkb::QueueType::graphics).value();
         poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-        vulkan->dispatchTable.createCommandPool(&poolInfo, nullptr, &vulkan->commandPool);
-
-        vulkan->graphicsQueue = new GpuQueue_T{ vulkan->device.get_queue(vkb::QueueType::graphics).value() };
+        vulkanDevice->dispatchTable.createCommandPool(&poolInfo, nullptr, &vulkanDevice->commandPool);
 
         VkSamplerCreateInfo samplerInfo{};
         samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -403,18 +436,18 @@ struct Vulkan
         samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
         samplerInfo.unnormalizedCoordinates = VK_FALSE;
-        vulkan->dispatchTable.createSampler(&samplerInfo, nullptr, &vulkan->defaultSampler);
+        vulkanDevice->dispatchTable.createSampler(&samplerInfo, nullptr, &vulkanDevice->defaultSampler);
 
         VkFenceCreateInfo fenceInfo = {};
         fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        vulkan->dispatchTable.createFence(&fenceInfo, nullptr, &vulkan->acquireFence);
+        vulkanDevice->dispatchTable.createFence(&fenceInfo, nullptr, &vulkanDevice->acquireFence);
 
-        vulkan->createPipelineLayout();
+        vulkanDevice->createPipelineLayout();
 
-        return vulkan;
+        return vulkanDevice;
     }
 
-    ~Vulkan()
+    ~VulkanDevice()
     {
         dispatchTable.deviceWaitIdle();
 
@@ -469,9 +502,7 @@ struct Vulkan
         dispatchTable.destroyPipelineLayout(layout[VK_PIPELINE_BIND_POINT_GRAPHICS], nullptr);
         dispatchTable.destroyPipelineLayout(layout[VK_PIPELINE_BIND_POINT_COMPUTE], nullptr);
         // dispatchTable.destroyPipelineLayout(layout[VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR], nullptr);
-        delete graphicsQueue;
         vkb::destroy_device(device);
-        vkb::destroy_instance(instance);
     }
 
     bool descriptorsNeedPatching()
@@ -710,11 +741,9 @@ struct Vulkan
     }
 };
 
-Vulkan* vulkan = nullptr;
-
 void* gpuVulkanInstance()
 {
-    return vulkan->instance.instance;
+    return vulkanInstance->instance.instance;
 }
 
 GpuSurface gpuCreateSurface(void *vulkanSurface)
@@ -742,12 +771,12 @@ void gpuDestroySurface(GpuSurface surface)
     delete surface;
 }
 
-RESULT gpuCreateDevice()
+RESULT gpuCreateInstance()
 {
-    if (vulkan == nullptr)
+    if (vulkanInstance == nullptr)
     {
-        vulkan = Vulkan::createVulkan();
-        if (vulkan == nullptr)
+        vulkanInstance = VulkanInstance::create();
+        if (vulkanInstance == nullptr)
         {
             return RESULT_FAILURE;
         }
@@ -756,21 +785,121 @@ RESULT gpuCreateDevice()
     return RESULT_SUCCESS;
 }
 
-void gpuDestroyDevice()
+void gpuDestroyInstance()
 {
-    if (vulkan != nullptr)
+    if (vulkanInstance != nullptr)
     {
-        delete vulkan;
-        vulkan = nullptr;
+        delete vulkanInstance;
+        vulkanInstance = nullptr;
     }
 }
 
-void* gpuMalloc(size_t bytes, MEMORY memory)
+static void gpuPopulateDeviceDescs()
 {
-    return gpuMalloc(bytes, GPU_DEFAULT_ALIGNMENT, memory);
+    if (!vulkanInstance->deviceDescs.empty())
+    {
+        return;
+    }
+
+    vkb::PhysicalDeviceSelector deviceSelector{ vulkanInstance->instance };
+    auto physicalDevicesRet = deviceSelector
+        .add_required_extensions(vulkanInstance->requiredDeviceExtensions)
+        .defer_surface_initialization()
+        .select_devices();
+
+    if (!physicalDevicesRet.has_value())
+    {
+        return;
+    }
+
+    auto& devices = physicalDevicesRet.value();
+    for (uint32_t i = 0; i < static_cast<uint32_t>(devices.size()); i++)
+    {
+        VkPhysicalDeviceProperties props;
+        vulkanInstance->instanceDispatchTable.getPhysicalDeviceProperties(devices[i], &props);
+
+        VkPhysicalDeviceMemoryProperties memProps;
+        vulkanInstance->instanceDispatchTable.getPhysicalDeviceMemoryProperties(devices[i], &memProps);
+
+        uint64_t dedicatedMemory = 0;
+        for (uint32_t j = 0; j < memProps.memoryHeapCount; j++)
+        {
+            if (memProps.memoryHeaps[j].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
+            {
+                dedicatedMemory += memProps.memoryHeaps[j].size;
+            }
+        }
+
+        GpuDeviceDesc desc = {};
+        memset(desc.name, 0, sizeof(desc.name));
+        strncpy(desc.name, props.deviceName, sizeof(desc.name) - 1);
+        desc.vendorID = props.vendorID;
+        desc.dedicatedMemory = dedicatedMemory;
+        desc.discrete = (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU);
+        vulkanInstance->deviceDescs.push_back(desc);
+    }
 }
 
-void* gpuMallocHidden(size_t bytes, size_t align, MEMORY memory, bool sampler = false)
+uint32_t gpuDeviceCount()
+{
+    if (vulkanInstance == nullptr)
+    {
+        return 0;
+    }
+
+    gpuPopulateDeviceDescs();
+    return static_cast<uint32_t>(vulkanInstance->deviceDescs.size());
+}
+
+GpuDeviceDesc gpuDeviceDesc(uint32_t index)
+{
+    if (vulkanInstance == nullptr)
+    {
+        return {};
+    }
+
+    gpuPopulateDeviceDescs();
+
+    if (index >= static_cast<uint32_t>(vulkanInstance->deviceDescs.size()))
+    {
+        return {};
+    }
+
+    return vulkanInstance->deviceDescs[index];
+}
+
+GpuDevice gpuCreateDevice(uint32_t deviceIndex)
+{
+    if (vulkanInstance == nullptr)
+    {
+        return nullptr;
+    }
+
+    VulkanDevice* vulkanDevice = VulkanDevice::createVulkan(deviceIndex);
+    if (vulkanDevice == nullptr)
+    {
+        return nullptr;
+    }
+
+    GpuDevice device = new GpuDevice_T{ vulkanDevice };
+    return device;
+}
+
+void gpuDestroyDevice(GpuDevice device)
+{
+    if (device != nullptr)
+    {
+        delete device->vulkanDevice;
+        delete device;
+    }
+}
+
+void* gpuMalloc(GpuDevice device, size_t bytes, MEMORY memory)
+{
+    return gpuMalloc(device, bytes, GPU_DEFAULT_ALIGNMENT, memory);
+}
+
+void* gpuMallocHidden(VulkanDevice* vulkanDevice, size_t bytes, size_t align, MEMORY memory, bool sampler = false)
 {
     switch (memory)
     {
@@ -803,7 +932,7 @@ void* gpuMallocHidden(size_t bytes, size_t align, MEMORY memory, bool sampler = 
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | 
             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
-        auto alloc = vulkan->createAllocation(bytes, usage, properties, align);
+        auto alloc = vulkanDevice->createAllocation(bytes, usage, properties, align);
         return alloc.ptr;        
     }
     case MEMORY_GPU: // DEVICE_LOCAL
@@ -823,7 +952,7 @@ void* gpuMallocHidden(size_t bytes, size_t align, MEMORY memory, bool sampler = 
             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR;
 
         auto properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-        auto alloc = vulkan->createAllocation(bytes, usage, properties, align);
+        auto alloc = vulkanDevice->createAllocation(bytes, usage, properties, align);
         return reinterpret_cast<void*>(alloc.address);
     }
     case MEMORY_READBACK: // HOST_VISIBLE | HOST_COHERENT | HOST_CACHED
@@ -837,7 +966,7 @@ void* gpuMallocHidden(size_t bytes, size_t align, MEMORY memory, bool sampler = 
             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
             VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
 
-        auto alloc = vulkan->createAllocation(bytes, usage, properties, align);
+        auto alloc = vulkanDevice->createAllocation(bytes, usage, properties, align);
         return alloc.ptr;    
     }
     };
@@ -845,26 +974,29 @@ void* gpuMallocHidden(size_t bytes, size_t align, MEMORY memory, bool sampler = 
     return nullptr;
 }
 
-void* gpuMalloc(size_t bytes, size_t align, MEMORY memory)
+void* gpuMalloc(GpuDevice device, size_t bytes, size_t align, MEMORY memory)
 {
-    return gpuMallocHidden(bytes, align, memory);
+    VulkanDevice* vulkanDevice = device->vulkanDevice;
+    return gpuMallocHidden(vulkanDevice, bytes, align, memory);
 }
 
-void gpuFree(void *ptr)
+void gpuFree(GpuDevice device, void *ptr)
 {
-    for (auto& alloc : vulkan->allocations)
+    VulkanDevice* vulkanDevice = device->vulkanDevice;
+    for (auto& alloc : vulkanDevice->allocations)
     {
         if (alloc.ptr == ptr || reinterpret_cast<VkDeviceAddress>(ptr) == alloc.address)
         {
-            vulkan->freeAllocation(alloc);
+            vulkanDevice->freeAllocation(alloc);
             return;
         }
     }
 }
 
-void* gpuHostToDevicePointer(void *ptr)
+void* gpuHostToDevicePointer(GpuDevice device, void *ptr)
 {
-    Allocation alloc = vulkan->findAllocation(ptr);
+    VulkanDevice* vulkanDevice = device->vulkanDevice;
+    Allocation alloc = vulkanDevice->findAllocation(ptr);
     if (alloc.buffer != VK_NULL_HANDLE)
     {
         return reinterpret_cast<void*>(alloc.address + (static_cast<uint8_t*>(ptr) - static_cast<uint8_t*>(alloc.ptr)));
@@ -872,25 +1004,27 @@ void* gpuHostToDevicePointer(void *ptr)
     return nullptr;
 }
 
-GpuTextureSizeAlign gpuTextureSizeAlign(GpuTextureDesc desc)
+GpuTextureSizeAlign gpuTextureSizeAlign(GpuDevice device, GpuTextureDesc desc)
 {
-    VkImage image = vulkan->createImage(desc);
+    VulkanDevice* vulkanDevice = device->vulkanDevice;
+    VkImage image = vulkanDevice->createImage(desc);
 
     VkMemoryRequirements imageMemoryRequirements = {};
-    vulkan->dispatchTable.getImageMemoryRequirements(image, &imageMemoryRequirements);
-    vulkan->dispatchTable.destroyImage(image, nullptr);
+    vulkanDevice->dispatchTable.getImageMemoryRequirements(image, &imageMemoryRequirements);
+    vulkanDevice->dispatchTable.destroyImage(image, nullptr);
 
     return { imageMemoryRequirements.size, imageMemoryRequirements.alignment };
 }
 
-GpuTexture gpuCreateTexture(GpuTextureDesc desc, void* ptrGpu)
+GpuTexture gpuCreateTexture(GpuDevice device, GpuTextureDesc desc, void* ptrGpu)
 {
-    Allocation alloc = vulkan->findAllocation(reinterpret_cast<VkDeviceAddress>(ptrGpu));
+    VulkanDevice* vulkanDevice = device->vulkanDevice;
+    Allocation alloc = vulkanDevice->findAllocation(reinterpret_cast<VkDeviceAddress>(ptrGpu));
 
-    VkImage image = vulkan->createImage(desc);
+    VkImage image = vulkanDevice->createImage(desc);
 
     VkDeviceSize offset = reinterpret_cast<VkDeviceAddress>(ptrGpu) - alloc.address;
-    vulkan->dispatchTable.bindImageMemory(image, alloc.memory, offset);
+    vulkanDevice->dispatchTable.bindImageMemory(image, alloc.memory, offset);
 
     VkImageViewCreateInfo viewInfo = {};
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -906,9 +1040,9 @@ GpuTexture gpuCreateTexture(GpuTextureDesc desc, void* ptrGpu)
     viewInfo.subresourceRange.layerCount = desc.layerCount;
 
     VkImageView imageView = VK_NULL_HANDLE;
-    vulkan->dispatchTable.createImageView(&viewInfo, nullptr, &imageView);
+    vulkanDevice->dispatchTable.createImageView(&viewInfo, nullptr, &imageView);
 
-    return new GpuTexture_T { desc, image, imageView};
+    return new GpuTexture_T { desc, image, imageView, device};
 }
 
 void gpuDestroyTexture(GpuTexture texture)
@@ -918,15 +1052,17 @@ void gpuDestroyTexture(GpuTexture texture)
         return;
     }
 
-    vulkan->dispatchTable.destroyImageView(texture->view, nullptr);
-    vulkan->dispatchTable.destroyImage(texture->image, nullptr);
+    VulkanDevice* vulkanDevice = texture->device->vulkanDevice;
+    vulkanDevice->dispatchTable.destroyImageView(texture->view, nullptr);
+    vulkanDevice->dispatchTable.destroyImage(texture->image, nullptr);
     delete texture;
 }
 
 GpuTextureDescriptor gpuTextureViewDescriptor(GpuTexture texture, GpuViewDesc desc)
 {
+    VulkanDevice* vulkanDevice = texture->device->vulkanDevice;
     VkDescriptorImageInfo imageInfo = {};
-    imageInfo.sampler = vulkan->defaultSampler;
+    imageInfo.sampler = vulkanDevice->defaultSampler;
     imageInfo.imageView = texture->view;
     imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
@@ -935,27 +1071,27 @@ GpuTextureDescriptor gpuTextureViewDescriptor(GpuTexture texture, GpuViewDesc de
     descriptorGetInfo.type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     descriptorGetInfo.data.pSampledImage = &imageInfo;
 
-    std::vector<uint8_t> buffer(vulkan->descriptorBufferProperties.sampledImageDescriptorSize);
-    vulkan->dispatchTable.getDescriptorEXT(&descriptorGetInfo, vulkan->descriptorBufferProperties.sampledImageDescriptorSize, buffer.data());
+    std::vector<uint8_t> buffer(vulkanDevice->descriptorBufferProperties.sampledImageDescriptorSize);
+    vulkanDevice->dispatchTable.getDescriptorEXT(&descriptorGetInfo, vulkanDevice->descriptorBufferProperties.sampledImageDescriptorSize, buffer.data());
 
     GpuTextureDescriptor descriptor = {};
     
-    if (vulkan->descriptorsNeedPatching())
+    if (vulkanDevice->descriptorsNeedPatching())
     {
-        if (!vulkan->descriptorDataCpu)
+        if (!vulkanDevice->descriptorDataCpu)
         {
-            vulkan->descriptorDataCpu = gpuMalloc(vulkan->descriptorBufferProperties.sampledImageDescriptorSize * vulkan->descriptorCount);
+            vulkanDevice->descriptorDataCpu = gpuMallocHidden(vulkanDevice, vulkanDevice->descriptorBufferProperties.sampledImageDescriptorSize * vulkanDevice->descriptorCount, GPU_DEFAULT_ALIGNMENT, MEMORY_DEFAULT);
         }
 
-        uint8_t* dest = static_cast<uint8_t*>(vulkan->descriptorDataCpu) + vulkan->descriptorsUsed * vulkan->descriptorBufferProperties.sampledImageDescriptorSize;
-        memcpy(dest, buffer.data(), vulkan->descriptorBufferProperties.sampledImageDescriptorSize);
-        descriptor.data[0] = vulkan->descriptorsUsed * vulkan->descriptorBufferProperties.sampledImageDescriptorSize; // Store byte offset in our internal buffer
+        uint8_t* dest = static_cast<uint8_t*>(vulkanDevice->descriptorDataCpu) + vulkanDevice->descriptorsUsed * vulkanDevice->descriptorBufferProperties.sampledImageDescriptorSize;
+        memcpy(dest, buffer.data(), vulkanDevice->descriptorBufferProperties.sampledImageDescriptorSize);
+        descriptor.data[0] = vulkanDevice->descriptorsUsed * vulkanDevice->descriptorBufferProperties.sampledImageDescriptorSize; // Store byte offset in our internal buffer
         descriptor.data[1] = 0; // type 0 for read, 1 for read/write
-        vulkan->descriptorsUsed++;
+        vulkanDevice->descriptorsUsed++;
     }
     else
     {
-        memcpy(descriptor.data, buffer.data(), vulkan->descriptorBufferProperties.sampledImageDescriptorSize);
+        memcpy(descriptor.data, buffer.data(), vulkanDevice->descriptorBufferProperties.sampledImageDescriptorSize);
     }
 
     return descriptor;
@@ -963,6 +1099,7 @@ GpuTextureDescriptor gpuTextureViewDescriptor(GpuTexture texture, GpuViewDesc de
 
 GpuTextureDescriptor gpuRWTextureViewDescriptor(GpuTexture texture, GpuViewDesc desc)
 {
+    VulkanDevice* vulkanDevice = texture->device->vulkanDevice;
     VkDescriptorImageInfo imageInfo = {};
     imageInfo.sampler = VK_NULL_HANDLE;
     imageInfo.imageView = texture->view;
@@ -973,44 +1110,45 @@ GpuTextureDescriptor gpuRWTextureViewDescriptor(GpuTexture texture, GpuViewDesc 
     descriptorGetInfo.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     descriptorGetInfo.data.pStorageImage = &imageInfo;
 
-    std::vector<uint8_t> buffer(vulkan->descriptorBufferProperties.storageImageDescriptorSize);
-    vulkan->dispatchTable.getDescriptorEXT(&descriptorGetInfo, vulkan->descriptorBufferProperties.storageImageDescriptorSize, buffer.data());
+    std::vector<uint8_t> buffer(vulkanDevice->descriptorBufferProperties.storageImageDescriptorSize);
+    vulkanDevice->dispatchTable.getDescriptorEXT(&descriptorGetInfo, vulkanDevice->descriptorBufferProperties.storageImageDescriptorSize, buffer.data());
 
     GpuTextureDescriptor descriptor = {};
 
-    if (vulkan->descriptorsNeedPatching())
+    if (vulkanDevice->descriptorsNeedPatching())
     {
-        if (!vulkan->rwDescriptorDataCpu)
+        if (!vulkanDevice->rwDescriptorDataCpu)
         {
-            vulkan->rwDescriptorDataCpu = gpuMalloc(vulkan->descriptorBufferProperties.storageImageDescriptorSize * vulkan->descriptorCount);
+            vulkanDevice->rwDescriptorDataCpu = gpuMallocHidden(vulkanDevice, vulkanDevice->descriptorBufferProperties.storageImageDescriptorSize * vulkanDevice->descriptorCount, GPU_DEFAULT_ALIGNMENT, MEMORY_DEFAULT);
         }
 
-        uint8_t* dest = static_cast<uint8_t*>(vulkan->rwDescriptorDataCpu) + vulkan->rwDescriptorsUsed * vulkan->descriptorBufferProperties.storageImageDescriptorSize;
-        memcpy(dest, buffer.data(), vulkan->descriptorBufferProperties.storageImageDescriptorSize);
-        descriptor.data[0] = vulkan->rwDescriptorsUsed * vulkan->descriptorBufferProperties.storageImageDescriptorSize; // Store byte offset in our internal buffer
+        uint8_t* dest = static_cast<uint8_t*>(vulkanDevice->rwDescriptorDataCpu) + vulkanDevice->rwDescriptorsUsed * vulkanDevice->descriptorBufferProperties.storageImageDescriptorSize;
+        memcpy(dest, buffer.data(), vulkanDevice->descriptorBufferProperties.storageImageDescriptorSize);
+        descriptor.data[0] = vulkanDevice->rwDescriptorsUsed * vulkanDevice->descriptorBufferProperties.storageImageDescriptorSize; // Store byte offset in our internal buffer
         descriptor.data[1] = 1; // type 0 for read, 1 for read/write
-        vulkan->rwDescriptorsUsed++;
+        vulkanDevice->rwDescriptorsUsed++;
     }
     else
     {
-        memcpy(descriptor.data, buffer.data(), vulkan->descriptorBufferProperties.storageImageDescriptorSize);
+        memcpy(descriptor.data, buffer.data(), vulkanDevice->descriptorBufferProperties.storageImageDescriptorSize);
     }
 
     return descriptor;
 }
 
-GpuPipeline gpuCreateComputePipeline(ByteSpan computeIR)
+GpuPipeline gpuCreateComputePipeline(GpuDevice device, ByteSpan computeIR)
 {
+    VulkanDevice* vulkanDevice = device->vulkanDevice;
     VkShaderModuleCreateInfo shaderModuleCreateInfo = {};
     shaderModuleCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     shaderModuleCreateInfo.codeSize = computeIR.size();
     shaderModuleCreateInfo.pCode = reinterpret_cast<const uint32_t*>(computeIR.data());
     VkShaderModule shaderModule;
-    vulkan->dispatchTable.createShaderModule(&shaderModuleCreateInfo, nullptr, &shaderModule);
+    vulkanDevice->dispatchTable.createShaderModule(&shaderModuleCreateInfo, nullptr, &shaderModule);
 
     VkComputePipelineCreateInfo pipelineCreateInfo = {};
     pipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    pipelineCreateInfo.layout = vulkan->layout[VK_PIPELINE_BIND_POINT_COMPUTE];
+    pipelineCreateInfo.layout = vulkanDevice->layout[VK_PIPELINE_BIND_POINT_COMPUTE];
     pipelineCreateInfo.flags = VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
     pipelineCreateInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     pipelineCreateInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -1018,13 +1156,13 @@ GpuPipeline gpuCreateComputePipeline(ByteSpan computeIR)
     pipelineCreateInfo.stage.pName = "main";
 
     VkPipeline pipeline;
-    vulkan->dispatchTable.createComputePipelines(VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &pipeline);
-    vulkan->dispatchTable.destroyShaderModule(shaderModule, nullptr);
+    vulkanDevice->dispatchTable.createComputePipelines(VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &pipeline);
+    vulkanDevice->dispatchTable.destroyShaderModule(shaderModule, nullptr);
 
-    return new GpuPipeline_T { pipeline, VK_PIPELINE_BIND_POINT_COMPUTE };
+    return new GpuPipeline_T { pipeline, VK_PIPELINE_BIND_POINT_COMPUTE, device };
 }
 
-VkPipeline gpuCreateGraphicsPipeline(ByteSpan vertexIR, ByteSpan meshletIR, ByteSpan pixelIR, GpuRasterDesc desc)
+VkPipeline gpuCreateGraphicsPipelineInternal(VulkanDevice* vulkanDevice, ByteSpan vertexIR, ByteSpan meshletIR, ByteSpan pixelIR, GpuRasterDesc desc)
 {
     bool vertex = vertexIR.size() > 0;
     ByteSpan actualIR = vertex ? vertexIR : meshletIR;
@@ -1034,14 +1172,14 @@ VkPipeline gpuCreateGraphicsPipeline(ByteSpan vertexIR, ByteSpan meshletIR, Byte
     vertexShaderModuleCreateInfo.codeSize = actualIR.size();
     vertexShaderModuleCreateInfo.pCode = reinterpret_cast<const uint32_t*>(actualIR.data());
     VkShaderModule vertexShaderModule;
-    vulkan->dispatchTable.createShaderModule(&vertexShaderModuleCreateInfo, nullptr, &vertexShaderModule);
+    vulkanDevice->dispatchTable.createShaderModule(&vertexShaderModuleCreateInfo, nullptr, &vertexShaderModule);
 
     VkShaderModuleCreateInfo pixelShaderModuleCreateInfo = {};
     pixelShaderModuleCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     pixelShaderModuleCreateInfo.codeSize = pixelIR.size();
     pixelShaderModuleCreateInfo.pCode = reinterpret_cast<const uint32_t*>(pixelIR.data());
     VkShaderModule pixelShaderModule;
-    vulkan->dispatchTable.createShaderModule(&pixelShaderModuleCreateInfo, nullptr, &pixelShaderModule);
+    vulkanDevice->dispatchTable.createShaderModule(&pixelShaderModuleCreateInfo, nullptr, &pixelShaderModule);
 
     VkPipelineShaderStageCreateInfo shaderStages[2] = {};
     shaderStages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -1174,7 +1312,7 @@ VkPipeline gpuCreateGraphicsPipeline(ByteSpan vertexIR, ByteSpan meshletIR, Byte
     VkGraphicsPipelineCreateInfo pipelineCreateInfo = {};
     pipelineCreateInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     pipelineCreateInfo.pNext = &pipelineRenderingInfo;
-    pipelineCreateInfo.layout = vulkan->layout[VK_PIPELINE_BIND_POINT_GRAPHICS];
+    pipelineCreateInfo.layout = vulkanDevice->layout[VK_PIPELINE_BIND_POINT_GRAPHICS];
     pipelineCreateInfo.flags = VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
     pipelineCreateInfo.pStages = shaderStages;
     pipelineCreateInfo.pVertexInputState = &vertexInputInfo;
@@ -1188,28 +1326,31 @@ VkPipeline gpuCreateGraphicsPipeline(ByteSpan vertexIR, ByteSpan meshletIR, Byte
     pipelineCreateInfo.stageCount = 2;
 
     VkPipeline pipeline;
-    vulkan->dispatchTable.createGraphicsPipelines(VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &pipeline);
-    vulkan->dispatchTable.destroyShaderModule(vertexShaderModule, nullptr);
-    vulkan->dispatchTable.destroyShaderModule(pixelShaderModule, nullptr);
+    vulkanDevice->dispatchTable.createGraphicsPipelines(VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &pipeline);
+    vulkanDevice->dispatchTable.destroyShaderModule(vertexShaderModule, nullptr);
+    vulkanDevice->dispatchTable.destroyShaderModule(pixelShaderModule, nullptr);
 
     return pipeline;
 }
 
-GpuPipeline gpuCreateGraphicsPipeline(ByteSpan vertexIR, ByteSpan pixelIR, GpuRasterDesc desc)
+GpuPipeline gpuCreateGraphicsPipeline(GpuDevice device, ByteSpan vertexIR, ByteSpan pixelIR, GpuRasterDesc desc)
 {
-    VkPipeline pipeline = gpuCreateGraphicsPipeline(vertexIR, ByteSpan{}, pixelIR, desc);
-    return new GpuPipeline_T { pipeline, VK_PIPELINE_BIND_POINT_GRAPHICS };
+    VulkanDevice* vulkanDevice = device->vulkanDevice;
+    VkPipeline pipeline = gpuCreateGraphicsPipelineInternal(vulkanDevice, vertexIR, ByteSpan{}, pixelIR, desc);
+    return new GpuPipeline_T { pipeline, VK_PIPELINE_BIND_POINT_GRAPHICS, device };
 }
 
-GpuPipeline gpuCreateGraphicsMeshletPipeline(ByteSpan meshletIR, ByteSpan pixelIR, GpuRasterDesc desc)
+GpuPipeline gpuCreateGraphicsMeshletPipeline(GpuDevice device, ByteSpan meshletIR, ByteSpan pixelIR, GpuRasterDesc desc)
 {
-    VkPipeline pipeline = gpuCreateGraphicsPipeline(ByteSpan{}, meshletIR, pixelIR, desc);
-    return new GpuPipeline_T { pipeline, VK_PIPELINE_BIND_POINT_GRAPHICS };
+    VulkanDevice* vulkanDevice = device->vulkanDevice;
+    VkPipeline pipeline = gpuCreateGraphicsPipelineInternal(vulkanDevice, ByteSpan{}, meshletIR, pixelIR, desc);
+    return new GpuPipeline_T { pipeline, VK_PIPELINE_BIND_POINT_GRAPHICS, device};
 }
 
 void gpuFreePipeline(GpuPipeline pipeline)
 {
-    vulkan->dispatchTable.destroyPipeline(pipeline->pipeline, nullptr);
+    VulkanDevice* vulkanDevice = pipeline->device->vulkanDevice;
+    vulkanDevice->dispatchTable.destroyPipeline(pipeline->pipeline, nullptr);
     delete pipeline;
 }
 
@@ -1239,38 +1380,47 @@ void gpuFreeBlendState(GpuBlendState state)
     }
 }
 
-GpuQueue gpuCreateQueue()
+GpuQueue gpuCreateQueue(GpuDevice device)
 {
-    return vulkan->graphicsQueue;
+    VulkanDevice* vulkanDevice = device->vulkanDevice;
+    GpuQueue queue = new GpuQueue_T { vulkanDevice->device.get_queue(vkb::QueueType::graphics).value(), device};
+    return queue;
+}
+
+void gpuDestroyQueue(GpuQueue queue)
+{
+    delete queue;
 }
 
 GpuCommandBuffer gpuStartCommandRecording(GpuQueue queue)
 {
+    VulkanDevice* vulkanDevice = queue->device->vulkanDevice;
     VkCommandBufferAllocateInfo allocInfo = {};
     allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    allocInfo.commandPool = vulkan->commandPool;
+    allocInfo.commandPool = vulkanDevice->commandPool;
     allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     allocInfo.commandBufferCount = 1;
 
     VkCommandBuffer commandBuffer;
-    vulkan->dispatchTable.allocateCommandBuffers(&allocInfo, &commandBuffer);
+    vulkanDevice->dispatchTable.allocateCommandBuffers(&allocInfo, &commandBuffer);
 
     VkCommandBufferBeginInfo beginInfo = {};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
-    vulkan->dispatchTable.beginCommandBuffer(commandBuffer, &beginInfo);
+    vulkanDevice->dispatchTable.beginCommandBuffer(commandBuffer, &beginInfo);
 
-    return new GpuCommandBuffer_T { commandBuffer };
+    return new GpuCommandBuffer_T { commandBuffer, queue->device };
 }
 
 void gpuSubmit(GpuQueue queue, Span<GpuCommandBuffer> commandBuffers, GpuSemaphore semaphore, uint64_t value)
 {
+    VulkanDevice* vulkanDevice = queue->device->vulkanDevice;
     std::vector<VkCommandBuffer> vkCommandBuffers;
     for (auto cb : commandBuffers)
     {
         vkCommandBuffers.push_back(cb->commandBuffer);
-        vulkan->dispatchTable.endCommandBuffer(cb->commandBuffer);
+        vulkanDevice->dispatchTable.endCommandBuffer(cb->commandBuffer);
     }
 
     VkTimelineSemaphoreSubmitInfo timelineInfo = {};
@@ -1286,19 +1436,20 @@ void gpuSubmit(GpuQueue queue, Span<GpuCommandBuffer> commandBuffers, GpuSemapho
     submitInfo.signalSemaphoreCount = 1;
     submitInfo.pSignalSemaphores = &semaphore->semaphore;
 
-    vulkan->dispatchTable.queueSubmit(queue->queue, 1, &submitInfo, VK_NULL_HANDLE);
+    vulkanDevice->dispatchTable.queueSubmit(queue->queue, 1, &submitInfo, VK_NULL_HANDLE);
 
-    vulkan->submittedCommandBuffers[{ semaphore->semaphore, value }] = vkCommandBuffers;
+    vulkanDevice->submittedCommandBuffers[{ semaphore->semaphore, value }] = vkCommandBuffers;
 
     for (auto cb : commandBuffers)
     {
-        vulkan->currentPipeline.erase(cb);
+        vulkanDevice->currentPipeline.erase(cb);
         delete cb; // Frees the wrapper, but not the actual VkCommandBuffer
     }
 }
 
-GpuSemaphore gpuCreateSemaphore(uint64_t initValue)
+GpuSemaphore gpuCreateSemaphore(GpuDevice device, uint64_t initValue)
 {
+    VulkanDevice* vulkanDevice = device->vulkanDevice;
     VkSemaphoreTypeCreateInfo semaphoreTypeInfo = {};
     semaphoreTypeInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
     semaphoreTypeInfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
@@ -1309,29 +1460,30 @@ GpuSemaphore gpuCreateSemaphore(uint64_t initValue)
     semaphoreInfo.pNext = &semaphoreTypeInfo;
 
     VkSemaphore semaphore;
-    vulkan->dispatchTable.createSemaphore(&semaphoreInfo, nullptr, &semaphore);
+    vulkanDevice->dispatchTable.createSemaphore(&semaphoreInfo, nullptr, &semaphore);
 
-    return new GpuSemaphore_T { semaphore };
+    return new GpuSemaphore_T { semaphore, device };
 }
 
 void gpuWaitSemaphore(GpuSemaphore sema, uint64_t value, uint64_t timeout)
 {
+    VulkanDevice* vulkanDevice = sema->device->vulkanDevice;
     VkSemaphoreWaitInfo waitInfo = {};
     waitInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
     waitInfo.semaphoreCount = 1;
     waitInfo.pSemaphores = &sema->semaphore;
     waitInfo.pValues = &value;
 
-    vulkan->dispatchTable.waitSemaphores(&waitInfo, timeout);
+    vulkanDevice->dispatchTable.waitSemaphores(&waitInfo, timeout);
 
     // Free command buffers for this semaphore, and any earlier values if they exist
     for (size_t i = value; i > 0; i--)
     {
-        if (vulkan->submittedCommandBuffers.find({sema->semaphore, i}) != vulkan->submittedCommandBuffers.end())
+        if (vulkanDevice->submittedCommandBuffers.find({sema->semaphore, i}) != vulkanDevice->submittedCommandBuffers.end())
         {
-            auto& cmdBuffers = vulkan->submittedCommandBuffers[{sema->semaphore, i}];
-            vulkan->dispatchTable.freeCommandBuffers(vulkan->commandPool, static_cast<uint32_t>(cmdBuffers.size()), cmdBuffers.data());
-            vulkan->submittedCommandBuffers.erase({sema->semaphore, i});
+            auto& cmdBuffers = vulkanDevice->submittedCommandBuffers[{sema->semaphore, i}];
+            vulkanDevice->dispatchTable.freeCommandBuffers(vulkanDevice->commandPool, static_cast<uint32_t>(cmdBuffers.size()), cmdBuffers.data());
+            vulkanDevice->submittedCommandBuffers.erase({sema->semaphore, i});
         }
         else
         {
@@ -1342,26 +1494,29 @@ void gpuWaitSemaphore(GpuSemaphore sema, uint64_t value, uint64_t timeout)
 
 void gpuDestroySemaphore(GpuSemaphore sema)
 {
-    vulkan->dispatchTable.destroySemaphore(sema->semaphore, nullptr);
+    VulkanDevice* vulkanDevice = sema->device->vulkanDevice;
+    vulkanDevice->dispatchTable.destroySemaphore(sema->semaphore, nullptr);
     delete sema;
 }
 
 void gpuMemCpy(GpuCommandBuffer cb, void* destGpu, void* srcGpu, uint64_t size)
 {
-    Allocation src = vulkan->findAllocation(reinterpret_cast<VkDeviceAddress>(srcGpu));
-    Allocation dst = vulkan->findAllocation(reinterpret_cast<VkDeviceAddress>(destGpu));
+    VulkanDevice* vulkanDevice = cb->device->vulkanDevice;
+    Allocation src = vulkanDevice->findAllocation(reinterpret_cast<VkDeviceAddress>(srcGpu));
+    Allocation dst = vulkanDevice->findAllocation(reinterpret_cast<VkDeviceAddress>(destGpu));
 
     VkBufferCopy copyRegion = {};
     copyRegion.srcOffset = reinterpret_cast<VkDeviceAddress>(srcGpu) - src.address;
     copyRegion.dstOffset = reinterpret_cast<VkDeviceAddress>(destGpu) - dst.address;
     copyRegion.size = size;
 
-    vulkan->dispatchTable.cmdCopyBuffer(cb->commandBuffer, src.buffer, dst.buffer, 1, &copyRegion);
+    vulkanDevice->dispatchTable.cmdCopyBuffer(cb->commandBuffer, src.buffer, dst.buffer, 1, &copyRegion);
 }
 
 void gpuCopyToTexture(GpuCommandBuffer cb, void* srcGpu, GpuTexture texture)
 {
-    Allocation src = vulkan->findAllocation(reinterpret_cast<VkDeviceAddress>(srcGpu));
+    VulkanDevice* vulkanDevice = cb->device->vulkanDevice;
+    Allocation src = vulkanDevice->findAllocation(reinterpret_cast<VkDeviceAddress>(srcGpu));
 
     VkBufferImageCopy region = {};
     region.bufferOffset = reinterpret_cast<VkDeviceAddress>(srcGpu) - src.address;
@@ -1374,12 +1529,13 @@ void gpuCopyToTexture(GpuCommandBuffer cb, void* srcGpu, GpuTexture texture)
     region.imageOffset = { 0, 0, 0 };
     region.imageExtent = { texture->desc.dimensions.x, texture->desc.dimensions.y, texture->desc.dimensions.z };
 
-    vulkan->dispatchTable.cmdCopyBufferToImage(cb->commandBuffer, src.buffer, texture->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    vulkanDevice->dispatchTable.cmdCopyBufferToImage(cb->commandBuffer, src.buffer, texture->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 }
 
 void gpuCopyFromTexture(GpuCommandBuffer cb, void* destGpu, GpuTexture texture)
 {
-    Allocation dst = vulkan->findAllocation(reinterpret_cast<VkDeviceAddress>(destGpu));
+    VulkanDevice* vulkanDevice = cb->device->vulkanDevice;
+    Allocation dst = vulkanDevice->findAllocation(reinterpret_cast<VkDeviceAddress>(destGpu));
 
     VkBufferImageCopy region = {};
     region.bufferOffset = reinterpret_cast<VkDeviceAddress>(destGpu) - dst.address;
@@ -1392,11 +1548,12 @@ void gpuCopyFromTexture(GpuCommandBuffer cb, void* destGpu, GpuTexture texture)
     region.imageOffset = { 0, 0, 0 };
     region.imageExtent = { texture->desc.dimensions.x, texture->desc.dimensions.y, texture->desc.dimensions.z };
 
-    vulkan->dispatchTable.cmdCopyImageToBuffer(cb->commandBuffer, texture->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst.buffer, 1, &region);
+    vulkanDevice->dispatchTable.cmdCopyImageToBuffer(cb->commandBuffer, texture->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst.buffer, 1, &region);
 }
 
 void gpuBlitTexture(GpuCommandBuffer cb, GpuTexture destTexture, GpuTexture srcTexture)
 {
+    VulkanDevice* vulkanDevice = cb->device->vulkanDevice;
     VkImageBlit blit = {};
     blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     blit.srcSubresource.mipLevel = 0;
@@ -1411,7 +1568,7 @@ void gpuBlitTexture(GpuCommandBuffer cb, GpuTexture destTexture, GpuTexture srcT
     blit.dstOffsets[0] = { 0, 0, 0 };
     blit.dstOffsets[1] = { static_cast<int32_t>(destTexture->desc.dimensions.x), static_cast<int32_t>(destTexture->desc.dimensions.y), static_cast<int32_t>(destTexture->desc.dimensions.z) };
 
-    vulkan->dispatchTable.cmdBlitImage(
+    vulkanDevice->dispatchTable.cmdBlitImage(
         cb->commandBuffer,
         srcTexture->image,
         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -1425,74 +1582,76 @@ void gpuBlitTexture(GpuCommandBuffer cb, GpuTexture destTexture, GpuTexture srcT
 
 void gpuSetActiveTextureHeapPtr(GpuCommandBuffer cb, void *ptrGpu)
 {
-    auto alloc = vulkan->findAllocation(reinterpret_cast<VkDeviceAddress>(ptrGpu));
+    GpuDevice device = cb->device;
+    VulkanDevice* vulkanDevice = device->vulkanDevice;
+    auto alloc = vulkanDevice->findAllocation(reinterpret_cast<VkDeviceAddress>(ptrGpu));
 
     // TODO: support samplers, for now we just bind a default sampler
-    if (vulkan->samplerDescriptors.buffer == VK_NULL_HANDLE)
+    if (vulkanDevice->samplerDescriptors.buffer == VK_NULL_HANDLE)
     {
-        auto cpu = gpuMallocHidden(
-            vulkan->samplerDescriptorSetLayoutSize, 
-            vulkan->descriptorBufferProperties.descriptorBufferOffsetAlignment, 
+        auto cpu = gpuMallocHidden(vulkanDevice,
+            vulkanDevice->samplerDescriptorSetLayoutSize, 
+            vulkanDevice->descriptorBufferProperties.descriptorBufferOffsetAlignment, 
             MEMORY_DEFAULT, 
             true // sampler
         );
 
-        vulkan->samplerDescriptors = vulkan->findAllocation(cpu);
+        vulkanDevice->samplerDescriptors = vulkanDevice->findAllocation(cpu);
 
         VkDescriptorGetInfoEXT samplerDescriptorGetInfo = {};
         samplerDescriptorGetInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT;
         samplerDescriptorGetInfo.type = VK_DESCRIPTOR_TYPE_SAMPLER;
-        samplerDescriptorGetInfo.data.pSampler = &vulkan->defaultSampler;
-        vulkan->dispatchTable.getDescriptorEXT(&samplerDescriptorGetInfo, vulkan->descriptorBufferProperties.samplerDescriptorSize, vulkan->samplerDescriptors.ptr);
+        samplerDescriptorGetInfo.data.pSampler = &vulkanDevice->defaultSampler;
+        vulkanDevice->dispatchTable.getDescriptorEXT(&samplerDescriptorGetInfo, vulkanDevice->descriptorBufferProperties.samplerDescriptorSize, vulkanDevice->samplerDescriptors.ptr);
     }
 
     VkDeviceAddress address = reinterpret_cast<VkDeviceAddress>(ptrGpu);
     VkDeviceAddress rwAddress = address;
 
-    if (vulkan->descriptorsNeedPatching())
+    if (vulkanDevice->descriptorsNeedPatching())
     {
-        GpuPipeline currentPipeline = vulkan->currentPipeline[cb];
-        if (vulkan->patchDescriptorsPipeline == nullptr)
+        GpuPipeline currentPipeline = vulkanDevice->currentPipeline[cb];
+        if (vulkanDevice->patchDescriptorsPipeline == nullptr)
         {
             auto patchDescriptorsSpv = gpuHiddenLoadIR("../Shaders/PatchDescriptors.spv");
-            vulkan->patchDescriptorsPipeline = gpuCreateComputePipeline(patchDescriptorsSpv);
+            vulkanDevice->patchDescriptorsPipeline = gpuCreateComputePipeline(device, patchDescriptorsSpv);
         }
 
-        if (vulkan->patchedDescriptorDataCpu == nullptr)
+        if (vulkanDevice->patchedDescriptorDataCpu == nullptr)
         {
-            vulkan->patchedDescriptorDataCpu = 
-                gpuMalloc(vulkan->descriptorBufferProperties.sampledImageDescriptorSize * vulkan->descriptorCount, 
-                    vulkan->descriptorBufferProperties.descriptorBufferOffsetAlignment);
+            vulkanDevice->patchedDescriptorDataCpu = 
+                gpuMallocHidden(vulkanDevice, vulkanDevice->descriptorBufferProperties.sampledImageDescriptorSize * vulkanDevice->descriptorCount, 
+                    vulkanDevice->descriptorBufferProperties.descriptorBufferOffsetAlignment, MEMORY_DEFAULT);
         }
 
-        if (vulkan->rwPatchedDescriptorDataCpu == nullptr)
+        if (vulkanDevice->rwPatchedDescriptorDataCpu == nullptr)
         {
-            vulkan->rwPatchedDescriptorDataCpu = 
-                gpuMalloc(vulkan->descriptorBufferProperties.storageImageDescriptorSize * vulkan->descriptorCount, 
-                    vulkan->descriptorBufferProperties.descriptorBufferOffsetAlignment);
+            vulkanDevice->rwPatchedDescriptorDataCpu = 
+                gpuMallocHidden(vulkanDevice, vulkanDevice->descriptorBufferProperties.storageImageDescriptorSize * vulkanDevice->descriptorCount, 
+                    vulkanDevice->descriptorBufferProperties.descriptorBufferOffsetAlignment, MEMORY_DEFAULT);
         }
 
-        auto patchedDescriptorDataGpu = gpuHostToDevicePointer(vulkan->patchedDescriptorDataCpu);
-        auto rwPatchedDescriptorDataGpu = gpuHostToDevicePointer(vulkan->rwPatchedDescriptorDataCpu);
+        auto patchedDescriptorDataGpu = gpuHostToDevicePointer(device, vulkanDevice->patchedDescriptorDataCpu);
+        auto rwPatchedDescriptorDataGpu = gpuHostToDevicePointer(device, vulkanDevice->rwPatchedDescriptorDataCpu);
 
-        gpuSetPipeline(cb, vulkan->patchDescriptorsPipeline);
+        gpuSetPipeline(cb, vulkanDevice->patchDescriptorsPipeline);
 
-        if (vulkan->patchDescriptorsDataCpu == nullptr)
+        if (vulkanDevice->patchDescriptorsDataCpu == nullptr)
         {
-            vulkan->patchDescriptorsDataCpu = static_cast<PatchDescriptorsData*>(gpuMalloc(sizeof(PatchDescriptorsData)));
+            vulkanDevice->patchDescriptorsDataCpu = static_cast<PatchDescriptorsData*>(gpuMallocHidden(vulkanDevice, sizeof(PatchDescriptorsData), GPU_DEFAULT_ALIGNMENT, MEMORY_DEFAULT));
         }
 
-        vulkan->patchDescriptorsDataCpu->numDescriptors = (alloc.size - (alloc.address - address)) / sizeof(GpuTextureDescriptor);
-        vulkan->patchDescriptorsDataCpu->descriptorSize = vulkan->descriptorBufferProperties.sampledImageDescriptorSize;
-        vulkan->patchDescriptorsDataCpu->rwDescriptorSize = vulkan->descriptorBufferProperties.storageImageDescriptorSize;
-        vulkan->patchDescriptorsDataCpu->descriptors = static_cast<Descriptor*>(ptrGpu);
-        vulkan->patchDescriptorsDataCpu->srcDescriptors = static_cast<uint8_t*>(gpuHostToDevicePointer(vulkan->descriptorDataCpu));
-        vulkan->patchDescriptorsDataCpu->rwSrcDescriptors = static_cast<uint8_t*>(gpuHostToDevicePointer(vulkan->rwDescriptorDataCpu));
-        vulkan->patchDescriptorsDataCpu->dstDescriptors = static_cast<uint8_t*>(patchedDescriptorDataGpu);
-        vulkan->patchDescriptorsDataCpu->rwDstDescriptors = static_cast<uint8_t*>(rwPatchedDescriptorDataGpu);
+        vulkanDevice->patchDescriptorsDataCpu->numDescriptors = (alloc.size - (alloc.address - address)) / sizeof(GpuTextureDescriptor);
+        vulkanDevice->patchDescriptorsDataCpu->descriptorSize = vulkanDevice->descriptorBufferProperties.sampledImageDescriptorSize;
+        vulkanDevice->patchDescriptorsDataCpu->rwDescriptorSize = vulkanDevice->descriptorBufferProperties.storageImageDescriptorSize;
+        vulkanDevice->patchDescriptorsDataCpu->descriptors = static_cast<Descriptor*>(ptrGpu);
+        vulkanDevice->patchDescriptorsDataCpu->srcDescriptors = static_cast<uint8_t*>(gpuHostToDevicePointer(device, vulkanDevice->descriptorDataCpu));
+        vulkanDevice->patchDescriptorsDataCpu->rwSrcDescriptors = static_cast<uint8_t*>(gpuHostToDevicePointer(device, vulkanDevice->rwDescriptorDataCpu));
+        vulkanDevice->patchDescriptorsDataCpu->dstDescriptors = static_cast<uint8_t*>(patchedDescriptorDataGpu);
+        vulkanDevice->patchDescriptorsDataCpu->rwDstDescriptors = static_cast<uint8_t*>(rwPatchedDescriptorDataGpu);
 
-        assert(vulkan->descriptorCount >= 16 && vulkan->descriptorCount % 16 == 0);
-        gpuDispatch(cb, gpuHostToDevicePointer(vulkan->patchDescriptorsDataCpu), { vulkan->descriptorCount / 16, 1, 1});
+        assert(vulkanDevice->descriptorCount >= 16 && vulkanDevice->descriptorCount % 16 == 0);
+        gpuDispatch(cb, gpuHostToDevicePointer(device, vulkanDevice->patchDescriptorsDataCpu), { vulkanDevice->descriptorCount / 16, 1, 1});
 
         gpuBarrier(cb, STAGE_COMPUTE, STAGE_COMPUTE, HAZARD_DESCRIPTORS);
 
@@ -1513,10 +1672,10 @@ void gpuSetActiveTextureHeapPtr(GpuCommandBuffer cb, void *ptrGpu)
     bufferBindingInfo[1].usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
 
     bufferBindingInfo[2].sType = VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT;
-    bufferBindingInfo[2].address = vulkan->samplerDescriptors.address;
+    bufferBindingInfo[2].address = vulkanDevice->samplerDescriptors.address;
     bufferBindingInfo[2].usage = VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT;
 
-    vulkan->dispatchTable.cmdBindDescriptorBuffersEXT(
+    vulkanDevice->dispatchTable.cmdBindDescriptorBuffersEXT(
         cb->commandBuffer,
         3,
         bufferBindingInfo
@@ -1525,10 +1684,10 @@ void gpuSetActiveTextureHeapPtr(GpuCommandBuffer cb, void *ptrGpu)
     uint32_t indices[3] = { 0, 1, 2 }; // read, read/write, sampler
     VkDeviceSize offsets[3] = { 0, 0, 0 };
 
-    vulkan->dispatchTable.cmdSetDescriptorBufferOffsetsEXT(
+    vulkanDevice->dispatchTable.cmdSetDescriptorBufferOffsetsEXT(
         cb->commandBuffer,
-        vulkan->currentPipeline[cb]->bindPoint,
-        vulkan->layout[vulkan->currentPipeline[cb]->bindPoint],
+        vulkanDevice->currentPipeline[cb]->bindPoint,
+        vulkanDevice->layout[vulkanDevice->currentPipeline[cb]->bindPoint],
         0,
         3,
         indices,
@@ -1538,6 +1697,7 @@ void gpuSetActiveTextureHeapPtr(GpuCommandBuffer cb, void *ptrGpu)
 
 void gpuBarrier(GpuCommandBuffer cb, STAGE before, STAGE after, HAZARD_FLAGS hazards)
 {
+    VulkanDevice* vulkanDevice = cb->device->vulkanDevice;
     std::vector<VkMemoryBarrier> memoryBarriers;
 
     if (hazards & HAZARD_DRAW_ARGUMENTS)
@@ -1576,7 +1736,7 @@ void gpuBarrier(GpuCommandBuffer cb, STAGE before, STAGE after, HAZARD_FLAGS haz
         memoryBarriers.push_back(memoryBarrier);
     }
 
-    vulkan->dispatchTable.cmdPipelineBarrier(
+    vulkanDevice->dispatchTable.cmdPipelineBarrier(
         cb->commandBuffer,
         gpuStageToVkStage(before),
         gpuStageToVkStage(after),
@@ -1599,58 +1759,60 @@ void gpuWaitBefore(GpuCommandBuffer cb, STAGE after, void *ptrGpu, uint64_t valu
 
 void gpuSetPipeline(GpuCommandBuffer cb, GpuPipeline pipeline)
 {
-    vulkan->dispatchTable.cmdBindPipeline(
+    VulkanDevice* vulkanDevice = cb->device->vulkanDevice;
+    vulkanDevice->dispatchTable.cmdBindPipeline(
         cb->commandBuffer, 
         pipeline->bindPoint,
         pipeline->pipeline
     );
 
-    vulkan->currentPipeline[cb] = pipeline;
+    vulkanDevice->currentPipeline[cb] = pipeline;
 }
 
 void gpuSetDepthStencilState(GpuCommandBuffer cb, GpuDepthStencilState state)
 {
+    VulkanDevice* vulkanDevice = cb->device->vulkanDevice;
     const auto& desc = state->desc;
     VkCommandBuffer cmd = cb->commandBuffer;
 
     // Depth state
-    vulkan->dispatchTable.cmdSetDepthTestEnable(cmd, (desc.depthMode & DEPTH_READ) ? VK_TRUE : VK_FALSE);
-    vulkan->dispatchTable.cmdSetDepthWriteEnable(cmd, (desc.depthMode & DEPTH_WRITE) ? VK_TRUE : VK_FALSE);
-    vulkan->dispatchTable.cmdSetDepthCompareOp(cmd, gpuOpToVkCompareOp(desc.depthTest));
-    vulkan->dispatchTable.cmdSetDepthBoundsTestEnable(cmd, VK_FALSE);
+    vulkanDevice->dispatchTable.cmdSetDepthTestEnable(cmd, (desc.depthMode & DEPTH_READ) ? VK_TRUE : VK_FALSE);
+    vulkanDevice->dispatchTable.cmdSetDepthWriteEnable(cmd, (desc.depthMode & DEPTH_WRITE) ? VK_TRUE : VK_FALSE);
+    vulkanDevice->dispatchTable.cmdSetDepthCompareOp(cmd, gpuOpToVkCompareOp(desc.depthTest));
+    vulkanDevice->dispatchTable.cmdSetDepthBoundsTestEnable(cmd, VK_FALSE);
 
     // Depth bias
     bool depthBiasEnabled = desc.depthBias != 0.0f || desc.depthBiasSlopeFactor != 0.0f;
-    vulkan->dispatchTable.cmdSetDepthBiasEnable(cmd, depthBiasEnabled ? VK_TRUE : VK_FALSE);
+    vulkanDevice->dispatchTable.cmdSetDepthBiasEnable(cmd, depthBiasEnabled ? VK_TRUE : VK_FALSE);
     if (depthBiasEnabled)
     {
-        vulkan->dispatchTable.cmdSetDepthBias(cmd, desc.depthBias, desc.depthBiasClamp, desc.depthBiasSlopeFactor);
+        vulkanDevice->dispatchTable.cmdSetDepthBias(cmd, desc.depthBias, desc.depthBiasClamp, desc.depthBiasSlopeFactor);
     }
 
     // Stencil state
     bool stencilEnabled = desc.stencilFront.test != OP_ALWAYS || desc.stencilBack.test != OP_ALWAYS;
-    vulkan->dispatchTable.cmdSetStencilTestEnable(cmd, stencilEnabled ? VK_TRUE : VK_FALSE);
+    vulkanDevice->dispatchTable.cmdSetStencilTestEnable(cmd, stencilEnabled ? VK_TRUE : VK_FALSE);
 
     if (stencilEnabled)
     {
-        vulkan->dispatchTable.cmdSetStencilOp(
+        vulkanDevice->dispatchTable.cmdSetStencilOp(
             cmd, VK_STENCIL_FACE_FRONT_BIT,
             gpuOpToVkStencilOp(desc.stencilFront.failOp),
             gpuOpToVkStencilOp(desc.stencilFront.passOp),
             gpuOpToVkStencilOp(desc.stencilFront.depthFailOp),
             gpuOpToVkCompareOp(desc.stencilFront.test)
         );
-        vulkan->dispatchTable.cmdSetStencilOp(
+        vulkanDevice->dispatchTable.cmdSetStencilOp(
             cmd, VK_STENCIL_FACE_BACK_BIT,
             gpuOpToVkStencilOp(desc.stencilBack.failOp),
             gpuOpToVkStencilOp(desc.stencilBack.passOp),
             gpuOpToVkStencilOp(desc.stencilBack.depthFailOp),
             gpuOpToVkCompareOp(desc.stencilBack.test)
         );
-        vulkan->dispatchTable.cmdSetStencilCompareMask(cmd, VK_STENCIL_FACE_FRONT_AND_BACK, desc.stencilReadMask);
-        vulkan->dispatchTable.cmdSetStencilWriteMask(cmd, VK_STENCIL_FACE_FRONT_AND_BACK, desc.stencilWriteMask);
-        vulkan->dispatchTable.cmdSetStencilReference(cmd, VK_STENCIL_FACE_FRONT_BIT, desc.stencilFront.reference);
-        vulkan->dispatchTable.cmdSetStencilReference(cmd, VK_STENCIL_FACE_BACK_BIT, desc.stencilBack.reference);
+        vulkanDevice->dispatchTable.cmdSetStencilCompareMask(cmd, VK_STENCIL_FACE_FRONT_AND_BACK, desc.stencilReadMask);
+        vulkanDevice->dispatchTable.cmdSetStencilWriteMask(cmd, VK_STENCIL_FACE_FRONT_AND_BACK, desc.stencilWriteMask);
+        vulkanDevice->dispatchTable.cmdSetStencilReference(cmd, VK_STENCIL_FACE_FRONT_BIT, desc.stencilFront.reference);
+        vulkanDevice->dispatchTable.cmdSetStencilReference(cmd, VK_STENCIL_FACE_BACK_BIT, desc.stencilBack.reference);
     }
 }
 
@@ -1661,17 +1823,18 @@ void gpuSetBlendState(GpuCommandBuffer cb, GpuBlendState state)
 
 void gpuDispatch(GpuCommandBuffer cb, void* dataGpu, uint3 gridDimensions)
 {
+    VulkanDevice* vulkanDevice = cb->device->vulkanDevice;
     VkDeviceAddress address = reinterpret_cast<VkDeviceAddress>(dataGpu);
-    vulkan->dispatchTable.cmdPushConstants(
+    vulkanDevice->dispatchTable.cmdPushConstants(
         cb->commandBuffer,
-        vulkan->layout[vulkan->currentPipeline[cb]->bindPoint],
+        vulkanDevice->layout[vulkanDevice->currentPipeline[cb]->bindPoint],
         VK_SHADER_STAGE_COMPUTE_BIT,
         0,
         sizeof(VkDeviceAddress),
         &address
     );
 
-    vulkan->dispatchTable.cmdDispatch(
+    vulkanDevice->dispatchTable.cmdDispatch(
         cb->commandBuffer, 
         gridDimensions.x, 
         gridDimensions.y, 
@@ -1681,19 +1844,20 @@ void gpuDispatch(GpuCommandBuffer cb, void* dataGpu, uint3 gridDimensions)
 
 void gpuDispatchIndirect(GpuCommandBuffer cb, void* dataGpu, void* gridDimensionsGpu)
 {
+    VulkanDevice* vulkanDevice = cb->device->vulkanDevice;
     VkDeviceAddress address = reinterpret_cast<VkDeviceAddress>(dataGpu);
-    vulkan->dispatchTable.cmdPushConstants(
+    vulkanDevice->dispatchTable.cmdPushConstants(
         cb->commandBuffer,
-        vulkan->layout[vulkan->currentPipeline[cb]->bindPoint],
+        vulkanDevice->layout[vulkanDevice->currentPipeline[cb]->bindPoint],
         VK_SHADER_STAGE_COMPUTE_BIT,
         0,
         sizeof(VkDeviceAddress),
         &address
     );
 
-    Allocation grid = vulkan->findAllocation(reinterpret_cast<VkDeviceAddress>(gridDimensionsGpu));
+    Allocation grid = vulkanDevice->findAllocation(reinterpret_cast<VkDeviceAddress>(gridDimensionsGpu));
 
-    vulkan->dispatchTable.cmdDispatchIndirect(
+    vulkanDevice->dispatchTable.cmdDispatchIndirect(
         cb->commandBuffer, 
         grid.buffer, 
         reinterpret_cast<VkDeviceAddress>(gridDimensionsGpu) - grid.address
@@ -1702,6 +1866,7 @@ void gpuDispatchIndirect(GpuCommandBuffer cb, void* dataGpu, void* gridDimension
 
 void gpuBeginRenderPass(GpuCommandBuffer cb, GpuRenderPassDesc desc)
 {
+    VulkanDevice* vulkanDevice = cb->device->vulkanDevice;
     VkRenderingInfo renderingInfo = {};
     renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
     renderingInfo.renderArea.offset = { 0, 0 };
@@ -1738,7 +1903,7 @@ void gpuBeginRenderPass(GpuCommandBuffer cb, GpuRenderPassDesc desc)
     renderingInfo.pDepthAttachment = desc.depthStencilTarget != nullptr ? &depthAttachment : nullptr;
     renderingInfo.pStencilAttachment = nullptr; // TODO: separate stencil support if needed
 
-    vulkan->dispatchTable.cmdBeginRendering(cb->commandBuffer, &renderingInfo);
+    vulkanDevice->dispatchTable.cmdBeginRendering(cb->commandBuffer, &renderingInfo);
 
     VkViewport viewport = {};
     viewport.x = 0.0f;
@@ -1747,46 +1912,48 @@ void gpuBeginRenderPass(GpuCommandBuffer cb, GpuRenderPassDesc desc)
     viewport.height = static_cast<float>(colorTarget->desc.dimensions.y);
     viewport.minDepth = 0.0f;
     viewport.maxDepth = 1.0f;
-    vulkan->dispatchTable.cmdSetViewport(cb->commandBuffer, 0, 1, &viewport);
+    vulkanDevice->dispatchTable.cmdSetViewport(cb->commandBuffer, 0, 1, &viewport);
 
     VkRect2D scissor = {};
     scissor.offset = { 0, 0 };
     scissor.extent = { colorTarget->desc.dimensions.x, colorTarget->desc.dimensions.y };
-    vulkan->dispatchTable.cmdSetScissor(cb->commandBuffer, 0, 1, &scissor);
+    vulkanDevice->dispatchTable.cmdSetScissor(cb->commandBuffer, 0, 1, &scissor);
 }
 
 void gpuEndRenderPass(GpuCommandBuffer cb)
 {
-    vulkan->dispatchTable.cmdEndRendering(cb->commandBuffer);
+    VulkanDevice* vulkanDevice = cb->device->vulkanDevice;
+    vulkanDevice->dispatchTable.cmdEndRendering(cb->commandBuffer);
 }
 
 void gpuDrawIndexedInstanced(GpuCommandBuffer cb, void* vertexDataGpu, void* pixelDataGpu, void* indicesGpu, uint32_t indexCount, uint32_t instanceCount)
 {
+    VulkanDevice* vulkanDevice = cb->device->vulkanDevice;
     VkDeviceAddress pushConstants[3] = {
         reinterpret_cast<VkDeviceAddress>(vertexDataGpu),
         reinterpret_cast<VkDeviceAddress>(pixelDataGpu),
         0 // unused
     };
 
-    vulkan->dispatchTable.cmdPushConstants(
+    vulkanDevice->dispatchTable.cmdPushConstants(
         cb->commandBuffer,
-       vulkan->layout[vulkan->currentPipeline[cb]->bindPoint],
+       vulkanDevice->layout[vulkanDevice->currentPipeline[cb]->bindPoint],
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_FRAGMENT_BIT,
         0,
         sizeof(VkDeviceAddress) * 2,
         pushConstants
     );
 
-    Allocation indexAlloc = vulkan->findAllocation(reinterpret_cast<VkDeviceAddress>(indicesGpu));
+    Allocation indexAlloc = vulkanDevice->findAllocation(reinterpret_cast<VkDeviceAddress>(indicesGpu));
 
-    vulkan->dispatchTable.cmdBindIndexBuffer(
+    vulkanDevice->dispatchTable.cmdBindIndexBuffer(
         cb->commandBuffer,
         indexAlloc.buffer,
         reinterpret_cast<VkDeviceAddress>(indicesGpu) - indexAlloc.address,
         VK_INDEX_TYPE_UINT32
     );
 
-    vulkan->dispatchTable.cmdDrawIndexed(
+    vulkanDevice->dispatchTable.cmdDrawIndexed(
         cb->commandBuffer,
         indexCount,
         instanceCount,
@@ -1798,33 +1965,34 @@ void gpuDrawIndexedInstanced(GpuCommandBuffer cb, void* vertexDataGpu, void* pix
 
 void gpuDrawIndexedInstancedIndirect(GpuCommandBuffer cb, void* vertexDataGpu, void* pixelDataGpu, void* indicesGpu, void* argsGpu)
 {
+    VulkanDevice* vulkanDevice = cb->device->vulkanDevice;
     VkDeviceAddress pushConstants[3] = {
         reinterpret_cast<VkDeviceAddress>(vertexDataGpu),
         reinterpret_cast<VkDeviceAddress>(pixelDataGpu),
         0 // unused
     };
 
-    vulkan->dispatchTable.cmdPushConstants(
+    vulkanDevice->dispatchTable.cmdPushConstants(
         cb->commandBuffer,
-       vulkan->layout[vulkan->currentPipeline[cb]->bindPoint],
+       vulkanDevice->layout[vulkanDevice->currentPipeline[cb]->bindPoint],
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_FRAGMENT_BIT,
         0,
         sizeof(VkDeviceAddress) * 2,
         pushConstants
     );
 
-    Allocation indexAlloc = vulkan->findAllocation(reinterpret_cast<VkDeviceAddress>(indicesGpu));
+    Allocation indexAlloc = vulkanDevice->findAllocation(reinterpret_cast<VkDeviceAddress>(indicesGpu));
 
-    vulkan->dispatchTable.cmdBindIndexBuffer(
+    vulkanDevice->dispatchTable.cmdBindIndexBuffer(
         cb->commandBuffer,
         indexAlloc.buffer,
         reinterpret_cast<VkDeviceAddress>(indicesGpu) - indexAlloc.address,
         VK_INDEX_TYPE_UINT32
     );
 
-    Allocation argsAlloc = vulkan->findAllocation(reinterpret_cast<VkDeviceAddress>(argsGpu));
+    Allocation argsAlloc = vulkanDevice->findAllocation(reinterpret_cast<VkDeviceAddress>(argsGpu));
 
-    vulkan->dispatchTable.cmdDrawIndexedIndirect(
+    vulkanDevice->dispatchTable.cmdDrawIndexedIndirect(
         cb->commandBuffer,
         argsAlloc.buffer,
         reinterpret_cast<VkDeviceAddress>(argsGpu) - argsAlloc.address,
@@ -1843,64 +2011,66 @@ void gpuDrawIndexedInstancedIndirectMulti(
     void* argsGpu, 
     void* drawCountGpu)
 {
+    VulkanDevice* vulkanDevice = cb->device->vulkanDevice;
     VkDeviceAddress pushConstants[3] = {
         reinterpret_cast<VkDeviceAddress>(dataVxGpu),
         reinterpret_cast<VkDeviceAddress>(dataPxGpu),
         static_cast<VkDeviceAddress>(vxStride | (static_cast<uint64_t>(pxStride) << 32)) // pack strides into a single 64-bit value
     };
 
-    vulkan->dispatchTable.cmdPushConstants(
+    vulkanDevice->dispatchTable.cmdPushConstants(
         cb->commandBuffer,
-        vulkan->layout[vulkan->currentPipeline[cb]->bindPoint],
+        vulkanDevice->layout[vulkanDevice->currentPipeline[cb]->bindPoint],
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_FRAGMENT_BIT,
         0,
         sizeof(VkDeviceAddress) * 3,
         pushConstants
     );
 
-    Allocation indexAlloc = vulkan->findAllocation(reinterpret_cast<VkDeviceAddress>(indicesGpu));
+    Allocation indexAlloc = vulkanDevice->findAllocation(reinterpret_cast<VkDeviceAddress>(indicesGpu));
 
-    vulkan->dispatchTable.cmdBindIndexBuffer(
+    vulkanDevice->dispatchTable.cmdBindIndexBuffer(
         cb->commandBuffer,
         indexAlloc.buffer,
         reinterpret_cast<VkDeviceAddress>(indicesGpu) - indexAlloc.address,
         VK_INDEX_TYPE_UINT32
     );
 
-    Allocation argsAlloc = vulkan->findAllocation(reinterpret_cast<VkDeviceAddress>(argsGpu));
+    Allocation argsAlloc = vulkanDevice->findAllocation(reinterpret_cast<VkDeviceAddress>(argsGpu));
 
-    Allocation countAlloc = vulkan->findAllocation(reinterpret_cast<VkDeviceAddress>(drawCountGpu));
+    Allocation countAlloc = vulkanDevice->findAllocation(reinterpret_cast<VkDeviceAddress>(drawCountGpu));
 
     VkDrawIndexedIndirectCommand drawCommand = {};
 
-    vulkan->dispatchTable.cmdDrawIndexedIndirectCount(
+    vulkanDevice->dispatchTable.cmdDrawIndexedIndirectCount(
         cb->commandBuffer,
         argsAlloc.buffer,
         reinterpret_cast<VkDeviceAddress>(argsGpu) - argsAlloc.address,
         countAlloc.buffer,
         reinterpret_cast<VkDeviceAddress>(drawCountGpu) - countAlloc.address,
-        vulkan->physicalDeviceProperties2.properties.limits.maxDrawIndirectCount,
+        vulkanDevice->physicalDeviceProperties2.properties.limits.maxDrawIndirectCount,
         sizeof(VkDrawIndexedIndirectCommand)
     );
 }
 
 void gpuDrawMeshlets(GpuCommandBuffer cb, void* meshletDataGpu, void* pixelDataGpu, uint3 dim)
 {
+    VulkanDevice* vulkanDevice = cb->device->vulkanDevice;
     VkDeviceAddress pushConstants[2] = {
         reinterpret_cast<VkDeviceAddress>(meshletDataGpu),
         reinterpret_cast<VkDeviceAddress>(pixelDataGpu)
     };
 
-    vulkan->dispatchTable.cmdPushConstants(
+    vulkanDevice->dispatchTable.cmdPushConstants(
         cb->commandBuffer,
-       vulkan->layout[vulkan->currentPipeline[cb]->bindPoint],
+       vulkanDevice->layout[vulkanDevice->currentPipeline[cb]->bindPoint],
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_FRAGMENT_BIT,
         0,
         sizeof(VkDeviceAddress) * 2,
         pushConstants
     );
     
-    vulkan->dispatchTable.cmdDrawMeshTasksEXT(
+    vulkanDevice->dispatchTable.cmdDrawMeshTasksEXT(
         cb->commandBuffer,
         dim.x,
         dim.y,
@@ -1910,23 +2080,24 @@ void gpuDrawMeshlets(GpuCommandBuffer cb, void* meshletDataGpu, void* pixelDataG
 
 void gpuDrawMeshletsIndirect(GpuCommandBuffer cb, void* meshletDataGpu, void* pixelDataGpu, void *dimGpu)
 {
+    VulkanDevice* vulkanDevice = cb->device->vulkanDevice;
     VkDeviceAddress pushConstants[2] = {
         reinterpret_cast<VkDeviceAddress>(meshletDataGpu),
         reinterpret_cast<VkDeviceAddress>(pixelDataGpu)
     };
 
-    vulkan->dispatchTable.cmdPushConstants(
+    vulkanDevice->dispatchTable.cmdPushConstants(
         cb->commandBuffer,
-       vulkan->layout[vulkan->currentPipeline[cb]->bindPoint],
+       vulkanDevice->layout[vulkanDevice->currentPipeline[cb]->bindPoint],
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_FRAGMENT_BIT,
         0,
         sizeof(VkDeviceAddress) * 2,
         pushConstants
     );
 
-    Allocation dimAlloc = vulkan->findAllocation(reinterpret_cast<VkDeviceAddress>(dimGpu));
+    Allocation dimAlloc = vulkanDevice->findAllocation(reinterpret_cast<VkDeviceAddress>(dimGpu));
 
-    vulkan->dispatchTable.cmdDrawMeshTasksIndirectEXT(
+    vulkanDevice->dispatchTable.cmdDrawMeshTasksIndirectEXT(
         cb->commandBuffer,
         dimAlloc.buffer,
         reinterpret_cast<VkDeviceAddress>(dimGpu) - dimAlloc.address,
@@ -1936,8 +2107,9 @@ void gpuDrawMeshletsIndirect(GpuCommandBuffer cb, void* meshletDataGpu, void* pi
 }
 
 #ifdef GPU_SURFACE_EXTENSION
-Span<FORMAT> gpuSurfaceFormats(GpuSurface surface)
+Span<FORMAT> gpuSurfaceFormats(GpuDevice device, GpuSurface surface)
 {
+    VulkanDevice* vulkanDevice = device->vulkanDevice;
     if (surface == nullptr)
     {
         return Span<FORMAT>();
@@ -1946,16 +2118,16 @@ Span<FORMAT> gpuSurfaceFormats(GpuSurface surface)
     if (surface->formats.empty())
     {
         uint32_t formatCount = 0;
-        vulkan->instanceDispatchTable.getPhysicalDeviceSurfaceFormatsKHR(
-            vulkan->physicalDevice, 
+        vulkanInstance->instanceDispatchTable.getPhysicalDeviceSurfaceFormatsKHR(
+            vulkanDevice->physicalDevice, 
             surface->surface, 
             &formatCount, 
             nullptr
         );
 
         std::vector<VkSurfaceFormatKHR> vkFormats(formatCount);
-        vulkan->instanceDispatchTable.getPhysicalDeviceSurfaceFormatsKHR(
-            vulkan->physicalDevice, 
+        vulkanInstance->instanceDispatchTable.getPhysicalDeviceSurfaceFormatsKHR(
+            vulkanDevice->physicalDevice, 
             surface->surface, 
             &formatCount, 
             vkFormats.data()
@@ -1970,8 +2142,9 @@ Span<FORMAT> gpuSurfaceFormats(GpuSurface surface)
     return Span<FORMAT>(surface->formats);
 }
 
-GpuSwapchain gpuCreateSwapchain(GpuSurface surface, uint32_t images)
+GpuSwapchain gpuCreateSwapchain(GpuDevice device, GpuSurface surface, uint32_t images)
 {
+    VulkanDevice* vulkanDevice = device->vulkanDevice;
     struct GpuSurfaceImpl
     {
         VkSurfaceKHR surface;
@@ -1980,10 +2153,10 @@ GpuSwapchain gpuCreateSwapchain(GpuSurface surface, uint32_t images)
 
     VkSurfaceFormatKHR surfaceFormat;
 
-    auto builder = vkb::SwapchainBuilder{vulkan->device, surf->surface}
+    auto builder = vkb::SwapchainBuilder{vulkanDevice->device, surf->surface}
         .add_image_usage_flags(VK_IMAGE_USAGE_TRANSFER_DST_BIT);
-    vulkan->device.surface = surf->surface;
-    auto presentQueue = new GpuQueue_T{ vulkan->device.get_queue(vkb::QueueType::present).value() };
+    vulkanDevice->device.surface = surf->surface;
+    auto presentQueue = new GpuQueue_T{ vulkanDevice->device.get_queue(vkb::QueueType::present).value(), device };
     auto swapchain = builder.build().value();
 
     auto desc = GpuTextureDesc {};
@@ -2007,12 +2180,13 @@ GpuSwapchain gpuCreateSwapchain(GpuSurface surface, uint32_t images)
         viewInfo.subresourceRange.layerCount = 1;
 
         VkImageView view;
-        vulkan->dispatchTable.createImageView(&viewInfo, nullptr, &view);
+        vulkanDevice->dispatchTable.createImageView(&viewInfo, nullptr, &view);
 
         swapchainImages.push_back(new GpuTexture_T {
             desc,
             image,
-            view
+            view,
+            device
         });
     }
 
@@ -2023,7 +2197,7 @@ GpuSwapchain gpuCreateSwapchain(GpuSurface surface, uint32_t images)
         VkSemaphoreCreateInfo semaphoreInfo = {};
         semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
         VkSemaphore presentSemaphore;
-        vulkan->dispatchTable.createSemaphore(&semaphoreInfo, nullptr, &presentSemaphore);
+        vulkanDevice->dispatchTable.createSemaphore(&semaphoreInfo, nullptr, &presentSemaphore);
         presentSemaphores.push_back(presentSemaphore);
     }
 
@@ -2033,21 +2207,23 @@ GpuSwapchain gpuCreateSwapchain(GpuSurface surface, uint32_t images)
         0, 
         desc,
         swapchainImages, 
-        presentSemaphores
+        presentSemaphores,
+        device
     };
 }
 
 void gpuDestroySwapchain(GpuSwapchain swapchain)
 {
+    VulkanDevice* vulkanDevice = swapchain->device->vulkanDevice;
     for (auto image : swapchain->images)
     {
-        vulkan->dispatchTable.destroyImageView(image->view, nullptr);
+        vulkanDevice->dispatchTable.destroyImageView(image->view, nullptr);
         delete image;
     }
-    vulkan->dispatchTable.destroySwapchainKHR(swapchain->swapchain, nullptr);
+    vulkanDevice->dispatchTable.destroySwapchainKHR(swapchain->swapchain, nullptr);
     for (auto sema : swapchain->presentSemaphores)
     {
-        vulkan->dispatchTable.destroySemaphore(sema, nullptr);
+        vulkanDevice->dispatchTable.destroySemaphore(sema, nullptr);
     }
     delete swapchain;
 }
@@ -2059,23 +2235,25 @@ GpuTextureDesc gpuSwapchainDesc(GpuSwapchain swapchain)
 
 GpuTexture gpuSwapchainImage(GpuSwapchain swapchain)
 {
-    vulkan->dispatchTable.resetFences(1, &vulkan->acquireFence);
+    VulkanDevice* vulkanDevice = swapchain->device->vulkanDevice;
+    vulkanDevice->dispatchTable.resetFences(1, &vulkanDevice->acquireFence);
 
-    vulkan->dispatchTable.acquireNextImageKHR(
+    vulkanDevice->dispatchTable.acquireNextImageKHR(
         swapchain->swapchain,
         UINT64_MAX,
         VK_NULL_HANDLE,
-        vulkan->acquireFence,
+        vulkanDevice->acquireFence,
         &swapchain->imageIndex
     );
 
-    vulkan->dispatchTable.waitForFences(1, &vulkan->acquireFence, VK_TRUE, UINT64_MAX);
+    vulkanDevice->dispatchTable.waitForFences(1, &vulkanDevice->acquireFence, VK_TRUE, UINT64_MAX);
 
     return swapchain->images[swapchain->imageIndex];
 }
 
 void gpuPresent(GpuSwapchain swapchain, GpuSemaphore sema, uint64_t value)
 {
+    VulkanDevice* vulkanDevice = swapchain->device->vulkanDevice;
     VkSemaphoreSubmitInfo waitInfo = {};
     waitInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
     waitInfo.semaphore = sema->semaphore;
@@ -2096,7 +2274,7 @@ void gpuPresent(GpuSwapchain swapchain, GpuSemaphore sema, uint64_t value)
     submitInfo.pCommandBufferInfos = nullptr;
 
     // Converts the timeline semaphore to a binary semaphore so we can present
-    vulkan->dispatchTable.queueSubmit2(
+    vulkanDevice->dispatchTable.queueSubmit2(
         swapchain->presentQueue,
         1,
         &submitInfo,
@@ -2111,7 +2289,7 @@ void gpuPresent(GpuSwapchain swapchain, GpuSemaphore sema, uint64_t value)
     presentInfo.waitSemaphoreCount = 1;
     presentInfo.pWaitSemaphores = &swapchain->presentSemaphores[swapchain->imageIndex];
 
-    vulkan->dispatchTable.queuePresentKHR(
+    vulkanDevice->dispatchTable.queuePresentKHR(
         swapchain->presentQueue,
         &presentInfo
     );
@@ -2225,8 +2403,9 @@ VkAccelerationStructureBuildGeometryInfoKHR gpuBuildInfoToVkBuildInfo(GpuAcceler
     return buildInfo;
 }
 
-GpuAccelerationStructureSizes gpuAccelerationStructureSizes(GpuAccelerationStructureDesc desc)
+GpuAccelerationStructureSizes gpuAccelerationStructureSizes(GpuDevice device, GpuAccelerationStructureDesc desc)
 {
+    VulkanDevice* vulkanDevice = device->vulkanDevice;
     std::vector<VkAccelerationStructureGeometryKHR> geometries;
     VkAccelerationStructureBuildGeometryInfoKHR buildInfo = gpuBuildInfoToVkBuildInfo(desc, geometries);
     VkAccelerationStructureBuildSizesInfoKHR sizeInfo = {};
@@ -2238,7 +2417,7 @@ GpuAccelerationStructureSizes gpuAccelerationStructureSizes(GpuAccelerationStruc
         primitiveCounts.push_back(range.primitiveCount);
     }
 
-    vulkan->dispatchTable.getAccelerationStructureBuildSizesKHR(
+    vulkanDevice->dispatchTable.getAccelerationStructureBuildSizesKHR(
         VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
         &buildInfo,
         primitiveCounts.data(),
@@ -2252,9 +2431,10 @@ GpuAccelerationStructureSizes gpuAccelerationStructureSizes(GpuAccelerationStruc
     };
 }
 
-GpuAccelerationStructure gpuCreateAccelerationStructure(GpuAccelerationStructureDesc desc, void *ptrGpu, uint64_t size)
+GpuAccelerationStructure gpuCreateAccelerationStructure(GpuDevice device, GpuAccelerationStructureDesc desc, void *ptrGpu, uint64_t size)
 {
-    auto alloc = vulkan->findAllocation(reinterpret_cast<VkDeviceAddress>(ptrGpu));
+    VulkanDevice* vulkanDevice = device->vulkanDevice;
+    auto alloc = vulkanDevice->findAllocation(reinterpret_cast<VkDeviceAddress>(ptrGpu));
 
     VkAccelerationStructureCreateInfoKHR createInfo = {};
     createInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
@@ -2264,13 +2444,14 @@ GpuAccelerationStructure gpuCreateAccelerationStructure(GpuAccelerationStructure
     createInfo.type = (desc.type == TYPE_BOTTOM_LEVEL) ? VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR : VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
 
     VkAccelerationStructureKHR vkAs;
-    vulkan->dispatchTable.createAccelerationStructureKHR(
+    vulkanDevice->dispatchTable.createAccelerationStructureKHR(
         &createInfo,
         nullptr,
         &vkAs
     );
 
     auto as = new GpuAccelerationStructure_T();
+    as->device = device;
 
     as->buildInfo = gpuBuildInfoToVkBuildInfo(desc, as->geometries);
     as->buildInfo.dstAccelerationStructure = vkAs;
@@ -2290,6 +2471,7 @@ GpuAccelerationStructure gpuCreateAccelerationStructure(GpuAccelerationStructure
 
 void gpuBuildAccelerationStructures(GpuCommandBuffer cb, Span<GpuAccelerationStructure> as, void *scratchGpu, MODE mode)
 {
+    VulkanDevice* vulkanDevice = cb->device->vulkanDevice;
     std::vector<VkAccelerationStructureBuildGeometryInfoKHR> buildInfos;
     std::vector<VkAccelerationStructureBuildRangeInfoKHR*> buildRanges;
     for (const auto& a : as)
@@ -2311,7 +2493,7 @@ void gpuBuildAccelerationStructures(GpuCommandBuffer cb, Span<GpuAccelerationStr
         buildRanges.push_back(a->buildRanges.data());
     }
 
-    vulkan->dispatchTable.cmdBuildAccelerationStructuresKHR(
+    vulkanDevice->dispatchTable.cmdBuildAccelerationStructuresKHR(
         cb->commandBuffer,
         as.size(),
         buildInfos.data(),
@@ -2321,7 +2503,8 @@ void gpuBuildAccelerationStructures(GpuCommandBuffer cb, Span<GpuAccelerationStr
 
 void gpuDestroyAccelerationStructure(GpuAccelerationStructure as)
 {
-    vulkan->dispatchTable.destroyAccelerationStructureKHR(as->buildInfo.dstAccelerationStructure, nullptr);
+    VulkanDevice* vulkanDevice = as->device->vulkanDevice;
+    vulkanDevice->dispatchTable.destroyAccelerationStructureKHR(as->buildInfo.dstAccelerationStructure, nullptr);
     delete as;
 }
 #endif // GPU_RAY_TRACING_EXTENSION

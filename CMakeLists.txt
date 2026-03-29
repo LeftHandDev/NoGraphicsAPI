@@ -30,6 +30,7 @@ add_executable(NoGraphicsAPI
     Samples/Compute/Compute.cpp
     Samples/Graphics/Graphics.cpp
     Samples/Raytracing/Raytracing.cpp
+    Samples/MultipleGPUs/MultipleGPUs.cpp
 )
 
 if(TARGET Vulkan::Vulkan)
@@ -75,7 +76,6 @@ else()
                     "${SPV_OUTPUT_DIR}/Shaders/${S_OUTPUT}"
                     "${CMAKE_BINARY_DIR}/Shaders/${S_OUTPUT}"
             DEPENDS "${CMAKE_SOURCE_DIR}/${S_SOURCE}"
-                    "${SHADER_INCLUDE_DIR}/NoGraphicsAPI.h"
                     ${S_EXTRA_DEPENDS}
             COMMENT "Compiling ${SPV_NAME}"
             VERBATIM)
