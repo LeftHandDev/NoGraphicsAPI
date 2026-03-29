@@ -36,35 +36,38 @@ void main(uint3 threadId: SV_DispatchThreadID, Data* data)
 
 int main()
 {
-    if (gpuCreateDevice() != RESULT_OK)
+    gpuCreateInstance();
+
+    auto device = gpuCreateDevice(0);
+    if (!device)
         return -1; // Required features not available
 
-    auto queue = gpuCreateQueue();
-    auto semaphore = gpuCreateSemaphore(0);
+    auto queue = gpuCreateQueue(device);
+    auto semaphore = gpuCreateSemaphore(device, 0);
 
     auto computeIR = loadIR("Compute.spv");
-    auto pipeline = gpuCreateComputePipeline(ByteSpan(computeIR.data(), computeIR.size()));
+    auto pipeline = gpuCreateComputePipeline(device, ByteSpan(computeIR.data(), computeIR.size()));
 
-    float* input = gpuMalloc<float>(16);
-    float* output = gpuMalloc<float>(16);
+    float* input = gpuMalloc<float>(device, 16);
+    float* output = gpuMalloc<float>(device, 16);
 
     for (int i = 0; i < 16; i++)
         input[i] = static_cast<float>(i);
 
-    auto data = gpuMalloc<Data>();
+    auto data = gpuMalloc<Data>(device);
 
     data->multiplier = 2.f;
-    data->input = gpuHostToDevicePointer(input);
-    data->output = gpuHostToDevicePointer(output);
+    data->input = gpuHostToDevicePointer(device, input);
+    data->output = gpuHostToDevicePointer(device, output);
 
-    float* readback = gpuMalloc<float>(16, MEMORY_READBACK);
+    float* readback = gpuMalloc<float>(device, 16, MEMORY_READBACK);
 
     // GPU work
     auto commandBuffer = gpuStartCommandRecording(queue);
     gpuSetPipeline(commandBuffer, pipeline);
-    gpuDispatch(commandBuffer, gpuHostToDevicePointer(data), {1, 1, 1});
+    gpuDispatch(commandBuffer, gpuHostToDevicePointer(device, data), {1, 1, 1});
     gpuBarrier(commandBuffer, STAGE_COMPUTE, STAGE_TRANSFER);
-    gpuMemCpy(commandBuffer, gpuHostToDevicePointer(readback), data->output, sizeof(float) * 16);
+    gpuMemCpy(commandBuffer, gpuHostToDevicePointer(device, readback), data->output, sizeof(float) * 16);
     gpuSubmit(queue, Span<GpuCommandBuffer>(&commandBuffer, 1), semaphore, 1);
     gpuWaitSemaphore(semaphore, 1);
 
@@ -74,12 +77,14 @@ int main()
     // Should output: 0 2 4 6 8 10 12 14 16 18 20 22 24 26 28 30
 
     // Cleanup
-    gpuFree(data);
-    gpuFree(input);
-    gpuFree(output);
-    gpuFree(readback);
+    gpuFree(device, data);
+    gpuFree(device, input);
+    gpuFree(device, output);
+    gpuFree(device, readback);
     gpuDestroySemaphore(semaphore);
-    gpuDestroyDevice();
+    gpuDestroyQueue(queue);
+    gpuDestroyDevice(device);
+    gpuDestroyInstance();
 }
 ```
 
@@ -97,12 +102,15 @@ Include `SDL_gpu.h` to create a window and surface similar to when using Vulkan.
 
 int main()
 {
-    if (gpuCreateDevice() != RESULT_OK)
+    gpuCreateInstance();
+
+    auto device = gpuCreateDevice(0);
+    if (!device)
         return -1;
 
     auto window = SDL_CreateWindow("Example", 1920, 1080, SDL_WINDOW_GPU);
     auto surface = SDL_Gpu_CreateSurface(window);
-    auto swapchain = gpuCreateSwapchain(surface, FRAMES_IN_FLIGHT);
+    auto swapchain = gpuCreateSwapchain(device, surface, FRAMES_IN_FLIGHT);
 
     // Queue, semaphore creation...
 
@@ -130,7 +138,8 @@ int main()
     gpuDestroySwapchain(swapchain);
     SDL_Gpu_DestroySurface(surface);
     SDL_DestroyWindow(window);
-    gpuDestroyDevice();
+    gpuDestroyDevice(device);
+    gpuDestroyInstance();
 }
 ```
 ## Graphics Pipeline Shaders
