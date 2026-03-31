@@ -14,37 +14,22 @@ struct Allocation
 {
     T* cpu;
     T* gpu;
-    GpuDevice device;
 
-    void free()
+    void free(GpuDevice device)
     {
         gpuFree(device, cpu);
     }
 };
 
-template<typename T>
-Allocation<T> allocate(GpuDevice device, int count = 1, MEMORY type = MEMORY_DEFAULT)
-{
-    auto addr = gpuMalloc(device, sizeof(T) * count, type);
-    return { 
-        .cpu = static_cast<T*>(addr), 
-        .gpu = static_cast<T*>(gpuHostToDevicePointer(device, addr)),
-        .device = device
-    };
-}
-
+template<MEMORY memory = MEMORY_DEFAULT>
 class LinearAllocator
 {
 public:
 
-    LinearAllocator(GpuDevice gpuDevice, size_t size, MEMORY memory = MEMORY_DEFAULT)
-        : device(gpuDevice)
+    LinearAllocator(GpuDevice gpuDevice, size_t pageSize = 65536)
+        : device(gpuDevice), pageSize(pageSize)
     {
-        basePtr = gpuMalloc(device, size, memory);
-        baseGpuPtr = gpuHostToDevicePointer(device, basePtr);
-        currentPtr = basePtr;
-        totalSize = size;
-        usedSize = 0;
+        allocatePage(pageSize);
     }
 
     ~LinearAllocator()
@@ -52,57 +37,207 @@ public:
         free();
     }
 
-    template<typename T>
-    Allocation<T> allocate(size_t size = 1, size_t align = GPU_DEFAULT_ALIGNMENT)
+    void* allocate(size_t size, size_t align = GPU_DEFAULT_ALIGNMENT)
     {
-        size_t padding = 0;
-        size_t alignedAddress = (reinterpret_cast<size_t>(currentPtr) + (align - 1)) & ~(align - 1);
-        padding = alignedAddress - reinterpret_cast<size_t>(currentPtr);
-
-        if (usedSize + padding + size > totalSize)
-        {
-            return {}; // Out of memory
-        }
-
-        currentPtr = reinterpret_cast<void*>(alignedAddress);
-        void* allocatedPtr = currentPtr;
-        currentPtr = static_cast<uint8_t*>(currentPtr) + size * sizeof(T);
-        usedSize += padding + size * sizeof(T);
-
-        return { 
-            .cpu = static_cast<T*>(allocatedPtr), 
-            .gpu = reinterpret_cast<T*>(static_cast<char*>(baseGpuPtr) + (usedSize - size * sizeof(T)))
-        };
+        return allocate<uint8_t>(size, align).cpu;
     }
 
-    void reset()
+    template<typename T>
+    Allocation<T> allocate(size_t count = 1, size_t align = GPU_DEFAULT_ALIGNMENT)
     {
-        currentPtr = basePtr;
-        usedSize = 0;
+        size_t totalBytes = count * sizeof(T);
+
+        if (totalBytes > pageSize)
+        {
+            return allocateLarge<T>(totalBytes, align);
+        }
+
+        Page& current = pages.back();
+        size_t alignedOffset = (current.used + (align - 1)) & ~(align - 1);
+
+        if (alignedOffset + totalBytes > current.size)
+        {
+            allocatePage(pageSize);
+            alignedOffset = 0;
+        }
+
+        Page& page = pages.back();
+        page.used = alignedOffset + totalBytes;
+
+        if (isGpuOnly())
+        {
+            return {
+                .cpu = nullptr,
+                .gpu = reinterpret_cast<T*>(static_cast<uint8_t*>(page.basePtr) + alignedOffset)
+            };
+        }
+
+        return {
+            .cpu = reinterpret_cast<T*>(static_cast<uint8_t*>(page.basePtr) + alignedOffset),
+            .gpu = reinterpret_cast<T*>(static_cast<uint8_t*>(page.baseGpuPtr) + alignedOffset)
+        };
     }
 
     void free()
     {
-        if (basePtr == nullptr)
+        for (auto& page : pages)
         {
-            return;
+            gpuFree(device, page.basePtr);
+        }
+        pages.clear();
+
+        for (auto& page : largePages)
+        {
+            gpuFree(device, page.basePtr);
+        }
+        largePages.clear();
+    }
+
+private:
+
+    struct Page
+    {
+        void*  basePtr;
+        void*  baseGpuPtr;
+        size_t size;
+        size_t used;
+    };
+
+    void allocatePage(size_t size)
+    {
+        void* ptr = gpuMalloc(device, size, memory);
+        void* gpuPtr = isGpuOnly() ? nullptr : gpuHostToDevicePointer(device, ptr);
+        pages.push_back({ ptr, gpuPtr, size, 0 });
+    }
+
+    template<typename T>
+    Allocation<T> allocateLarge(size_t totalBytes, size_t align)
+    {
+        size_t allocSize = totalBytes + align;
+        void* ptr = gpuMalloc(device, allocSize, memory);
+
+        size_t alignedOffset = (reinterpret_cast<size_t>(ptr) + (align - 1)) & ~(align - 1);
+        alignedOffset -= reinterpret_cast<size_t>(ptr);
+
+        if (isGpuOnly())
+        {
+            largePages.push_back({ ptr, nullptr, allocSize, alignedOffset + totalBytes });
+
+            return {
+                .cpu = nullptr,
+                .gpu = reinterpret_cast<T*>(static_cast<uint8_t*>(ptr) + alignedOffset)
+            };
         }
 
+        void* gpuBasePtr = gpuHostToDevicePointer(device, ptr);
+        largePages.push_back({ ptr, gpuBasePtr, allocSize, alignedOffset + totalBytes });
+
+        return {
+            .cpu = reinterpret_cast<T*>(static_cast<uint8_t*>(ptr) + alignedOffset),
+            .gpu = reinterpret_cast<T*>(static_cast<uint8_t*>(gpuBasePtr) + alignedOffset)
+        };
+    }
+
+    bool isGpuOnly() const { return memory == MEMORY_GPU; }
+
+    GpuDevice device;
+    size_t pageSize;
+    std::vector<Page> pages;
+    std::vector<Page> largePages;
+};
+
+class RingBuffer
+{
+public:
+
+    RingBuffer(GpuDevice gpuDevice, size_t size, MEMORY memory = MEMORY_DEFAULT)
+        : device(gpuDevice), totalSize(size), memory(memory)
+    {
+        basePtr = gpuMalloc(device, size, memory);
+        if (memory == MEMORY_GPU)
+        {
+            baseGpuPtr = nullptr;
+        }
+        else
+        {
+            baseGpuPtr = gpuHostToDevicePointer(device, basePtr);
+        }
+    }
+
+    ~RingBuffer()
+    {
+        free();
+    }
+
+    template<typename T>
+    Allocation<T> allocate(size_t count = 1, size_t align = GPU_DEFAULT_ALIGNMENT)
+    {
+        size_t totalBytes = count * sizeof(T);
+        size_t alignedHead = (head + (align - 1)) & ~(align - 1);
+
+        if (alignedHead + totalBytes > totalSize)
+        {
+            alignedHead = 0;
+        }
+
+        size_t newHead = alignedHead + totalBytes;
+        size_t usedAfter = newHead > tail
+            ? newHead - tail
+            : (totalSize - tail) + newHead;
+
+        if (usedAfter > totalSize)
+        {
+            return {};
+        }
+
+        head = newHead;
+
+        if (memory == MEMORY_GPU)
+        {
+            return {
+                .cpu = nullptr,
+                .gpu = reinterpret_cast<T*>(static_cast<uint8_t*>(basePtr) + alignedHead)
+            };
+        }
+
+        return {
+            .cpu = reinterpret_cast<T*>(static_cast<uint8_t*>(basePtr) + alignedHead),
+            .gpu = reinterpret_cast<T*>(static_cast<uint8_t*>(baseGpuPtr) + alignedHead)
+        };
+    }
+
+    void finishFrame()
+    {
+        frameMarkers.push_back(head);
+    }
+
+    void releaseFrame()
+    {
+        if (frameMarkers.empty()) return;
+        tail = frameMarkers.front();
+        frameMarkers.erase(frameMarkers.begin());
+    }
+
+    void free()
+    {
+        if (basePtr == nullptr) return;
         gpuFree(device, basePtr);
         basePtr = nullptr;
         baseGpuPtr = nullptr;
-        currentPtr = nullptr;
-        totalSize = 0;
-        usedSize = 0;
+        head = 0;
+        tail = 0;
+        frameMarkers.clear();
     }
 
 private:
     GpuDevice device;
     void* basePtr = nullptr;
     void* baseGpuPtr = nullptr;
-    void* currentPtr = nullptr;
     size_t totalSize = 0;
-    size_t usedSize = 0;
+    size_t head = 0;
+    size_t tail = 0;
+    MEMORY memory;
+    std::vector<size_t> frameMarkers;
 };
 
 class TextRenderer
@@ -115,6 +250,9 @@ public:
 
 private:
 
+    LinearAllocator<MEMORY_DEFAULT>* allocator = nullptr;
+
+    GpuDevice device;
     GpuPipeline pipeline;
     
     Allocation<GpuTextureDescriptor> textureHeap;
@@ -123,7 +261,6 @@ private:
     Allocation<uint32_t> indexData;
     Allocation<uint8_t> textData;
     uint offset = 0;
-    GpuDevice device;
 
     const GpuTextureDesc targetDesc;
 
@@ -135,12 +272,6 @@ private:
 
     const uint maxTextLength = 1024;
 };
-
-template<typename T>
-T* gpuMalloc(GpuDevice device, int count = 1, MEMORY type = MEMORY_DEFAULT)
-{
-    return static_cast<T*>(::gpuMalloc(device, sizeof(T) * count, type));
-}
 
 std::vector<uint8_t> loadIR(const std::filesystem::path& path);
 

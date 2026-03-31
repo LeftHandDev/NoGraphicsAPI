@@ -18,6 +18,8 @@ void computeSample()
     auto surface = SDL_Gpu_CreateSurface(window);
     bool exit = false;
 
+    LinearAllocator allocator(device);
+
     auto swapchain = gpuCreateSwapchain(device, surface, FRAMES_IN_FLIGHT);
     auto swapchainDesc = gpuSwapchainDesc(swapchain);
 
@@ -27,13 +29,13 @@ void computeSample()
     auto computeIR = loadIR("../Shaders/Compute/Compute.spv");
     auto pipeline = gpuCreateComputePipeline(device, ByteSpan(computeIR.data(), computeIR.size()));
 
-    auto textureHeap = gpuMalloc<GpuTextureDescriptor>(device, 1024);
+    auto textureHeap = allocator.allocate<GpuTextureDescriptor>(1024);
     
     // Load input image
     int width, height, channels;
     stbi_uc* inputImage = stbi_load("Assets/Default.png", &width, &height, &channels, 4);
 
-    auto upload = allocate<uint8_t>(device, width * height * 4);
+    auto upload = allocator.allocate<uint8_t>(width * height * 4);
     memcpy(upload.cpu, inputImage, width * height * 4);
 
     GpuTextureDesc textureDesc{
@@ -57,15 +59,15 @@ void computeSample()
     void* outputPtr = gpuMalloc(device, textureSizeAlign.size, MEMORY_GPU);
     auto outputTexture = gpuCreateTexture(device, outputTextureDes, outputPtr);
 
-    textureHeap[0] = gpuTextureViewDescriptor(texture, GpuViewDesc{.format = FORMAT_RGBA8_UNORM });
-    textureHeap[1] = gpuRWTextureViewDescriptor(outputTexture, GpuViewDesc{ .format = FORMAT_RGBA8_UNORM });
+    textureHeap.cpu[0] = gpuTextureViewDescriptor(texture, GpuViewDesc{.format = FORMAT_RGBA8_UNORM });
+    textureHeap.cpu[1] = gpuRWTextureViewDescriptor(outputTexture, GpuViewDesc{ .format = FORMAT_RGBA8_UNORM });
 
     auto commandBuffer = gpuStartCommandRecording(queue);
     gpuCopyToTexture(commandBuffer, upload.gpu, texture);
     gpuSubmit(queue, Span<GpuCommandBuffer>(&commandBuffer, 1), semaphore, 1);
     gpuWaitSemaphore(semaphore, 1);
 
-    auto data = allocate<ComputeData>(device);
+    auto data = allocator.allocate<ComputeData>(1);
 
     data.cpu->imageSize = { static_cast<uint32_t>(width), static_cast<uint32_t>(height) };
     data.cpu->srcTexture = 0;
@@ -73,7 +75,7 @@ void computeSample()
 
     commandBuffer = gpuStartCommandRecording(queue);
     gpuSetPipeline(commandBuffer, pipeline);
-    gpuSetActiveTextureHeapPtr(commandBuffer, gpuHostToDevicePointer(device, textureHeap));
+    gpuSetActiveTextureHeapPtr(commandBuffer, textureHeap.gpu);
     gpuDispatch(commandBuffer, data.gpu, { 
             static_cast<uint32_t>(width / 16), 
             static_cast<uint32_t>(height / 16), 
@@ -116,15 +118,15 @@ void computeSample()
     gpuWaitSemaphore(semaphore, nextFrame - 1);
 
     stbi_image_free(inputImage);
-    gpuFree(device, textureHeap);
+
+    allocator.free();
+
     gpuDestroySemaphore(semaphore);
     gpuDestroyTexture(texture);
     gpuDestroyTexture(outputTexture);
     gpuFreePipeline(pipeline);
     gpuFree(device, texturePtr);
     gpuFree(device, outputPtr);
-    upload.free();
-    data.free();
     gpuDestroyQueue(queue);
     gpuDestroyDevice(device);
     gpuDestroyInstance();

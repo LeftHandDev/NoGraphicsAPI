@@ -46,10 +46,12 @@ void raytracingSample()
     auto surface = SDL_Gpu_CreateSurface(window);
     bool exit = false;
 
+    LinearAllocator allocator(device);
+
     int width, height, channels;
     stbi_uc *inputImage = stbi_load("Assets/Default.png", &width, &height, &channels, 4);
 
-    auto upload = allocate<uint8_t>(device, width * height * 4);
+    auto upload = allocator.allocate<uint8_t>(width * height * 4);
     memcpy(upload.cpu, inputImage, width * height * 4);
 
     auto swapchain = gpuCreateSwapchain(device, surface, FRAMES_IN_FLIGHT);
@@ -118,7 +120,7 @@ void raytracingSample()
         INDEX_MOTION_VECTORS = 4,
     };
 
-    auto textureHeap = allocate<GpuTextureDescriptor>(device, 1024);
+    auto textureHeap = allocator.allocate<GpuTextureDescriptor>(1024);
     textureHeap.cpu[INDEX_CUBE] = gpuTextureViewDescriptor(texture, GpuViewDesc{.format = FORMAT_RGBA8_UNORM});
     textureHeap.cpu[INDEX_CURRENT_FRAME] = gpuRWTextureViewDescriptor(outputTexture, GpuViewDesc{.format = FORMAT_RGBA32_FLOAT});
     textureHeap.cpu[INDEX_ALBEDO] = gpuRWTextureViewDescriptor(albedoTexture, GpuViewDesc{.format = FORMAT_RGBA32_FLOAT});
@@ -140,8 +142,6 @@ void raytracingSample()
     auto shadeIR = loadIR("../Shaders/Raytracing/Shade.spv");
     auto shadePipeline = gpuCreateComputePipeline(device, ByteSpan(shadeIR));
 
-    size_t allocatorSize = 2 * 1024 * 1024; // 2 MB
-    LinearAllocator allocator(device, allocatorSize);
     auto rtDataRingBufffer = allocator.allocate<RaytracingData>(FRAMES_IN_FLIGHT);
     RaytracingData raytracingData = {};
 
@@ -254,7 +254,7 @@ void raytracingSample()
     void *blasPtr = gpuMalloc(device, blasSize.size, MEMORY_GPU);
     auto blas = gpuCreateAccelerationStructure(device, blasASDesc, blasPtr, blasSize.size);
 
-    auto instances = gpuMalloc<GpuAccelerationStructureInstanceDesc>(device, cubeCount);
+    auto instances = allocator.allocate<GpuAccelerationStructureInstanceDesc>(cubeCount);
     const float scale = 0.5f;
 
     {
@@ -270,15 +270,15 @@ void raytracingSample()
 
             glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(dis(gen), dis(gen), dis(gen))) * glm::toMat4(rotation) * glm::scale(glm::mat4(1.0f), glm::vec3(scale));
 
-            instances[i].transform = float3x4{
+            instances.cpu[i].transform = float3x4{
                 {model[0][0], model[1][0], model[2][0], model[3][0]},
                 {model[0][1], model[1][1], model[2][1], model[3][1]},
                 {model[0][2], model[1][2], model[2][2], model[3][2]}};
-            instances[i].instanceID = static_cast<uint32_t>(i);
-            instances[i].instanceMask = 0xFF;
-            instances[i].hitGroupIndex = 0;
-            instances[i].flags = 0;
-            instances[i].blasAddress = blasPtr;
+            instances.cpu[i].instanceID = static_cast<uint32_t>(i);
+            instances.cpu[i].instanceMask = 0xFF;
+            instances.cpu[i].hitGroupIndex = 0;
+            instances.cpu[i].flags = 0;
+            instances.cpu[i].blasAddress = blasPtr;
         }
     }
 
@@ -292,7 +292,7 @@ void raytracingSample()
         .type = TYPE_TOP_LEVEL,
         .tlasDesc = {
             .arrayOfPointers = false,
-            .instancesGpu = gpuHostToDevicePointer(device, instances)},
+            .instancesGpu = instances.gpu},
         .buildRanges = Span<GpuAccelerationStructureBuildRange>(&tlasBuildRange, 1)};
 
     auto tlasSize = gpuAccelerationStructureSizes(device, tlasDesc);
@@ -303,16 +303,16 @@ void raytracingSample()
     void *scratchPtr = gpuMalloc(device, scratchSize, MEMORY_GPU);
 
     // ReSTIR buffers
-    auto pixelSample = gpuMalloc<Sample>(device, swapchainDesc.dimensions.x * swapchainDesc.dimensions.y, MEMORY_GPU);
-    auto prevPixelSample = gpuMalloc<Sample>(device, swapchainDesc.dimensions.x * swapchainDesc.dimensions.y, MEMORY_GPU);
+    auto pixelSample = gpuMalloc(device, sizeof(Sample) * swapchainDesc.dimensions.x * swapchainDesc.dimensions.y, MEMORY_GPU);
+    auto prevPixelSample = gpuMalloc(device, sizeof(Sample) * swapchainDesc.dimensions.x * swapchainDesc.dimensions.y, MEMORY_GPU);
 
     raytracingData.camData = camDataAlloc.gpu;
     raytracingData.tlas = tlasPtr;
     raytracingData.instanceToMesh = instanceToMesh.gpu;
     raytracingData.meshes = meshData.gpu;
     raytracingData.lights = lightData.gpu;
-    raytracingData.pixelSample = pixelSample;
-    raytracingData.prevPixelSample = prevPixelSample;
+    raytracingData.pixelSample = reinterpret_cast<Sample*>(pixelSample);
+    raytracingData.prevPixelSample = reinterpret_cast<Sample*>(prevPixelSample);
     raytracingData.numLights = numLights;
     raytracingData.albedo = INDEX_ALBEDO;
     raytracingData.normals = INDEX_NORMALS;
@@ -505,13 +505,13 @@ void raytracingSample()
 
     delete textRenderer;
     stbi_image_free(inputImage);
-    upload.free();
+    
     allocator.free();
+
     gpuDestroyTexture(texture);
     gpuFree(device, texturePtr);
     gpuDestroyTexture(outputTexture);
     gpuFree(device, outputTexturePtr);
-    textureHeap.free();
     gpuFreePipeline(referencePipeline);
     gpuFreePipeline(risPipeline);
     gpuFreePipeline(reusePipeline);
@@ -520,7 +520,6 @@ void raytracingSample()
     gpuFree(device, blasPtr);
     gpuDestroyAccelerationStructure(tlas);
     gpuFree(device, tlasPtr);
-    gpuFree(device, instances);
     gpuFree(device, scratchPtr);
     gpuDestroySemaphore(semaphore);
     gpuDestroyQueue(queue);

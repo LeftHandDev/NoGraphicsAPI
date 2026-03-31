@@ -113,6 +113,8 @@ void getCube(std::vector<float3> &vertices, std::vector<float3> &normals, std::v
 TextRenderer::TextRenderer(GpuDevice gpuDevice, GpuTextureDesc textureDesc)
     : device(gpuDevice), targetDesc(textureDesc)
 {
+    allocator = new LinearAllocator(device);
+
     auto textIRVertex = loadIR("../Shaders/Common/TextVertex.spv");
     auto textIRPixel = loadIR("../Shaders/Common/TextPixel.spv");
 
@@ -128,10 +130,10 @@ TextRenderer::TextRenderer(GpuDevice gpuDevice, GpuTextureDesc textureDesc)
 
     std::vector<uint32_t> indices = { 0, 1, 2, 2, 3, 0 };
     
-    vertexData = allocate<TextVertexData>(device);
-    pixelData = allocate<TextPixelData>(device);
-    indexData = allocate<uint32_t>(device, 6);
-    textData = allocate<uint8_t>(device, maxTextLength);
+    vertexData = allocator->allocate<TextVertexData>();
+    pixelData = allocator->allocate<TextPixelData>();
+    indexData = allocator->allocate<uint32_t>(6);
+    textData = allocator->allocate<uint8_t>(maxTextLength);
 
     memcpy(indexData.cpu, indices.data(), sizeof(uint32_t) * 6);
 
@@ -139,7 +141,7 @@ TextRenderer::TextRenderer(GpuDevice gpuDevice, GpuTextureDesc textureDesc)
     stbi_uc* atlasData = stbi_load("./Assets/Atlas.png", &atlasWidth, &atlasHeight, &atlasChannels, 4);
     if (atlasData)
     {
-        auto atlasUpload = allocate<uint8_t>(device, atlasWidth * atlasHeight * 4);
+        auto atlasUpload = allocator->allocate<uint8_t>(atlasWidth * atlasHeight * 4);
         memcpy(atlasUpload.cpu, atlasData, atlasWidth * atlasHeight * 4);
 
         GpuTextureDesc atlasDesc{
@@ -162,10 +164,9 @@ TextRenderer::TextRenderer(GpuDevice gpuDevice, GpuTextureDesc textureDesc)
         gpuWaitSemaphore(semaphore, 1);
 
         gpuDestroySemaphore(semaphore);
-        atlasUpload.free();
         stbi_image_free(atlasData);
 
-        textureHeap = allocate<GpuTextureDescriptor>(device, 1024);
+        textureHeap = allocator->allocate<GpuTextureDescriptor>(1024);
         textureHeap.cpu[0] = gpuTextureViewDescriptor(atlas, GpuViewDesc{.format = FORMAT_RGBA8_UNORM});
     }
 }
@@ -175,11 +176,8 @@ TextRenderer::~TextRenderer()
     gpuFreePipeline(pipeline);
     gpuDestroyTexture(atlas);
     gpuFree(device, atlasPtr);
-    textureHeap.free();
-    vertexData.free();
-    pixelData.free();
-    indexData.free();
-    textData.free();
+    allocator->free();
+    delete allocator;
 }
 
 void TextRenderer::renderText(GpuCommandBuffer cmd, GpuTexture target, const std::string &text, float x, float y, float scale, float3 color)

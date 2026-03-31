@@ -53,10 +53,12 @@ void graphicsSample()
     auto surface = SDL_Gpu_CreateSurface(window);
     bool exit = false;
 
+    LinearAllocator allocator(device);
+
     int width, height, channels;
     stbi_uc* inputImage = stbi_load("Assets/Default.png", &width, &height, &channels, 4);
 
-    auto upload = allocate<uint8_t>(device, width * height * 4);
+    auto upload = allocator.allocate<uint8_t>(width * height * 4);
     memcpy(upload.cpu, inputImage, width * height * 4);
 
     // Cube texture
@@ -145,7 +147,7 @@ void graphicsSample()
     };
 
     // Texture Heap
-    auto textureHeap = allocate<GpuTextureDescriptor>(device, 1024);
+    auto textureHeap = allocator.allocate<GpuTextureDescriptor>(1024);
     textureHeap.cpu[HeapIndices::INDEX_CUBE] = gpuTextureViewDescriptor(texture, GpuViewDesc{.format = textureDesc.format });
     textureHeap.cpu[HeapIndices::INDEX_CURRENT_FRAME] = gpuTextureViewDescriptor(rasterOutputGpu, GpuViewDesc{ .format = rasterOutputDesc.format });
     textureHeap.cpu[HeapIndices::INDEX_HISTORY] = gpuTextureViewDescriptor(historyTextureGpu, GpuViewDesc{ .format = historyTexture.format });
@@ -190,19 +192,19 @@ void graphicsSample()
     std::vector<uint32_t> cubeIndices;
     getCube(cubeVertices, cubeNormals, cubeUVs, cubeIndices);
 
-    auto vertices = allocate<float3>(device, cubeVertices.size());
+    auto vertices = allocator.allocate<float3>(cubeVertices.size());
     memcpy(vertices.cpu, cubeVertices.data(), sizeof(float3) * cubeVertices.size());
 
-    auto uvs = allocate<float2>(device, cubeUVs.size());
+    auto uvs = allocator.allocate<float2>(cubeUVs.size());
     memcpy(uvs.cpu, cubeUVs.data(), sizeof(float2) * cubeUVs.size());
 
-    auto indices = allocate<uint32_t>(device, cubeIndices.size());
+    auto indices = allocator.allocate<uint32_t>(cubeIndices.size());
     memcpy(indices.cpu, cubeIndices.data(), sizeof(uint32_t) * cubeIndices.size());
 
-    auto instances = allocate<Instance>(device, 2);
+    auto instances = allocator.allocate<Instance>(2);
 
-    auto vertexData = allocate<VertexData>(device);
-    auto pixelData = allocate<PixelData>(device);
+    auto vertexData = allocator.allocate<VertexData>(1);
+    auto pixelData = allocator.allocate<PixelData>(1);
     vertexData.cpu->vertices = vertices.gpu;
     vertexData.cpu->uvs = uvs.gpu;
     vertexData.cpu->instances = instances.gpu;
@@ -224,7 +226,7 @@ void graphicsSample()
     memcpy(&instances.cpu[1].prevModel, &instance1, sizeof(float4x4));
 
     // TAA data
-    auto taaData = allocate<TAAData>(device);
+    auto taaData = allocator.allocate<TAAData>(1);
     taaData.cpu->width = swapchainDesc.dimensions.x;
     taaData.cpu->height = swapchainDesc.dimensions.y;
     taaData.cpu->frame = 0;
@@ -355,8 +357,9 @@ void graphicsSample()
 
     gpuWaitSemaphore(semaphore, nextFrame - 1);
 
+    allocator.free();
+
     stbi_image_free(inputImage);
-    upload.free();
     gpuDestroyTexture(texture);
     gpuFree(device, texturePtr);
     gpuDestroyTexture(depthTexture);
@@ -369,17 +372,9 @@ void graphicsSample()
     gpuFree(device, taaOutputPtr);
     gpuDestroyTexture(motionVectorsTextureGpu);
     gpuFree(device, motionVectorsTexturePtr);
-    textureHeap.free();
     gpuFreePipeline(pipeline);
     gpuFreePipeline(taaPipeline);
     gpuFreeDepthStencilState(depthState);
-    vertices.free();
-    uvs.free();
-    indices.free();
-    instances.free();
-    vertexData.free();
-    pixelData.free();
-    taaData.free();
     gpuDestroySemaphore(semaphore);
     gpuDestroyQueue(queue);
     gpuDestroySwapchain(swapchain);
