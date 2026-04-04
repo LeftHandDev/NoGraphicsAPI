@@ -27,7 +27,5 @@ void main(uint3 threadId: SV_DispatchThreadID, ComputeData* data)
         }
     }
     
-    float2 uv = (float2(pixelCoord.x, pixelCoord.y) + 0.5) / float2(imgSize.x, imgSize.y);
-
     dstTexture[pixelCoord] = color / pow(kernelRadius * 2 + 1, 2);
 }
