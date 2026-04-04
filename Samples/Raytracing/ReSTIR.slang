@@ -118,6 +118,7 @@ void RIS(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
 
         s.x = y;
         s.w = w;
+        s.c = data->M;
 
         data->pixelSample[q] = s;
     }
@@ -184,6 +185,7 @@ void Reuse(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
         Sample neighbors[k];
 
         float m = 1.0 / k;
+        float c = 0;
 
         for (int i = 0; i < k - 1; ++i)
         {
@@ -201,12 +203,14 @@ void Reuse(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
 
         float w = m * p(cur.x, albedo, normal, data->lights) * cur.w;
         r.addSample(cur.x, w, seed);
+        c += cur.c;
 
         for (int i = 0; i < k - 1; ++i)
         {
             Sample s = neighbors[i];
             float w = m * p(s.x, albedo, normal, data->lights) * s.w;
             r.addSample(s.x, w, seed);
+            c += s.c;
         }
 
         Sample y;
@@ -217,6 +221,7 @@ void Reuse(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
         if (p_hat > 0.0)
         {
             y.w = r.w / p_hat;
+            y.c = c;
             cur = y;
         }
     }
@@ -227,11 +232,11 @@ void Reuse(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
         Sample prev = data->prevPixelSample[Q];
 
         Reservoir r = {};
-        float m = 1.0 / 2.0;
+        float m = 1.0 / (cur.c + prev.c);
         float w;
 
-        float pCur = p(cur.x, albedo, normal, data->lights);
-        float pPrev = p(prev.x, albedo, normal, data->lights);
+        float pCur = cur.c * p(cur.x, albedo, normal, data->lights);
+        float pPrev = prev.c * p(prev.x, albedo, normal, data->lights);
 
         w = m * pCur * cur.w;
         r.addSample(cur.x, w, seed);
@@ -247,6 +252,7 @@ void Reuse(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
         if (p_hat > 0.0)
         {
             y.w = r.w / p_hat;
+            y.c = min(prev.c + cur.c, 20);
             cur = y;
         }
     }

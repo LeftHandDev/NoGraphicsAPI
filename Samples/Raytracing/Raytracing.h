@@ -49,14 +49,15 @@ struct alignas(16) Sample
 {
     Path x;
     float w;
-    int padding[3];
+    float c;
+    int padding[2];
 };
 
 struct alignas(16) Reservoir
 {
     Path sampleOut;
     float w;
-    int padding[3];
+    int padding[2];
 
 #ifndef __cplusplus
     [mutating] void addSample(Path x, float W, inout uint state)
