@@ -84,7 +84,7 @@ void raytracingSample()
     GpuTextureDesc albedoTextureDesc{
         .type = TEXTURE_2D,
         .dimensions = {static_cast<uint32_t>(swapchainDesc.dimensions.x), static_cast<uint32_t>(swapchainDesc.dimensions.y), 1},
-        .format = FORMAT_RGBA32_FLOAT,
+        .format = FORMAT_RGBA16_FLOAT,
         .usage = static_cast<USAGE_FLAGS>(USAGE_STORAGE | USAGE_SAMPLED)};
 
     GpuTextureSizeAlign albedoTextureSizeAlign = gpuTextureSizeAlign(device, albedoTextureDesc);
@@ -95,7 +95,7 @@ void raytracingSample()
      GpuTextureDesc normalsTextureDesc{
         .type = TEXTURE_2D,
         .dimensions = {static_cast<uint32_t>(swapchainDesc.dimensions.x), static_cast<uint32_t>(swapchainDesc.dimensions.y), 1},
-        .format = FORMAT_RGBA32_FLOAT,
+        .format = FORMAT_RGBA16_FLOAT,
         .usage = static_cast<USAGE_FLAGS>(USAGE_STORAGE | USAGE_SAMPLED)};
 
     GpuTextureSizeAlign normalsTextureSizeAlign = gpuTextureSizeAlign(device, normalsTextureDesc);
@@ -106,7 +106,7 @@ void raytracingSample()
     GpuTextureDesc motionVectorsTextureDesc{
         .type = TEXTURE_2D,
         .dimensions = {static_cast<uint32_t>(swapchainDesc.dimensions.x), static_cast<uint32_t>(swapchainDesc.dimensions.y), 1},
-        .format = FORMAT_RGBA32_FLOAT,
+        .format = FORMAT_RGBA16_FLOAT,
         .usage = static_cast<USAGE_FLAGS>(USAGE_STORAGE | USAGE_SAMPLED)};
 
     GpuTextureSizeAlign motionVectorsTextureSizeAlign = gpuTextureSizeAlign(device, motionVectorsTextureDesc);
@@ -117,7 +117,7 @@ void raytracingSample()
     GpuTextureDesc historyTextureDesc{
         .type = TEXTURE_2D,
         .dimensions = {static_cast<uint32_t>(swapchainDesc.dimensions.x), static_cast<uint32_t>(swapchainDesc.dimensions.y), 1},
-        .format = FORMAT_RGBA32_FLOAT,
+        .format = FORMAT_RGBA16_FLOAT,
         .usage = static_cast<USAGE_FLAGS>(USAGE_SAMPLED | USAGE_TRANSFER_DST)};
 
     GpuTextureSizeAlign historyTextureSizeAlign = gpuTextureSizeAlign(device, historyTextureDesc);
@@ -128,7 +128,7 @@ void raytracingSample()
     GpuTextureDesc taaOutputTextureDesc{
         .type = TEXTURE_2D,
         .dimensions = {static_cast<uint32_t>(swapchainDesc.dimensions.x), static_cast<uint32_t>(swapchainDesc.dimensions.y), 1},
-        .format = FORMAT_RGBA32_FLOAT,
+        .format = FORMAT_RGBA16_FLOAT,
         .usage = static_cast<USAGE_FLAGS>(USAGE_STORAGE | USAGE_TRANSFER_SRC)};
 
     GpuTextureSizeAlign taaOutputTextureSizeAlign = gpuTextureSizeAlign(device, taaOutputTextureDesc);
@@ -151,13 +151,13 @@ void raytracingSample()
     auto textureHeap = allocator.allocate<GpuTextureDescriptor>(1024);
     textureHeap.cpu[INDEX_CUBE] = gpuTextureViewDescriptor(texture, GpuViewDesc{.format = FORMAT_RGBA8_UNORM});
     textureHeap.cpu[INDEX_CURRENT_FRAME] = gpuRWTextureViewDescriptor(outputTexture, GpuViewDesc{.format = FORMAT_RGBA32_FLOAT});
-    textureHeap.cpu[INDEX_ALBEDO] = gpuRWTextureViewDescriptor(albedoTexture, GpuViewDesc{.format = FORMAT_RGBA32_FLOAT});
-    textureHeap.cpu[INDEX_NORMALS] = gpuRWTextureViewDescriptor(normalsTexture, GpuViewDesc{.format = FORMAT_RGBA32_FLOAT});
-    textureHeap.cpu[INDEX_MOTION_VECTORS] = gpuRWTextureViewDescriptor(motionVectorsTexture, GpuViewDesc{.format = FORMAT_RGBA32_FLOAT});
-    textureHeap.cpu[INDEX_TAA_OUTPUT] = gpuRWTextureViewDescriptor(taaOutputTexture, GpuViewDesc{.format = FORMAT_RGBA32_FLOAT});
-    textureHeap.cpu[INDEX_HISTORY] = gpuTextureViewDescriptor(historyTexture, GpuViewDesc{.format = FORMAT_RGBA32_FLOAT});
+    textureHeap.cpu[INDEX_ALBEDO] = gpuRWTextureViewDescriptor(albedoTexture, GpuViewDesc{.format = FORMAT_RGBA16_FLOAT});
+    textureHeap.cpu[INDEX_NORMALS] = gpuRWTextureViewDescriptor(normalsTexture, GpuViewDesc{.format = FORMAT_RGBA16_FLOAT});
+    textureHeap.cpu[INDEX_MOTION_VECTORS] = gpuRWTextureViewDescriptor(motionVectorsTexture, GpuViewDesc{.format = FORMAT_RGBA16_FLOAT});
+    textureHeap.cpu[INDEX_TAA_OUTPUT] = gpuRWTextureViewDescriptor(taaOutputTexture, GpuViewDesc{.format = FORMAT_RGBA16_FLOAT});
+    textureHeap.cpu[INDEX_HISTORY] = gpuTextureViewDescriptor(historyTexture, GpuViewDesc{.format = FORMAT_RGBA16_FLOAT});
     textureHeap.cpu[INDEX_OUTPUT_SAMPLED] = gpuTextureViewDescriptor(outputTexture, GpuViewDesc{.format = FORMAT_RGBA32_FLOAT});
-    textureHeap.cpu[INDEX_MV_SAMPLED] = gpuTextureViewDescriptor(motionVectorsTexture, GpuViewDesc{.format = FORMAT_RGBA32_FLOAT});
+    textureHeap.cpu[INDEX_MV_SAMPLED] = gpuTextureViewDescriptor(motionVectorsTexture, GpuViewDesc{.format = FORMAT_RGBA16_FLOAT});
 
     ColorTarget colorTarget = {};
     colorTarget.format = swapchainDesc.format;
@@ -384,6 +384,9 @@ void raytracingSample()
     glm::vec3 velocity = glm::vec3(0.f);
     float velocityScale = 5.f;
     float delta = 0.016f; // ~60 FPS
+    float smoothedFps = 60.0f;
+    float fpsUpdateTimer = 0.0f;
+    std::string fpsString = "0";
     auto timestamp = std::chrono::high_resolution_clock::now();
 
     TextRenderer* textRenderer = new TextRenderer(device, outputTextureDesc);
@@ -541,11 +544,10 @@ void raytracingSample()
 
             if (taaOn)
             {
-                gpuBarrier(commandBuffer, STAGE_COMPUTE, STAGE_COMPUTE, HAZARD_DESCRIPTORS);
+                gpuBarrier(commandBuffer, STAGE_COMPUTE, STAGE_COMPUTE);
 
                 // TAA pass
                 gpuSetPipeline(commandBuffer, taaPipeline);
-                gpuSetActiveTextureHeapPtr(commandBuffer, textureHeap.gpu);
                 gpuDispatch(commandBuffer, taaData.gpu, {swapchainDesc.dimensions.x / 16, swapchainDesc.dimensions.y / 16, 1});
             }
         }
@@ -563,9 +565,17 @@ void raytracingSample()
         }
 
         // Render text to swapchain image
+        smoothedFps = glm::mix(smoothedFps, 1.0f / delta, 0.05f);
+        fpsUpdateTimer += delta;
+        if (fpsUpdateTimer >= 0.5f)
+        {
+            fpsString = std::to_string(static_cast<int>(smoothedFps));
+            fpsUpdateTimer = 0.0f;
+        }
         auto modeText = getModeText(reference, raytracingData.spatial, raytracingData.temporal, taaOn);
+        auto displayText = modeText + " | FPS: " + fpsString;
         textRenderer->renderText(commandBuffer, image,
-            modeText.c_str(), 10.0f, 10.0f, 1.0f, float3(1, 1, 1));
+            displayText.c_str(), 10.0f, 10.0f, 1.0f, float3(1, 1, 1));
 
         gpuSubmit(queue, Span<GpuCommandBuffer>(&commandBuffer, 1), semaphore, nextFrame);
         gpuPresent(swapchain, semaphore, nextFrame++);
