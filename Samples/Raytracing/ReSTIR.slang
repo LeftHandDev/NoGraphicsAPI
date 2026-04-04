@@ -192,12 +192,6 @@ void Reuse(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
             uint2 neighbor = randomPixelInNeighborhood(threadId.xy, k, imgSize, seed);
             uint Q = imgSize.x * neighbor.y + neighbor.x;
             Sample s = data->pixelSample[Q];
-            
-            // if (s.x.light != -1)
-            // {
-            //     sum += p(s.x, albedo, normal, data->lights);
-            // }
-
             neighbors[i] = s;
         }
 
@@ -252,7 +246,7 @@ void Reuse(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
         if (p_hat > 0.0)
         {
             y.w = r.w / p_hat;
-            y.c = min(prev.c + cur.c, 20);
+            y.c = min(prev.c + cur.c, 100);
             cur = y;
         }
     }
