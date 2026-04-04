@@ -573,7 +573,7 @@ void raytracingSample()
             fpsUpdateTimer = 0.0f;
         }
         auto modeText = getModeText(reference, raytracingData.spatial, raytracingData.temporal, taaOn);
-        auto displayText = modeText + " | FPS: " + fpsString;
+        auto displayText = modeText + " | FPS: " + fpsString + (raytracingData.accumulate ? " | Accumulated Frames: " + std::to_string(raytracingData.accumulatedFrames) : "");
         textRenderer->renderText(commandBuffer, image,
             displayText.c_str(), 10.0f, 10.0f, 1.0f, float3(1, 1, 1));
 
