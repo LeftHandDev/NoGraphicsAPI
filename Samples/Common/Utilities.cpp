@@ -110,6 +110,37 @@ void getCube(std::vector<float3> &vertices, std::vector<float3> &normals, std::v
     };
 }
 
+std::vector<glm::vec2> haltonSequence(uint length)
+{
+    std::vector<glm::vec2> sequence;
+    sequence.reserve(length);
+    for (uint i = 0; i < length; i++)
+    {
+        float x = 0.0f;
+        float f = 1.0f;
+        uint index = i + 1;
+        while (index > 0)
+        {
+            f /= 2.0f;
+            x += f * (index % 2);
+            index /= 2;
+        }
+
+        float y = 0.0f;
+        f = 1.0f;
+        index = i + 1;
+        while (index > 0)
+        {
+            f /= 3.0f;
+            y += f * (index % 3);
+            index /= 3;
+        }
+
+        sequence.push_back(glm::vec2(x, y));
+    }
+    return sequence;
+}
+
 TextRenderer::TextRenderer(GpuDevice gpuDevice, GpuTextureDesc textureDesc)
     : device(gpuDevice), targetDesc(textureDesc)
 {

@@ -70,9 +70,11 @@ void RIS(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
         uint seed = xxhash32(uint3(threadId.xy, data->frame));
         float3 hitT = rayQuery.WorldRayDirection() * rayQuery.CommittedRayT() + rayQuery.WorldRayOrigin();
 
+        float4 currentClip = mul(data->camData->viewProjection, float4(hitT, 1.0));
+        float2 currentNDC = currentClip.xy / currentClip.w;
         float4 prevClip = mul(data->camData->prevViewProjection, float4(hitT, 1.0));
-        float2 prevUV = prevClip.xy / prevClip.w * 0.5 + 0.5;
-        int2 prevPixel = int2(prevUV * float2(imgSize));
+        float2 prevNDC = prevClip.xy / prevClip.w;
+        float2 motionVector = currentNDC - prevNDC;
 
         RWTexture2D<float4> albedoTexture = rwTextureHeap[data->albedo];
         albedoTexture[threadId.xy] = float4(albedo, 1.0);
@@ -81,7 +83,7 @@ void RIS(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
         normalsTexture[threadId.xy] = float4(normal, 1.0);
 
         RWTexture2D<float4> motionVectorsTexture = rwTextureHeap[data->motionVectors];
-        motionVectorsTexture[threadId.xy] = float4(threadId.xy - prevPixel, 0.0, 0.0);
+        motionVectorsTexture[threadId.xy] = float4(motionVector, 0.0, 0.0);
 
         // RIS reservoir
         Reservoir r = {};
@@ -164,8 +166,10 @@ void Reuse(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
 
     float3 albedo = rwTextureHeap[data->albedo][threadId.xy].xyz;
     float3 normal = rwTextureHeap[data->normals][threadId.xy].xyz;
-    int2 motionVector = int4(rwTextureHeap[data->motionVectors][threadId.xy]).xy;
-    int2 prevThreadId = int2(threadId.xy) - motionVector;
+    float2 motionVectorNDC = rwTextureHeap[data->motionVectors][threadId.xy].xy;
+    float2 uv = (float2(threadId.xy) + 0.5) / float2(imgSize);
+    float2 prevUV = uv - motionVectorNDC * 0.5;
+    int2 prevThreadId = int2(prevUV * float2(imgSize));
     bool valid = prevThreadId.x >= 0 && prevThreadId.x < imgSize.x && prevThreadId.y >= 0 && prevThreadId.y < imgSize.y;
     uint q = imgSize.x * threadId.y + threadId.x;
     Sample cur = data->pixelSample[q];

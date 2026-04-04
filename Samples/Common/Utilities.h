@@ -7,6 +7,8 @@
 #include <string>
 #include <sstream>
 
+#include <glm/glm.hpp>
+
 #include "Text.h"
 
 template<typename T>
@@ -276,5 +278,7 @@ private:
 std::vector<uint8_t> loadIR(const std::filesystem::path& path);
 
 void getCube(std::vector<float3>& vertices, std::vector<float3>& normals, std::vector<float2>& uvs, std::vector<uint32_t>& indices);
+
+std::vector<glm::vec2> haltonSequence(uint length = 16);
 
 #endif // UTILITIES_H

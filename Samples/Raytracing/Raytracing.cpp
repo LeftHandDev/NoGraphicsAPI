@@ -15,8 +15,9 @@
 #include "Raytracing.h"
 #include "../Common/Utilities.h"
 #include "../Common/Text.h"
+#include "../Common/TAA.h"
 
-static std::string getModeText(bool reference, bool spatial, bool temporal)
+static std::string getModeText(bool reference, bool spatial, bool temporal, bool taa)
 {
     if (reference)
         return "Reference [R: RIS]";
@@ -24,6 +25,7 @@ static std::string getModeText(bool reference, bool spatial, bool temporal)
     std::string text = "RIS [R: Reference";
     text += spatial  ? " | S: Spatial On"  : " | S: Spatial Off";
     text += temporal ? " | T: Temporal On" : " | T: Temporal Off";
+    text += taa      ? " | X: TAA On"      : " | X: TAA Off";
     text += "]";
     return text;
 }
@@ -72,7 +74,7 @@ void raytracingSample()
         .type = TEXTURE_2D,
         .dimensions = {static_cast<uint32_t>(swapchainDesc.dimensions.x), static_cast<uint32_t>(swapchainDesc.dimensions.y), 1},
         .format = FORMAT_RGBA32_FLOAT,
-        .usage = static_cast<USAGE_FLAGS>(USAGE_STORAGE | USAGE_TRANSFER_SRC | USAGE_COLOR_ATTACHMENT)};
+        .usage = static_cast<USAGE_FLAGS>(USAGE_STORAGE | USAGE_TRANSFER_SRC | USAGE_COLOR_ATTACHMENT | USAGE_SAMPLED)};
 
     GpuTextureSizeAlign outputTextureSizeAlign = gpuTextureSizeAlign(device, outputTextureDesc);
     void *outputTexturePtr = gpuMalloc(device, outputTextureSizeAlign.size, MEMORY_GPU);
@@ -111,6 +113,28 @@ void raytracingSample()
     void *motionVectorsTexturePtr = gpuMalloc(device, motionVectorsTextureSizeAlign.size, MEMORY_GPU);
     auto motionVectorsTexture = gpuCreateTexture(device, motionVectorsTextureDesc, motionVectorsTexturePtr);
 
+    // TAA history texture
+    GpuTextureDesc historyTextureDesc{
+        .type = TEXTURE_2D,
+        .dimensions = {static_cast<uint32_t>(swapchainDesc.dimensions.x), static_cast<uint32_t>(swapchainDesc.dimensions.y), 1},
+        .format = FORMAT_RGBA32_FLOAT,
+        .usage = static_cast<USAGE_FLAGS>(USAGE_SAMPLED | USAGE_TRANSFER_DST)};
+
+    GpuTextureSizeAlign historyTextureSizeAlign = gpuTextureSizeAlign(device, historyTextureDesc);
+    void *historyTexturePtr = gpuMalloc(device, historyTextureSizeAlign.size, MEMORY_GPU);
+    auto historyTexture = gpuCreateTexture(device, historyTextureDesc, historyTexturePtr);
+
+    // TAA output texture
+    GpuTextureDesc taaOutputTextureDesc{
+        .type = TEXTURE_2D,
+        .dimensions = {static_cast<uint32_t>(swapchainDesc.dimensions.x), static_cast<uint32_t>(swapchainDesc.dimensions.y), 1},
+        .format = FORMAT_RGBA32_FLOAT,
+        .usage = static_cast<USAGE_FLAGS>(USAGE_STORAGE | USAGE_TRANSFER_SRC)};
+
+    GpuTextureSizeAlign taaOutputTextureSizeAlign = gpuTextureSizeAlign(device, taaOutputTextureDesc);
+    void *taaOutputTexturePtr = gpuMalloc(device, taaOutputTextureSizeAlign.size, MEMORY_GPU);
+    auto taaOutputTexture = gpuCreateTexture(device, taaOutputTextureDesc, taaOutputTexturePtr);
+
     enum HeapIndices
     {
         INDEX_CUBE = 0,
@@ -118,6 +142,10 @@ void raytracingSample()
         INDEX_ALBEDO = 2,
         INDEX_NORMALS = 3,
         INDEX_MOTION_VECTORS = 4,
+        INDEX_TAA_OUTPUT = 5,
+        INDEX_HISTORY = 6,
+        INDEX_OUTPUT_SAMPLED = 7,
+        INDEX_MV_SAMPLED = 8,
     };
 
     auto textureHeap = allocator.allocate<GpuTextureDescriptor>(1024);
@@ -126,6 +154,10 @@ void raytracingSample()
     textureHeap.cpu[INDEX_ALBEDO] = gpuRWTextureViewDescriptor(albedoTexture, GpuViewDesc{.format = FORMAT_RGBA32_FLOAT});
     textureHeap.cpu[INDEX_NORMALS] = gpuRWTextureViewDescriptor(normalsTexture, GpuViewDesc{.format = FORMAT_RGBA32_FLOAT});
     textureHeap.cpu[INDEX_MOTION_VECTORS] = gpuRWTextureViewDescriptor(motionVectorsTexture, GpuViewDesc{.format = FORMAT_RGBA32_FLOAT});
+    textureHeap.cpu[INDEX_TAA_OUTPUT] = gpuRWTextureViewDescriptor(taaOutputTexture, GpuViewDesc{.format = FORMAT_RGBA32_FLOAT});
+    textureHeap.cpu[INDEX_HISTORY] = gpuTextureViewDescriptor(historyTexture, GpuViewDesc{.format = FORMAT_RGBA32_FLOAT});
+    textureHeap.cpu[INDEX_OUTPUT_SAMPLED] = gpuTextureViewDescriptor(outputTexture, GpuViewDesc{.format = FORMAT_RGBA32_FLOAT});
+    textureHeap.cpu[INDEX_MV_SAMPLED] = gpuTextureViewDescriptor(motionVectorsTexture, GpuViewDesc{.format = FORMAT_RGBA32_FLOAT});
 
     ColorTarget colorTarget = {};
     colorTarget.format = swapchainDesc.format;
@@ -141,6 +173,19 @@ void raytracingSample()
 
     auto shadeIR = loadIR("../Shaders/Raytracing/Shade.spv");
     auto shadePipeline = gpuCreateComputePipeline(device, ByteSpan(shadeIR));
+
+    auto taaIR = loadIR("../Shaders/Common/TAA.spv");
+    auto taaPipeline = gpuCreateComputePipeline(device, ByteSpan(taaIR));
+
+    auto taaData = allocator.allocate<TAAData>();
+    taaData.cpu->width = swapchainDesc.dimensions.x;
+    taaData.cpu->height = swapchainDesc.dimensions.y;
+    taaData.cpu->frame = 0;
+    taaData.cpu->srcColor = INDEX_OUTPUT_SAMPLED;
+    taaData.cpu->srcHistory = INDEX_HISTORY;
+    taaData.cpu->srcDepth = 0;
+    taaData.cpu->srcMotionVectors = INDEX_MV_SAMPLED;
+    taaData.cpu->dstTexture = INDEX_TAA_OUTPUT;
 
     auto rtDataRingBufffer = allocator.allocate<RaytracingData>(FRAMES_IN_FLIGHT);
     RaytracingData raytracingData = {};
@@ -172,13 +217,21 @@ void raytracingSample()
     }
 
     auto camDataAlloc = allocator.allocate<CameraData>(FRAMES_IN_FLIGHT);
+    auto haltonSeq = haltonSequence();
 
-    auto setCamera = [&](size_t frameIndex) {
+    auto setCamera = [&](size_t frameIndex, float jitterX, float jitterY) {
         camDataAlloc.cpu[frameIndex].position = {cameraPos.x, cameraPos.y, cameraPos.z, 1};
         auto view = glm::lookAt(cameraPos, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
         auto projection = glm::perspective(glm::radians(60.0f), swapchainDesc.dimensions.x / static_cast<float>(swapchainDesc.dimensions.y), 0.1f, 100.0f);
-        auto invViewProjection = glm::inverse(projection * view);
+
+        auto projectionWithJitter = projection;
+        projectionWithJitter[2][0] += jitterX * 2.0f;
+        projectionWithJitter[2][1] += jitterY * 2.0f;
+        auto invViewProjection = glm::inverse(projectionWithJitter * view);
         memcpy(&camDataAlloc.cpu[frameIndex].invViewProjection, &invViewProjection, sizeof(float4x4));
+
+        auto viewProjectionNj = projection * view;
+        memcpy(&camDataAlloc.cpu[frameIndex].viewProjection, &viewProjectionNj, sizeof(float4x4));
 
         view = glm::lookAt(prevCameraPos, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
         auto viewProjection = projection * view;
@@ -189,7 +242,7 @@ void raytracingSample()
 
     for (size_t i = 0; i < FRAMES_IN_FLIGHT; ++i)
     {
-        setCamera(i);
+        setCamera(i, 0.0f, 0.0f);
     }
 
     std::vector<float3> vertices;
@@ -326,6 +379,7 @@ void raytracingSample()
     uint64_t nextFrame = 1;
 
     bool reference = true;
+    bool taaOn = false;
 
     glm::vec3 velocity = glm::vec3(0.f);
     float velocityScale = 5.f;
@@ -360,18 +414,26 @@ void raytracingSample()
                     raytracingData.spatial = raytracingData.spatial == 0 ? 1 : 0;
                     raytracingData.frame = 0;
                     raytracingData.accumulatedFrames = 0;
+                    taaData.cpu->frame = 0;
                 }
                 else if (event.key.key == SDLK_T)
                 {
                     raytracingData.temporal = raytracingData.temporal == 0 ? 1 : 0;
                     raytracingData.frame = 0;
                     raytracingData.accumulatedFrames = 0;
+                    taaData.cpu->frame = 0;
                 }
                 else if (event.key.key == SDLK_R)
                 {
                     reference = !reference;
                     raytracingData.frame = 0;
                     raytracingData.accumulatedFrames = 0;
+                    taaData.cpu->frame = 0;
+                }
+                else if (event.key.key == SDLK_X)
+                {
+                    taaOn = !taaOn;
+                    taaData.cpu->frame = 0;
                 }
                 else if (event.key.key == SDLK_LEFT)
                 {
@@ -416,7 +478,17 @@ void raytracingSample()
         auto offset = (nextFrame - 1) % FRAMES_IN_FLIGHT;
 
         cameraPos += velocity * delta;
-        setCamera(offset);
+
+        float jitterX = (haltonSeq[nextFrame % haltonSeq.size()].x - 0.5f) / swapchainDesc.dimensions.x;
+        float jitterY = (haltonSeq[nextFrame % haltonSeq.size()].y - 0.5f) / swapchainDesc.dimensions.y;
+        if (!taaOn || reference)
+        {
+            jitterX = 0.0f;
+            jitterY = 0.0f;
+        }
+        taaData.cpu->jitter = {jitterX, jitterY};
+
+        setCamera(offset, jitterX, jitterY);
         raytracingData.camData = camDataAlloc.gpu + offset;
         rtDataRingBufffer.cpu[offset] = raytracingData;
 
@@ -466,14 +538,32 @@ void raytracingSample()
 
             gpuSetPipeline(commandBuffer, shadePipeline);
             gpuDispatch(commandBuffer, rtDataRingBufffer.gpu + offset, {(uint32_t)swapchainDesc.dimensions.x / 8, (uint32_t)swapchainDesc.dimensions.y / 8, 1});
+
+            if (taaOn)
+            {
+                gpuBarrier(commandBuffer, STAGE_COMPUTE, STAGE_COMPUTE, HAZARD_DESCRIPTORS);
+
+                // TAA pass
+                gpuSetPipeline(commandBuffer, taaPipeline);
+                gpuSetActiveTextureHeapPtr(commandBuffer, textureHeap.gpu);
+                gpuDispatch(commandBuffer, taaData.gpu, {swapchainDesc.dimensions.x / 16, swapchainDesc.dimensions.y / 16, 1});
+            }
         }
         gpuBarrier(commandBuffer, STAGE_COMPUTE, STAGE_TRANSFER);
 
         // copy to swapchain image
-        gpuBlitTexture(commandBuffer, image, outputTexture);
+        if (!reference && taaOn)
+        {
+            gpuBlitTexture(commandBuffer, image, taaOutputTexture);
+            gpuBlitTexture(commandBuffer, historyTexture, taaOutputTexture);
+        }
+        else
+        {
+            gpuBlitTexture(commandBuffer, image, outputTexture);
+        }
 
         // Render text to swapchain image
-        auto modeText = getModeText(reference, raytracingData.spatial, raytracingData.temporal);
+        auto modeText = getModeText(reference, raytracingData.spatial, raytracingData.temporal, taaOn);
         textRenderer->renderText(commandBuffer, image,
             modeText.c_str(), 10.0f, 10.0f, 1.0f, float3(1, 1, 1));
 
@@ -495,6 +585,12 @@ void raytracingSample()
             raytracingData.accumulatedFrames = 0;
         }
 
+        // Update TAA frame counter
+        if (!reference && taaOn)
+            taaData.cpu->frame++;
+        else
+            taaData.cpu->frame = 0;
+
         // update delta time and timestamp
         auto now = std::chrono::high_resolution_clock::now();
         delta = std::chrono::duration<float>(now - timestamp).count();
@@ -512,10 +608,15 @@ void raytracingSample()
     gpuFree(device, texturePtr);
     gpuDestroyTexture(outputTexture);
     gpuFree(device, outputTexturePtr);
+    gpuDestroyTexture(taaOutputTexture);
+    gpuFree(device, taaOutputTexturePtr);
+    gpuDestroyTexture(historyTexture);
+    gpuFree(device, historyTexturePtr);
     gpuFreePipeline(referencePipeline);
     gpuFreePipeline(risPipeline);
     gpuFreePipeline(reusePipeline);
     gpuFreePipeline(shadePipeline);
+    gpuFreePipeline(taaPipeline);
     gpuDestroyAccelerationStructure(blas);
     gpuFree(device, blasPtr);
     gpuDestroyAccelerationStructure(tlas);
