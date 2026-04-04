@@ -58,6 +58,7 @@ else()
         cmake_parse_arguments(S "" "SOURCE;STAGE;OUTPUT;ENTRY" "EXTRA_DEPENDS" ${ARGN})
         get_filename_component(SPV_DIR  "${S_OUTPUT}" DIRECTORY)
         get_filename_component(SPV_NAME "${S_OUTPUT}" NAME)
+        string(REGEX REPLACE "\\.spv$" ".glsl" GLSL_OUTPUT "${S_OUTPUT}")
 
         if(S_ENTRY)
             set(ENTRY_ARG -entry ${S_ENTRY})
@@ -72,9 +73,16 @@ else()
                     -target spirv -stage ${S_STAGE} ${ENTRY_ARG}
                     -I "${SHADER_INCLUDE_DIR}"
                     -o "${SPV_OUTPUT_DIR}/Shaders/${S_OUTPUT}"
+            COMMAND "${SLANGC}" "${CMAKE_SOURCE_DIR}/${S_SOURCE}"
+                    -target glsl -stage ${S_STAGE} ${ENTRY_ARG}
+                    -I "${SHADER_INCLUDE_DIR}"
+                    -o "${SPV_OUTPUT_DIR}/Shaders/${GLSL_OUTPUT}"
             COMMAND ${CMAKE_COMMAND} -E copy
                     "${SPV_OUTPUT_DIR}/Shaders/${S_OUTPUT}"
                     "${CMAKE_BINARY_DIR}/Shaders/${S_OUTPUT}"
+            COMMAND ${CMAKE_COMMAND} -E copy
+                    "${SPV_OUTPUT_DIR}/Shaders/${GLSL_OUTPUT}"
+                    "${CMAKE_BINARY_DIR}/Shaders/${GLSL_OUTPUT}"
             DEPENDS "${CMAKE_SOURCE_DIR}/${S_SOURCE}"
                     ${S_EXTRA_DEPENDS}
             COMMENT "Compiling ${SPV_NAME}"
@@ -84,18 +92,40 @@ else()
             "${CMAKE_BINARY_DIR}/Shaders/${S_OUTPUT}" PARENT_SCOPE)
     endfunction()
 
+    # Common header dependencies — all shaders transitively include these
+    set(COMMON_SHADER_DEPS
+        "${CMAKE_SOURCE_DIR}/NoGraphicsAPI.h"
+        "${CMAKE_SOURCE_DIR}/NoGraphicsAPI_Impl.h"
+        "${CMAKE_SOURCE_DIR}/Config.h")
+
     # Register shaders
-    compile_shader(SOURCE Samples/Compute/Compute.slang       STAGE compute  OUTPUT Compute/Compute.spv)
-    compile_shader(SOURCE Samples/Graphics/Vertex.slang       STAGE vertex   OUTPUT Graphics/Vertex.spv)
-    compile_shader(SOURCE Samples/Graphics/Pixel.slang        STAGE fragment OUTPUT Graphics/Pixel.spv)
-    compile_shader(SOURCE Samples/Common/TAA.slang            STAGE compute  OUTPUT Common/TAA.spv)
-    compile_shader(SOURCE Samples/Common/TextVertex.slang     STAGE vertex   OUTPUT Common/TextVertex.spv)
-    compile_shader(SOURCE Samples/Common/TextPixel.slang      STAGE fragment OUTPUT Common/TextPixel.spv)
-    compile_shader(SOURCE Samples/Raytracing/Raytracing.slang STAGE compute  OUTPUT Raytracing/Raytracing.spv)
-    compile_shader(SOURCE Samples/Raytracing/ReSTIR.slang     STAGE compute  OUTPUT Raytracing/RIS.spv    ENTRY RIS)
-    compile_shader(SOURCE Samples/Raytracing/ReSTIR.slang     STAGE compute  OUTPUT Raytracing/Reuse.spv  ENTRY Reuse)
-    compile_shader(SOURCE Samples/Raytracing/ReSTIR.slang     STAGE compute  OUTPUT Raytracing/Shade.spv  ENTRY Shade)
-    compile_shader(SOURCE Shaders/PatchDescriptors.slang      STAGE compute  OUTPUT PatchDescriptors.spv)
+    compile_shader(SOURCE Samples/Compute/Compute.slang       STAGE compute  OUTPUT Compute/Compute.spv
+        EXTRA_DEPENDS ${COMMON_SHADER_DEPS} "${CMAKE_SOURCE_DIR}/Samples/Compute/Compute.h")
+    compile_shader(SOURCE Samples/Graphics/Vertex.slang       STAGE vertex   OUTPUT Graphics/Vertex.spv
+        EXTRA_DEPENDS ${COMMON_SHADER_DEPS} "${CMAKE_SOURCE_DIR}/Samples/Graphics/Graphics.h")
+    compile_shader(SOURCE Samples/Graphics/Pixel.slang        STAGE fragment OUTPUT Graphics/Pixel.spv
+        EXTRA_DEPENDS ${COMMON_SHADER_DEPS} "${CMAKE_SOURCE_DIR}/Samples/Graphics/Graphics.h")
+    compile_shader(SOURCE Samples/Common/TAA.slang            STAGE compute  OUTPUT Common/TAA.spv
+        EXTRA_DEPENDS ${COMMON_SHADER_DEPS} "${CMAKE_SOURCE_DIR}/Samples/Common/TAA.h")
+    compile_shader(SOURCE Samples/Common/TextVertex.slang     STAGE vertex   OUTPUT Common/TextVertex.spv
+        EXTRA_DEPENDS ${COMMON_SHADER_DEPS} "${CMAKE_SOURCE_DIR}/Samples/Common/Text.h")
+    compile_shader(SOURCE Samples/Common/TextPixel.slang      STAGE fragment OUTPUT Common/TextPixel.spv
+        EXTRA_DEPENDS ${COMMON_SHADER_DEPS} "${CMAKE_SOURCE_DIR}/Samples/Common/Text.h")
+
+    set(RT_SHADER_DEPS ${COMMON_SHADER_DEPS}
+        "${CMAKE_SOURCE_DIR}/Samples/Raytracing/Raytracing.h"
+        "${CMAKE_SOURCE_DIR}/Samples/Raytracing/Random.h")
+    compile_shader(SOURCE Samples/Raytracing/Raytracing.slang STAGE compute  OUTPUT Raytracing/Raytracing.spv
+        EXTRA_DEPENDS ${RT_SHADER_DEPS})
+    compile_shader(SOURCE Samples/Raytracing/ReSTIR.slang     STAGE compute  OUTPUT Raytracing/RIS.spv    ENTRY RIS
+        EXTRA_DEPENDS ${RT_SHADER_DEPS})
+    compile_shader(SOURCE Samples/Raytracing/ReSTIR.slang     STAGE compute  OUTPUT Raytracing/Reuse.spv  ENTRY Reuse
+        EXTRA_DEPENDS ${RT_SHADER_DEPS})
+    compile_shader(SOURCE Samples/Raytracing/ReSTIR.slang     STAGE compute  OUTPUT Raytracing/Shade.spv  ENTRY Shade
+        EXTRA_DEPENDS ${RT_SHADER_DEPS})
+
+    compile_shader(SOURCE Shaders/PatchDescriptors.slang      STAGE compute  OUTPUT PatchDescriptors.spv
+        EXTRA_DEPENDS ${COMMON_SHADER_DEPS} "${CMAKE_SOURCE_DIR}/Shaders/PatchDescriptors.h")
 
     add_custom_target(Shaders ALL DEPENDS ${ALL_SHADER_OUTPUTS})
     add_dependencies(NoGraphicsAPI Shaders)

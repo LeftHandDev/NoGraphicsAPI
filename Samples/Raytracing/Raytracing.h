@@ -38,23 +38,24 @@ struct alignas(16) CameraData
 
 struct alignas(16) Path
 {
-    float3 x1 = float3(0.0, 0.0, 0.0); // x0 = origin (omitted), x1 = hit position, x2 = light position
+    // x0 = origin (omitted)
+    float3 x1; // x1 = hit position,
     uint padding;
-    float3 x2 = float3(0.0, 0.0, 0.0);
-    int light = -1;
+    float3 x2; // x2 = light position
+    int light;
 };
 
 struct alignas(16) Sample
 {
     Path x;
-    float w = 0;
+    float w;
     int padding[3];
 };
 
 struct alignas(16) Reservoir
 {
     Path sampleOut;
-    float w = 0;
+    float w;
     int padding[3];
 
 #ifndef __cplusplus
@@ -87,8 +88,8 @@ struct alignas(16) RaytracingData
     uint motionVectors; // not actual motion vectors, but a map to the history texture
     uint dstTexture;
     uint M; // RIS
-    uint spatial = 0;
-    uint temporal = 0;
+    uint spatial;
+    uint temporal;
 };
 
 #ifdef __cplusplus

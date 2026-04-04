@@ -84,7 +84,7 @@ void RIS(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
         motionVectorsTexture[threadId.xy] = float4(threadId.xy - prevPixel, 0.0, 0.0);
 
         // RIS reservoir
-        Reservoir r;
+        Reservoir r = {};
 
         // MIS weight
         float m = 1.0 / data->M;
@@ -106,23 +106,18 @@ void RIS(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
         }
 
         uint q = imgSize.x * threadId.y + threadId.x;
-        Sample s;
+        Sample s = {};
 
         Path y = r.sampleOut;
-        if (y.light != -1)
+        float w = 0.0;
+        float p_hat = p(y, albedo, normal, data->lights);
+        if (V(y, tlas) > 0.0 && p_hat > 0.0)
         {
-            float w = 0.0;
-            float p_hat = p(y, albedo, normal, data->lights);
-            if (V(y, tlas) > 0.0 && p_hat > 0.0)
-            {
-                w = r.w / p_hat;
-            }
-
-            s.x = y;
-            s.w = w;
-
-            // debug = albedo * BRDF() * Le(y, data->lights) * G(y, normal) * w;
+            w = r.w / p_hat;
         }
+
+        s.x = y;
+        s.w = w;
 
         data->pixelSample[q] = s;
     }
@@ -138,7 +133,7 @@ void RIS(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
         RWTexture2D<float4> motionVectorsTexture = rwTextureHeap[data->motionVectors];
         motionVectorsTexture[threadId.xy] = float4(0.0, 0.0, 0.0, 0.0);
 
-        Sample s;
+        Sample s = {};
         uint q = imgSize.x * threadId.y + threadId.x;
         data->pixelSample[q] = s;
     }
@@ -182,7 +177,7 @@ void Reuse(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
 
     if (data->spatial == 1)
     {
-        Reservoir r;
+        Reservoir r = {};
 
         const uint k = 8;
         float sum = 0.0;
@@ -231,7 +226,7 @@ void Reuse(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
         uint Q = imgSize.x * prevThreadId.y + prevThreadId.x;
         Sample prev = data->prevPixelSample[Q];
 
-        Reservoir r;
+        Reservoir r = {};
         float m = 1.0 / 2.0;
         float w;
 
@@ -277,15 +272,7 @@ void Shade(uint3 threadId: SV_DispatchThreadID, RaytracingData *data)
     Sample y = data->pixelSample[q];
 
     float4 color;
-
-    if (y.x.light == -1)
-    {
-        color = float4(0.f, 0.f, 0.f, 1.f);
-    }
-    else 
-    {
-        color = float4((albedo * BRDF() * Le(y.x, data->lights) * G(y.x, normal)) * y.w, 1.0);
-    }
+    color = float4((albedo * BRDF() * Le(y.x, data->lights) * G(y.x, normal)) * y.w, 1.0);
 
     if (data->accumulate == 1)
     {

@@ -13,6 +13,9 @@
     using object = object##_T*;
 
 // Vector types
+using int2 = struct { int x, y; };
+using int3 = struct { int x, y, z; };
+using int4 = struct { int x, y, z, w; };
 using uint = uint32_t;
 using uint2 = struct { uint x, y; };
 using uint3 = struct { uint x, y, z; };
