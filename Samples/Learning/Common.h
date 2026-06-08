@@ -14,8 +14,8 @@ struct alignas(16) TensorData
 struct alignas(16) TensorTransposeData
 {
     uint64_t n;
-    uint64_t w;
-    uint64_t h;
+    uint64_t r;
+    uint64_t c;
     float *x;
     float *y;
 };

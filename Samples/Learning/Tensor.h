@@ -9,7 +9,7 @@
 
 using shape = std::vector<unsigned int>;
 
-struct tensor_impl;
+class tensor_impl;
 class device_impl;
 class device;
 
@@ -21,6 +21,8 @@ public:
     ~tensor();
 
     operator std::string() const;
+
+    std::vector<float> cpu();
 
     shape shape() const;
     tensor reshape(::shape) const;
@@ -38,7 +40,12 @@ public:
     tensor dot(const tensor &) const;    // 1D dot product
     tensor matmul(const tensor &) const; // 2D matrix multiplication, +3D batched matrix multiplcation
 
+    tensor pow(const tensor &) const;
+    tensor exp() const;
+    tensor tanh() const;
+
 private:
+    const float e = 2.718281828459045;
     ::shape _shape;
     friend class device_impl;
     explicit tensor(device_impl *, std::vector<float>, ::shape = {});
@@ -54,10 +61,11 @@ inline std::ostream &operator<<(std::ostream &os, const tensor &t)
 class device
 {
 public:
-    virtual tensor tensor(std::vector<float> data, shape = {}) = 0;
+    virtual tensor tensor(std::vector<float>, shape = {}) = 0;
     virtual ::tensor rand(::shape) = 0;
     virtual ::tensor zeros(::shape) = 0;
     virtual ::tensor ones(::shape) = 0;
+    virtual ::tensor repeat(float, ::shape = {}) = 0;
 };
 
 class instance
@@ -81,13 +89,17 @@ class layer : public module
 {
 public:
     layer(device *device, unsigned int in, unsigned int out)
-        : _weights(device->rand({in, out})), _biases(device->zeros({out}))
+        : _weights(device->rand({in, out})), _biases(device->zeros({1, out}))
     {
     }
 
     virtual tensor forward(tensor in) override
     {
-        return _weights.matmul(in) + _biases;
+        if (in.shape().size() == 1)
+        {
+            in = in.reshape({1, in.shape().front()});
+        }
+        return (in.matmul(_weights) + _biases).tanh();
     }
 
 private:

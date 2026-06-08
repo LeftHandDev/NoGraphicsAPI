@@ -64,27 +64,31 @@ void _mT(uint t: SV_DispatchThreadID, TensorTransposeData *data)
         return;
     }
 
-    // a b c
-    // d e f
-
-    // a d
-    // b e
-    // c f
-
-    // 0 1 2
-    // 3 4 5
-
-    // 0 3
-    // 1 4
-    // 2 5
-
-    // 3
-    for (int i = 0; i < data->w; i++)
+    for (int i = 0; i < data->r; i++)
     {
-        // 2
-        for (int j = 0; j < data->h; j++)
+        for (int j = 0; j < data->c; j++)
         {
-            data->y[j * data->h + i] = data->x[i * data->w + j];
+            data->y[j * data->r + i] = data->x[i * data->c + j];
         }
     }
+}
+
+[numthreads(64, 1, 1)]
+void _pow(uint t: SV_DispatchThreadID, TensorData *data)
+{
+    if (t >= data->n)
+    {
+        return;
+    }
+    data->z[t] = pow(data->x[t], data->y[t]);
+}
+
+[numthreads(64, 1, 1)]
+void _tanh(uint t: SV_DispatchThreadID, TensorData *data)
+{
+    if (t >= data->n)
+    {
+        return;
+    }
+    data->z[t] = tanh(data->x[t]);
 }

@@ -57,7 +57,11 @@ public:
             allocatePage(pageSize);
         }
 
+<<<<<<< HEAD:samples/common/Utilities.h
         Page& current = pages.back();
+        == == == =
+                     Page& current = pages.back();
+>>>>>>> 444e815 (Another checkpoint):Samples/Common/Utilities.h
         size_t alignedOffset = (current.used + (align - 1)) & ~(align - 1);
 
         if (alignedOffset + totalBytes > current.size)
@@ -84,7 +88,45 @@ public:
         };
     }
 
-    void free(const void* ptr)
+<<<<<<< HEAD:samples/common/Utilities.h
+    void free(const void* ptr) == == == =
+                                            void free(const void* ptr)
+    {
+        auto u = static_cast<const uint8_t*>(ptr);
+
+        auto large = std::find_if(largePages.begin(), largePages.end(),
+                                  [&](const Page& p)
+                                  {
+                                      auto base = static_cast<const uint8_t*>(p.basePtr);
+                                      auto gbase = static_cast<const uint8_t*>(p.baseGpuPtr);
+                                      return (base && u >= base && u < base + p.size) || (gbase && u >= gbase && u < gbase + p.size);
+                                  });
+        if (large != largePages.end())
+        {
+            gpuFree(device, large->basePtr);
+            largePages.erase(large);
+            return;
+        }
+
+        auto small = std::find_if(pages.begin(), pages.end(),
+                                  [&](const Page& p)
+                                  {
+                                      auto base = static_cast<const uint8_t*>(p.basePtr);
+                                      auto gbase = static_cast<const uint8_t*>(p.baseGpuPtr);
+                                      return (base && u >= base && u < base + p.size) || (gbase && u >= gbase && u < gbase + p.size);
+                                  });
+        if (small != pages.end() && small->allocations > 0)
+        {
+            if (--small->allocations == 0)
+            {
+                gpuFree(device, small->basePtr);
+                pages.erase(small);
+            }
+        }
+    }
+
+    void reset()
+>>>>>>> 444e815 (Another checkpoint):Samples/Common/Utilities.h
     {
         auto u = static_cast<const uint8_t*>(ptr);
 
