@@ -1,7 +1,7 @@
 #ifndef SAMPLES_SHADER_MULTIPLE_GPUS_H
 #define SAMPLES_SHADER_MULTIPLE_GPUS_H
 
-#include "../../NoGraphicsAPI.h"
+#include "NoGraphicsAPI.h"
 
 void multipleGPUsSample();
 

@@ -1,31 +1,31 @@
-#include "../../External/stb_image.h"
-#include "../../External/stb_image_write.h"
+#include "stb_image.h"
+#include "stb_image_write.h"
 
-#include <SDL3/SDL.h>
-#include "../../SDL_gpu.h"
+#include <cstring>
+
+#include "window.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
 #include "Graphics.h"
-#include "../Common/Utilities.h"
-#include "../Common/TAA.h"
+#include "Utilities.h"
+#include "TAA.h"
 
-void graphicsSample()
+int main()
 {
     gpuCreateInstance();
     auto device = gpuCreateDevice(0);
 
     const uint FRAMES_IN_FLIGHT = 2;
 
-    auto window = SDL_CreateWindow("Test Window", 1920, 1080, SDL_WINDOW_GPU);
-    auto surface = SDL_Gpu_CreateSurface(window);
-    bool exit = false;
+    auto window = nga::createWindow("Test Window", 1920, 1080);
+    auto surface = nga::createSurface(window);
 
     LinearAllocator allocator(device);
 
     int width, height, channels;
-    stbi_uc* inputImage = stbi_load("Assets/Default.png", &width, &height, &channels, 4);
+    stbi_uc* inputImage = stbi_load("assets/Default.png", &width, &height, &channels, 4);
 
     auto upload = allocator.allocate<uint8_t>(width * height * 4);
     memcpy(upload.cpu, inputImage, width * height * 4);
@@ -134,8 +134,8 @@ void graphicsSample()
         .colorTargets = Span<ColorTarget>(colorTargets, 2)
     };
 
-    auto vertexIR = loadIR("Shaders/Graphics/Vertex.spv");
-    auto pixelIR = loadIR("Shaders/Graphics/Pixel.spv");
+    auto vertexIR = loadIR("shaders/graphics/Vertex.spv");
+    auto pixelIR = loadIR("shaders/graphics/Pixel.spv");
     auto pipeline = gpuCreateGraphicsPipeline(
         device,
         ByteSpan(vertexIR),
@@ -149,7 +149,7 @@ void graphicsSample()
     };
     GpuDepthStencilState depthState = gpuCreateDepthStencilState(depthDescState);
 
-    auto taaIR = loadIR("Shaders/Common/TAA.spv");
+    auto taaIR = loadIR("shaders/common/TAA.spv");
     auto taaPipeline = gpuCreateComputePipeline(
         device,
         ByteSpan(taaIR)
@@ -211,23 +211,12 @@ void graphicsSample()
 
     bool taaOn = true;
 
-    while (!exit)
+    while (!nga::shouldClose(window))
     {
-        SDL_Event event;
-        while (SDL_PollEvent(&event))
+        nga::pollEvents(window);
+        if (nga::wasKeyPressed(window, nga::Key::T))
         {
-            if (event.type == SDL_EVENT_QUIT)
-            {
-                exit = true;
-                break;
-            }
-            else if (event.type == SDL_EVENT_KEY_DOWN)
-            {
-                if (event.key.key == SDLK_T)
-                {
-                    taaOn = !taaOn;
-                }
-            }
+            taaOn = !taaOn;
         }
 
         // Update camera with jitter
@@ -347,11 +336,13 @@ void graphicsSample()
     // Destroy the swapchain first: it drains all queues (including the present
     // queue), so the timeline semaphore is no longer in use when destroyed.
     gpuDestroySwapchain(swapchain);
-    SDL_Gpu_DestroySurface(surface);
-    SDL_DestroyWindow(window);
+    nga::destroySurface(window, surface);
+    nga::destroyWindow(window);
     gpuDestroySemaphore(semaphore);
     gpuDestroyQueue(queue);
 
     gpuDestroyDevice(device);
     gpuDestroyInstance();
+
+    return 0;
 }

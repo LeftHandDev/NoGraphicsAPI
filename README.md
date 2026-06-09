@@ -7,7 +7,32 @@ The project started with the original header from the blog post, and built from 
 
 ## Samples
 
-To see what the API looks like in practice, check out the [samples](https://github.com/LeftHandDev/NoGraphicsAPI/tree/main/Samples). For simple usage of the API, see below.
+To see what the API looks like in practice, check out the [samples](https://github.com/LeftHandDev/NoGraphicsAPI/tree/main/samples). For simple usage of the API, see below.
+
+## Building
+
+Clone with submodules (or initialize them afterwards):
+
+```sh
+git clone --recursive <repo-url>
+# or, in an existing clone:
+git submodule update --init --recursive
+```
+
+Configure and build — CMake presets are provided:
+
+```sh
+cmake --preset linux   # GLFW backend (default)
+cmake --build build
+```
+
+The per-sample executables (`compute`, `graphics`, `raytracing`, `multiplegpus`) are written to `build/bin/`, next to the compiled `shaders/` and `assets/` they load at runtime:
+
+```sh
+cd build/bin && ./raytracing
+```
+
+To use the SDL3 windowing backend instead of GLFW, configure with `cmake --preset linux-sdl3` (builds into `build/sdl3/`), or pass `-DNGA_WINDOW_BACKEND=SDL3`.
 
 ## Windowless Usage
 ### Common header
@@ -90,11 +115,10 @@ int main()
 
 ## Window Usage
 
-Include `SDL_gpu.h` to create a window and surface similar to when using Vulkan.
+Include `window.h` to create a window and Vulkan surface through the selected windowing backend (GLFW or SDL3).
 
 ```c++
-#include <SDL3/SDL.h>
-#include "SDL_gpu.h"
+#include "window.h"
 
 // include common header
 
@@ -108,18 +132,17 @@ int main()
     if (!device)
         return -1;
 
-    auto window = SDL_CreateWindow("Example", 1920, 1080, SDL_WINDOW_GPU);
-    auto surface = SDL_Gpu_CreateSurface(window);
+    auto window = nga::createWindow("Example", 1920, 1080);
+    auto surface = nga::createSurface(window);
     auto swapchain = gpuCreateSwapchain(device, surface, FRAMES_IN_FLIGHT);
 
     // Queue, semaphore creation...
 
     uint64_t nextFrame = 1;
 
-    bool exit = false;
-    while (!exit)
+    while (!nga::shouldClose(window))
     {
-        // SDL poll events...
+        nga::pollEvents(window);
 
         if (nextFrame > FRAMES_IN_FLIGHT)
             gpuWaitSemaphore(semaphore, nextFrame - FRAMES_IN_FLIGHT);
@@ -136,8 +159,8 @@ int main()
     // Cleanup
     // Semaphore, other objects...
     gpuDestroySwapchain(swapchain);
-    SDL_Gpu_DestroySurface(surface);
-    SDL_DestroyWindow(window);
+    nga::destroySurface(window, surface);
+    nga::destroyWindow(window);
     gpuDestroyDevice(device);
     gpuDestroyInstance();
 }
@@ -202,10 +225,14 @@ Raytracing pipelines and acceleration structures are not mentioned in the origin
 To trace rays, simply create and build acceleration structures, and then pass the TLAS gpu pointer to a shader and use ray query. See the [Raytracing.cpp](https://github.com/LeftHandDev/NoGraphicsAPI/blob/main/Samples/Raytracing/Raytracing.cpp) sample for an example.
 
 ## Dependencies
-- Included in the repo
-    - [VkBootstrap](https://github.com/charles-lunarg/vk-bootstrap)
-    - [stb_image & stb_image_write](https://github.com/nothings/stb/tree/master)
 
-- [Vulkan SDK](https://vulkan.lunarg.com/sdk/home)
-    - GLM
-    - SDL3
+Fetched as git submodules under `external/` and built from source — nothing to install:
+- [GLFW](https://github.com/glfw/glfw) and [SDL3](https://github.com/libsdl-org/SDL) — windowing (pick one via `NGA_WINDOW_BACKEND`)
+- [GLM](https://github.com/g-truc/glm) — math
+- [vk-bootstrap](https://github.com/charles-lunarg/vk-bootstrap) — Vulkan instance/device setup
+
+Vendored in the repo:
+- [stb_image & stb_image_write](https://github.com/nothings/stb/tree/master)
+
+Must be installed separately (the one prerequisite):
+- [Vulkan SDK](https://vulkan.lunarg.com/sdk/home) — Vulkan loader/headers and the `slangc` shader compiler

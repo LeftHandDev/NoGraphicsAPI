@@ -1,6 +1,6 @@
 #include "Utilities.h"
 
-#include "../../External/stb_image.h"
+#include "stb_image.h"
 
 #include <cstring>
 #include <iostream>
@@ -156,8 +156,8 @@ TextRenderer::TextRenderer(GpuDevice gpuDevice, GpuTextureDesc textureDesc)
 {
     allocator = new LinearAllocator(device);
 
-    auto textIRVertex = loadIR("Shaders/Common/TextVertex.spv");
-    auto textIRPixel = loadIR("Shaders/Common/TextPixel.spv");
+    auto textIRVertex = loadIR("shaders/common/TextVertex.spv");
+    auto textIRPixel = loadIR("shaders/common/TextPixel.spv");
 
     ColorTarget colorTarget = {};
     colorTarget.format = textureDesc.format;
@@ -184,7 +184,7 @@ TextRenderer::TextRenderer(GpuDevice gpuDevice, GpuTextureDesc textureDesc)
     memcpy(indexData.cpu, indices.data(), sizeof(uint32_t) * 6);
 
     int atlasChannels;
-    stbi_uc* atlasData = stbi_load("./Assets/Atlas.png", &atlasWidth, &atlasHeight, &atlasChannels, 4);
+    stbi_uc* atlasData = stbi_load("assets/Atlas.png", &atlasWidth, &atlasHeight, &atlasChannels, 4);
     if (atlasData)
     {
         auto atlasUpload = allocator->allocate<uint8_t>(atlasWidth * atlasHeight * 4);

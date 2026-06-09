@@ -1,9 +1,9 @@
 #define GPU_EXPOSE_INTERNAL
 #include "NoGraphicsAPI.h"
-#include "External/VkBootstrap.h"
+#include "VkBootstrap.h"
 
 #include "Config.h"
-#include "Shaders/PatchDescriptors.h"
+#include "PatchDescriptors.h"
 
 #include <map>
 #include <vector>
@@ -1723,7 +1723,7 @@ void gpuSetActiveTextureHeapPtr(GpuCommandBuffer cb, void *ptrGpu)
         GpuPipeline currentPipeline = vulkanDevice->currentPipeline[cb];
         if (vulkanDevice->patchDescriptorsPipeline == nullptr)
         {
-            auto patchDescriptorsSpv = gpuHiddenLoadIR("Shaders/PatchDescriptors.spv");
+            auto patchDescriptorsSpv = gpuHiddenLoadIR("shaders/PatchDescriptors.spv");
             vulkanDevice->patchDescriptorsPipeline = gpuCreateComputePipeline(device, patchDescriptorsSpv);
         }
 

@@ -4,7 +4,7 @@
 #include <vector>
 #include <chrono>
 
-void multipleGPUsSample()
+int main()
 {
     gpuCreateInstance();
 
@@ -56,4 +56,6 @@ void multipleGPUsSample()
     }
 
     gpuDestroyInstance();
+
+    return 0;
 }

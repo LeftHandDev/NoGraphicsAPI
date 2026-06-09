@@ -1,22 +1,22 @@
-#include "../../External/stb_image.h"
-#include "../../External/stb_image_write.h"
+#include "stb_image.h"
+#include "stb_image_write.h"
 
-#include <SDL3/SDL.h>
-#include "../../SDL_gpu.h"
+#include <cstring>
+
+#include "window.h"
 
 #include "Compute.h"
-#include "../Common/Utilities.h"
+#include "Utilities.h"
 
-void computeSample()
+int main()
 {
     gpuCreateInstance();
     auto device = gpuCreateDevice(0);
 
     const uint FRAMES_IN_FLIGHT = 2;
 
-    auto window = SDL_CreateWindow("Test Window", 1920, 1080, SDL_WINDOW_GPU);
-    auto surface = SDL_Gpu_CreateSurface(window);
-    bool exit = false;
+    auto window = nga::createWindow("Test Window", 1920, 1080);
+    auto surface = nga::createSurface(window);
 
     LinearAllocator allocator(device);
 
@@ -26,14 +26,14 @@ void computeSample()
     auto queue = gpuCreateQueue(device);
     auto semaphore = gpuCreateSemaphore(device, 0);
 
-    auto computeIR = loadIR("Shaders/Compute/Compute.spv");
+    auto computeIR = loadIR("shaders/compute/Compute.spv");
     auto pipeline = gpuCreateComputePipeline(device, ByteSpan(computeIR.data(), computeIR.size()));
 
     auto textureHeap = allocator.allocate<GpuTextureDescriptor>(1024);
     
     // Load input image
     int width, height, channels;
-    stbi_uc* inputImage = stbi_load("Assets/Default.png", &width, &height, &channels, 4);
+    stbi_uc* inputImage = stbi_load("assets/Default.png", &width, &height, &channels, 4);
 
     auto upload = allocator.allocate<uint8_t>(width * height * 4);
     memcpy(upload.cpu, inputImage, width * height * 4);
@@ -90,17 +90,9 @@ void computeSample()
 
     uint64_t nextFrame = 1;
 
-    while (!exit)
+    while (!nga::shouldClose(window))
     {
-        SDL_Event event;
-        while (SDL_PollEvent(&event))
-        {
-            if (event.type == SDL_EVENT_QUIT)
-            {
-                exit = true;
-                break;
-            }
-        }
+        nga::pollEvents(window);
 
         if (nextFrame > FRAMES_IN_FLIGHT)
         {
@@ -122,8 +114,8 @@ void computeSample()
     // before the device/instance are torn down. Destroying the device while
     // these children are still alive hangs drivers that honour object lifetimes.
     gpuDestroySwapchain(swapchain);
-    SDL_Gpu_DestroySurface(surface);
-    SDL_DestroyWindow(window);
+    nga::destroySurface(window, surface);
+    nga::destroyWindow(window);
 
     stbi_image_free(inputImage);
 
@@ -138,4 +130,6 @@ void computeSample()
     gpuDestroyQueue(queue);
     gpuDestroyDevice(device);
     gpuDestroyInstance();
+
+    return 0;
 }

@@ -1,8 +1,9 @@
-#include "../../External/stb_image.h"
-#include "../../External/stb_image_write.h"
+#include "stb_image.h"
+#include "stb_image_write.h"
 
-#include <SDL3/SDL.h>
-#include "../../SDL_gpu.h"
+#include <cstring>
+
+#include "window.h"
 
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/glm.hpp>
@@ -13,9 +14,9 @@
 #include <string>
 
 #include "Raytracing.h"
-#include "../Common/Utilities.h"
-#include "../Common/Text.h"
-#include "../Common/TAA.h"
+#include "Utilities.h"
+#include "Text.h"
+#include "TAA.h"
 
 static std::string getModeText(bool reference, bool spatial, bool temporal, bool taa)
 {
@@ -30,26 +31,20 @@ static std::string getModeText(bool reference, bool spatial, bool temporal, bool
     return text;
 }
 
-void raytracingSample()
+int main()
 {
     gpuCreateInstance();
     auto device = gpuCreateDevice(0);
 
     const uint FRAMES_IN_FLIGHT = 2;
 
-    if (!SDL_Init(SDL_INIT_VIDEO))
-    {
-        return;
-    }
-
-    auto window = SDL_CreateWindow("Test Window", 1920, 1080, SDL_WINDOW_GPU);
-    auto surface = SDL_Gpu_CreateSurface(window);
-    bool exit = false;
+    auto window = nga::createWindow("Test Window", 1920, 1080);
+    auto surface = nga::createSurface(window);
 
     LinearAllocator allocator(device);
 
     int width, height, channels;
-    stbi_uc *inputImage = stbi_load("Assets/Default.png", &width, &height, &channels, 4);
+    stbi_uc *inputImage = stbi_load("assets/Default.png", &width, &height, &channels, 4);
 
     auto upload = allocator.allocate<uint8_t>(width * height * 4);
     memcpy(upload.cpu, inputImage, width * height * 4);
@@ -160,19 +155,19 @@ void raytracingSample()
     ColorTarget colorTarget = {};
     colorTarget.format = swapchainDesc.format;
 
-    auto referenceIR = loadIR("Shaders/Raytracing/Raytracing.spv");
+    auto referenceIR = loadIR("shaders/raytracing/Raytracing.spv");
     auto referencePipeline = gpuCreateComputePipeline(device, ByteSpan(referenceIR));
 
-    auto risIR = loadIR("Shaders/Raytracing/RIS.spv");
+    auto risIR = loadIR("shaders/raytracing/RIS.spv");
     auto risPipeline = gpuCreateComputePipeline(device, ByteSpan(risIR));
 
-    auto reuseIR = loadIR("Shaders/Raytracing/Reuse.spv");
+    auto reuseIR = loadIR("shaders/raytracing/Reuse.spv");
     auto reusePipeline = gpuCreateComputePipeline(device, ByteSpan(reuseIR));
 
-    auto shadeIR = loadIR("Shaders/Raytracing/Shade.spv");
+    auto shadeIR = loadIR("shaders/raytracing/Shade.spv");
     auto shadePipeline = gpuCreateComputePipeline(device, ByteSpan(shadeIR));
 
-    auto taaIR = loadIR("Shaders/Common/TAA.spv");
+    auto taaIR = loadIR("shaders/common/TAA.spv");
     auto taaPipeline = gpuCreateComputePipeline(device, ByteSpan(taaIR));
 
     auto taaData = allocator.allocate<TAAData>();
@@ -391,92 +386,63 @@ void raytracingSample()
     // use the swapchain's format/dimensions (not the float RT output texture).
     TextRenderer* textRenderer = new TextRenderer(device, swapchainDesc);
 
-    while (!exit)
+    while (!nga::shouldClose(window))
     {
-        SDL_Event event;
-        while (SDL_PollEvent(&event))
+        nga::pollEvents(window);
+
+        if (nga::wasKeyPressed(window, nga::Key::Escape))
         {
-            if (event.type == SDL_EVENT_QUIT)
-            {
-                exit = true;
-                break;
-            }
-            else if (event.type == SDL_EVENT_KEY_DOWN) // if holding "A" key, set accumulate to 1
-            {
-                if (event.key.key == SDLK_A)
-                {
-                    if (raytracingData.accumulate == 0)
-                    {
-                        raytracingData.accumulate = 1;
-                        raytracingData.frame = 0;
-                        raytracingData.accumulatedFrames = 0;
-                    }
-                }
-                else if (event.key.key == SDLK_S)
-                {
-                    raytracingData.spatial = raytracingData.spatial == 0 ? 1 : 0;
-                    raytracingData.frame = 0;
-                    raytracingData.accumulatedFrames = 0;
-                    taaData.cpu->frame = 0;
-                }
-                else if (event.key.key == SDLK_T)
-                {
-                    raytracingData.temporal = raytracingData.temporal == 0 ? 1 : 0;
-                    raytracingData.frame = 0;
-                    raytracingData.accumulatedFrames = 0;
-                    taaData.cpu->frame = 0;
-                }
-                else if (event.key.key == SDLK_R)
-                {
-                    reference = !reference;
-                    raytracingData.frame = 0;
-                    raytracingData.accumulatedFrames = 0;
-                    taaData.cpu->frame = 0;
-                }
-                else if (event.key.key == SDLK_X)
-                {
-                    taaOn = !taaOn;
-                    taaData.cpu->frame = 0;
-                }
-                else if (event.key.key == SDLK_LEFT)
-                {
-                    velocity.x = -velocityScale;
-                }
-                else if (event.key.key == SDLK_RIGHT)
-                {
-                    velocity.x = velocityScale;
-                }
-                else if (event.key.key == SDLK_UP)
-                {
-                    velocity.y = velocityScale;
-                }
-                else if (event.key.key == SDLK_DOWN)
-                {
-                    velocity.y = -velocityScale;
-                }
-                else if (event.key.key == SDLK_ESCAPE)
-                {
-                    exit = true;
-                    break;
-                }
-            }
-            else if (event.type == SDL_EVENT_KEY_UP)
-            {
-                if (event.key.key == SDLK_A)
-                {
-                    raytracingData.accumulate = 0;
-                    raytracingData.accumulatedFrames = 0;
-                }
-                else if (event.key.key == SDLK_LEFT || event.key.key == SDLK_RIGHT)
-                {
-                    velocity.x = 0.f;
-                }
-                else if (event.key.key == SDLK_UP || event.key.key == SDLK_DOWN)
-                {
-                    velocity.y = 0.f;
-                }
-            }
+            break;
         }
+
+        // Hold A to accumulate frames; release to stop.
+        bool accumulateHeld = nga::isKeyDown(window, nga::Key::A);
+        if (accumulateHeld && raytracingData.accumulate == 0)
+        {
+            raytracingData.accumulate = 1;
+            raytracingData.frame = 0;
+            raytracingData.accumulatedFrames = 0;
+        }
+        else if (!accumulateHeld && raytracingData.accumulate == 1)
+        {
+            raytracingData.accumulate = 0;
+            raytracingData.accumulatedFrames = 0;
+        }
+
+        if (nga::wasKeyPressed(window, nga::Key::S))
+        {
+            raytracingData.spatial = raytracingData.spatial == 0 ? 1 : 0;
+            raytracingData.frame = 0;
+            raytracingData.accumulatedFrames = 0;
+            taaData.cpu->frame = 0;
+        }
+        if (nga::wasKeyPressed(window, nga::Key::T))
+        {
+            raytracingData.temporal = raytracingData.temporal == 0 ? 1 : 0;
+            raytracingData.frame = 0;
+            raytracingData.accumulatedFrames = 0;
+            taaData.cpu->frame = 0;
+        }
+        if (nga::wasKeyPressed(window, nga::Key::R))
+        {
+            reference = !reference;
+            raytracingData.frame = 0;
+            raytracingData.accumulatedFrames = 0;
+            taaData.cpu->frame = 0;
+        }
+        if (nga::wasKeyPressed(window, nga::Key::X))
+        {
+            taaOn = !taaOn;
+            taaData.cpu->frame = 0;
+        }
+
+        // Arrow keys move the camera while held.
+        velocity.x = nga::isKeyDown(window, nga::Key::Left)  ? -velocityScale
+                   : nga::isKeyDown(window, nga::Key::Right) ?  velocityScale
+                   : 0.0f;
+        velocity.y = nga::isKeyDown(window, nga::Key::Up)    ?  velocityScale
+                   : nga::isKeyDown(window, nga::Key::Down)  ? -velocityScale
+                   : 0.0f;
 
         auto offset = (nextFrame - 1) % FRAMES_IN_FLIGHT;
 
@@ -648,12 +614,13 @@ void raytracingSample()
     // Destroy the swapchain first: it drains all queues (including the present
     // queue), so the timeline semaphore is no longer in use when destroyed.
     gpuDestroySwapchain(swapchain);
-    SDL_Gpu_DestroySurface(surface);
-    SDL_DestroyWindow(window);
-    SDL_Quit();
+    nga::destroySurface(window, surface);
+    nga::destroyWindow(window);
     gpuDestroySemaphore(semaphore);
     gpuDestroyQueue(queue);
 
     gpuDestroyDevice(device);
     gpuDestroyInstance();
+
+    return 0;
 }

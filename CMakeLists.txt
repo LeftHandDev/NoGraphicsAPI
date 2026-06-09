@@ -9,158 +9,153 @@ project(NoGraphicsAPI
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(Vulkan REQUIRED)
-find_package(SDL3 CONFIG QUIET)
-find_package(glm QUIET)
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
+# All executables (and any shared libs they need, e.g. SDL3) land in build/bin,
+# alongside the shaders/ and assets/ they load at runtime.
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+set(CMAKE_BUILD_RPATH "$ORIGIN")
+
+# Windowing backend: GLFW (default) or SDL3. Build with -DNGA_WINDOW_BACKEND=SDL3 to switch.
+set(NGA_WINDOW_BACKEND "GLFW" CACHE STRING "Windowing backend: GLFW or SDL3")
+set_property(CACHE NGA_WINDOW_BACKEND PROPERTY STRINGS GLFW SDL3)
+
+find_package(Vulkan REQUIRED)
+
+# ---------------------------------------------------------------------------
+# Dependencies (git submodules under external/, built from source)
+# ---------------------------------------------------------------------------
+add_subdirectory(external/glm)
+add_subdirectory(external/vk-bootstrap)
+
+# stb: compile the implementations once into a small static lib.
+add_library(stb STATIC external/stb/stb.cpp)
+target_include_directories(stb PUBLIC external/stb)
+
+if(NGA_WINDOW_BACKEND STREQUAL "GLFW")
+    set(GLFW_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(GLFW_INSTALL        OFF CACHE BOOL "" FORCE)
+    add_subdirectory(external/glfw)
+elseif(NGA_WINDOW_BACKEND STREQUAL "SDL3")
+    set(SDL_TEST_LIBRARY    OFF CACHE BOOL "" FORCE)
+    set(SDL_TESTS           OFF CACHE BOOL "" FORCE)
+    set(SDL_EXAMPLES        OFF CACHE BOOL "" FORCE)
+    set(SDL_INSTALL         OFF CACHE BOOL "" FORCE)
+    # Build the Wayland backend only. SDL's X11 backend needs several libX*-dev
+    # packages (Xss, Xtst, ...) that aren't always installed; enable SDL_X11 if
+    # you have them. (GLFW, the default backend, builds X11 + Wayland regardless.)
+    set(SDL_X11             OFF CACHE BOOL "" FORCE)
+    set(SDL_WAYLAND         ON  CACHE BOOL "" FORCE)
+    add_subdirectory(external/SDL)
+else()
+    message(FATAL_ERROR "NGA_WINDOW_BACKEND must be GLFW or SDL3 (got '${NGA_WINDOW_BACKEND}')")
+endif()
+
+# ---------------------------------------------------------------------------
+# Core "No Graphics API" library
+# ---------------------------------------------------------------------------
+add_library(nographicsapi STATIC src/NoGraphicsAPI_Impl.cpp)
+target_include_directories(nographicsapi
+    PUBLIC  src
+    PRIVATE shaders)                       # PatchDescriptors.h
+target_link_libraries(nographicsapi
+    PRIVATE Vulkan::Vulkan vk-bootstrap::vk-bootstrap)
+
+# ---------------------------------------------------------------------------
+# Windowing abstraction (one backend compiled in)
+# ---------------------------------------------------------------------------
+if(NGA_WINDOW_BACKEND STREQUAL "GLFW")
+    add_library(nga-platform STATIC platform/window_glfw.cpp)
+    target_link_libraries(nga-platform PRIVATE glfw Vulkan::Vulkan)
+else()
+    add_library(nga-platform STATIC platform/window_sdl3.cpp)
+    target_link_libraries(nga-platform PRIVATE SDL3::SDL3 Vulkan::Vulkan)
+endif()
+target_include_directories(nga-platform PUBLIC platform)
+target_link_libraries(nga-platform PUBLIC nographicsapi)
+
+# ---------------------------------------------------------------------------
+# Shared sample utilities
+# ---------------------------------------------------------------------------
+add_library(nga-samples-common STATIC samples/common/Utilities.cpp)
+target_include_directories(nga-samples-common PUBLIC samples/common)
+target_link_libraries(nga-samples-common
+    PUBLIC  nographicsapi glm::glm
+    PRIVATE stb)
+
+# ---------------------------------------------------------------------------
+# Shader compilation (slang -> SPIR-V)
+# ---------------------------------------------------------------------------
 if(NOT DEFINED VULKAN_SDK AND DEFINED ENV{VULKAN_SDK})
     set(VULKAN_SDK $ENV{VULKAN_SDK})
 endif()
-
-if(NOT DEFINED VULKAN_SDK)
-    message(FATAL_ERROR "VULKAN_SDK env var is not set")
-endif()
-
-add_executable(NoGraphicsAPI
-    External/VkBootstrap.cpp
-    SDL_gpu.cpp
-    NoGraphicsAPI_Impl.cpp
-    Main.cpp
-    Samples/Common/Utilities.cpp
-    Samples/Compute/Compute.cpp
-    Samples/Graphics/Graphics.cpp
-    Samples/Raytracing/Raytracing.cpp
-    Samples/MultipleGPUs/MultipleGPUs.cpp
-)
-
-if(TARGET Vulkan::Vulkan)
-    target_link_libraries(NoGraphicsAPI PRIVATE Vulkan::Vulkan)
-else()
-    target_include_directories(NoGraphicsAPI PRIVATE ${Vulkan_INCLUDE_DIRS})
-    target_link_libraries(NoGraphicsAPI PRIVATE ${Vulkan_LIBRARIES})
-endif()
-
-# Shader compilation (slang): compile .slang to .spv next to the executable
 find_program(SLANGC slangc HINTS "${VULKAN_SDK}/Bin" "${VULKAN_SDK}/bin")
 if(NOT SLANGC)
-    message(WARNING "slangc not found; skipping shader compilation target.")
-else()
-    set(SHADER_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/Shaders")
-    set(SPV_OUTPUT_DIR "$<TARGET_FILE_DIR:NoGraphicsAPI>")
-    set(ALL_SHADER_OUTPUTS "")
-
-    # compile_shader(SOURCE <path> STAGE <stage> OUTPUT <rel.spv> [ENTRY <name>] [EXTRA_DEPENDS ...])
-    #   SOURCE       – .slang path relative to CMAKE_SOURCE_DIR
-    #   STAGE        – spirv stage (compute, vertex, fragment, …)
-    #   OUTPUT       – output .spv path relative to Shaders/
-    #   ENTRY        – optional entry point (assumes main otherwise)
-    function(compile_shader)
-        cmake_parse_arguments(S "" "SOURCE;STAGE;OUTPUT;ENTRY" "EXTRA_DEPENDS" ${ARGN})
-        get_filename_component(SPV_DIR  "${S_OUTPUT}" DIRECTORY)
-        get_filename_component(SPV_NAME "${S_OUTPUT}" NAME)
-        string(REGEX REPLACE "\\.spv$" ".glsl" GLSL_OUTPUT "${S_OUTPUT}")
-
-        if(S_ENTRY)
-            set(ENTRY_ARG -entry ${S_ENTRY})
-        else()
-            set(ENTRY_ARG -entry main)
-        endif()
-
-        add_custom_command(
-            OUTPUT "${CMAKE_BINARY_DIR}/Shaders/${S_OUTPUT}"
-            COMMAND ${CMAKE_COMMAND} -E make_directory "${SPV_OUTPUT_DIR}/Shaders/${SPV_DIR}"
-            COMMAND "${SLANGC}" "${CMAKE_SOURCE_DIR}/${S_SOURCE}"
-                    -target spirv -stage ${S_STAGE} ${ENTRY_ARG}
-                    -I "${SHADER_INCLUDE_DIR}"
-                    -o "${SPV_OUTPUT_DIR}/Shaders/${S_OUTPUT}"
-            COMMAND "${SLANGC}" "${CMAKE_SOURCE_DIR}/${S_SOURCE}"
-                    -target glsl -stage ${S_STAGE} ${ENTRY_ARG}
-                    -I "${SHADER_INCLUDE_DIR}"
-                    -o "${SPV_OUTPUT_DIR}/Shaders/${GLSL_OUTPUT}"
-            COMMAND ${CMAKE_COMMAND} -E copy
-                    "${SPV_OUTPUT_DIR}/Shaders/${S_OUTPUT}"
-                    "${CMAKE_BINARY_DIR}/Shaders/${S_OUTPUT}"
-            COMMAND ${CMAKE_COMMAND} -E copy
-                    "${SPV_OUTPUT_DIR}/Shaders/${GLSL_OUTPUT}"
-                    "${CMAKE_BINARY_DIR}/Shaders/${GLSL_OUTPUT}"
-            DEPENDS "${CMAKE_SOURCE_DIR}/${S_SOURCE}"
-                    ${S_EXTRA_DEPENDS}
-            COMMENT "Compiling ${SPV_NAME}"
-            VERBATIM)
-
-        set(ALL_SHADER_OUTPUTS ${ALL_SHADER_OUTPUTS}
-            "${CMAKE_BINARY_DIR}/Shaders/${S_OUTPUT}" PARENT_SCOPE)
-    endfunction()
-
-    # Common header dependencies — all shaders transitively include these
-    set(COMMON_SHADER_DEPS
-        "${CMAKE_SOURCE_DIR}/NoGraphicsAPI.h"
-        "${CMAKE_SOURCE_DIR}/NoGraphicsAPI_Impl.h"
-        "${CMAKE_SOURCE_DIR}/Config.h")
-
-    # Register shaders
-    compile_shader(SOURCE Samples/Compute/Compute.slang       STAGE compute  OUTPUT Compute/Compute.spv
-        EXTRA_DEPENDS ${COMMON_SHADER_DEPS} "${CMAKE_SOURCE_DIR}/Samples/Compute/Compute.h")
-    compile_shader(SOURCE Samples/Graphics/Vertex.slang       STAGE vertex   OUTPUT Graphics/Vertex.spv
-        EXTRA_DEPENDS ${COMMON_SHADER_DEPS} "${CMAKE_SOURCE_DIR}/Samples/Graphics/Graphics.h")
-    compile_shader(SOURCE Samples/Graphics/Pixel.slang        STAGE fragment OUTPUT Graphics/Pixel.spv
-        EXTRA_DEPENDS ${COMMON_SHADER_DEPS} "${CMAKE_SOURCE_DIR}/Samples/Graphics/Graphics.h")
-    compile_shader(SOURCE Samples/Common/TAA.slang            STAGE compute  OUTPUT Common/TAA.spv
-        EXTRA_DEPENDS ${COMMON_SHADER_DEPS} "${CMAKE_SOURCE_DIR}/Samples/Common/TAA.h")
-    compile_shader(SOURCE Samples/Common/TextVertex.slang     STAGE vertex   OUTPUT Common/TextVertex.spv
-        EXTRA_DEPENDS ${COMMON_SHADER_DEPS} "${CMAKE_SOURCE_DIR}/Samples/Common/Text.h")
-    compile_shader(SOURCE Samples/Common/TextPixel.slang      STAGE fragment OUTPUT Common/TextPixel.spv
-        EXTRA_DEPENDS ${COMMON_SHADER_DEPS} "${CMAKE_SOURCE_DIR}/Samples/Common/Text.h")
-
-    set(RT_SHADER_DEPS ${COMMON_SHADER_DEPS}
-        "${CMAKE_SOURCE_DIR}/Samples/Raytracing/Raytracing.h"
-        "${CMAKE_SOURCE_DIR}/Samples/Raytracing/Random.h")
-    compile_shader(SOURCE Samples/Raytracing/Raytracing.slang STAGE compute  OUTPUT Raytracing/Raytracing.spv
-        EXTRA_DEPENDS ${RT_SHADER_DEPS})
-    compile_shader(SOURCE Samples/Raytracing/ReSTIR.slang     STAGE compute  OUTPUT Raytracing/RIS.spv    ENTRY RIS
-        EXTRA_DEPENDS ${RT_SHADER_DEPS})
-    compile_shader(SOURCE Samples/Raytracing/ReSTIR.slang     STAGE compute  OUTPUT Raytracing/Reuse.spv  ENTRY Reuse
-        EXTRA_DEPENDS ${RT_SHADER_DEPS})
-    compile_shader(SOURCE Samples/Raytracing/ReSTIR.slang     STAGE compute  OUTPUT Raytracing/Shade.spv  ENTRY Shade
-        EXTRA_DEPENDS ${RT_SHADER_DEPS})
-
-    compile_shader(SOURCE Shaders/PatchDescriptors.slang      STAGE compute  OUTPUT PatchDescriptors.spv
-        EXTRA_DEPENDS ${COMMON_SHADER_DEPS} "${CMAKE_SOURCE_DIR}/Shaders/PatchDescriptors.h")
-
-    add_custom_target(Shaders ALL DEPENDS ${ALL_SHADER_OUTPUTS})
-    add_dependencies(NoGraphicsAPI Shaders)
+    message(FATAL_ERROR "slangc not found; set VULKAN_SDK or put slangc on PATH.")
 endif()
 
-# Copy assets to the build directory next to the executable
-add_custom_command(TARGET NoGraphicsAPI POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:NoGraphicsAPI>/Assets"
+set(NGA_SHADER_OUTPUT_DIR  "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders")
+set(NGA_SHADER_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/src")
+include(CompileShaders)
+
+set(COMMON_SHADER_DEPS
+    "${CMAKE_SOURCE_DIR}/src/NoGraphicsAPI.h"
+    "${CMAKE_SOURCE_DIR}/src/NoGraphicsAPI_Impl.h"
+    "${CMAKE_SOURCE_DIR}/src/Config.h")
+
+set(NGA_SHADER_OUTPUTS "")
+compile_shader(SOURCE samples/compute/Compute.slang     STAGE compute  OUTPUT compute/Compute.spv
+    EXTRA_DEPENDS ${COMMON_SHADER_DEPS} "${CMAKE_SOURCE_DIR}/samples/compute/Compute.h")
+compile_shader(SOURCE samples/graphics/Vertex.slang     STAGE vertex   OUTPUT graphics/Vertex.spv
+    EXTRA_DEPENDS ${COMMON_SHADER_DEPS} "${CMAKE_SOURCE_DIR}/samples/graphics/Graphics.h")
+compile_shader(SOURCE samples/graphics/Pixel.slang      STAGE fragment OUTPUT graphics/Pixel.spv
+    EXTRA_DEPENDS ${COMMON_SHADER_DEPS} "${CMAKE_SOURCE_DIR}/samples/graphics/Graphics.h")
+compile_shader(SOURCE samples/common/TAA.slang          STAGE compute  OUTPUT common/TAA.spv
+    EXTRA_DEPENDS ${COMMON_SHADER_DEPS} "${CMAKE_SOURCE_DIR}/samples/common/TAA.h")
+compile_shader(SOURCE samples/common/TextVertex.slang   STAGE vertex   OUTPUT common/TextVertex.spv
+    EXTRA_DEPENDS ${COMMON_SHADER_DEPS} "${CMAKE_SOURCE_DIR}/samples/common/Text.h")
+compile_shader(SOURCE samples/common/TextPixel.slang    STAGE fragment OUTPUT common/TextPixel.spv
+    EXTRA_DEPENDS ${COMMON_SHADER_DEPS} "${CMAKE_SOURCE_DIR}/samples/common/Text.h")
+
+set(RT_SHADER_DEPS ${COMMON_SHADER_DEPS}
+    "${CMAKE_SOURCE_DIR}/samples/raytracing/Raytracing.h"
+    "${CMAKE_SOURCE_DIR}/samples/raytracing/Random.h")
+compile_shader(SOURCE samples/raytracing/Raytracing.slang STAGE compute OUTPUT raytracing/Raytracing.spv
+    EXTRA_DEPENDS ${RT_SHADER_DEPS})
+compile_shader(SOURCE samples/raytracing/ReSTIR.slang   STAGE compute  OUTPUT raytracing/RIS.spv   ENTRY RIS
+    EXTRA_DEPENDS ${RT_SHADER_DEPS})
+compile_shader(SOURCE samples/raytracing/ReSTIR.slang   STAGE compute  OUTPUT raytracing/Reuse.spv ENTRY Reuse
+    EXTRA_DEPENDS ${RT_SHADER_DEPS})
+compile_shader(SOURCE samples/raytracing/ReSTIR.slang   STAGE compute  OUTPUT raytracing/Shade.spv ENTRY Shade
+    EXTRA_DEPENDS ${RT_SHADER_DEPS})
+compile_shader(SOURCE shaders/PatchDescriptors.slang    STAGE compute  OUTPUT PatchDescriptors.spv
+    EXTRA_DEPENDS ${COMMON_SHADER_DEPS} "${CMAKE_SOURCE_DIR}/shaders/PatchDescriptors.h")
+
+add_custom_target(shaders ALL DEPENDS ${NGA_SHADER_OUTPUTS})
+
+# Copy assets next to the executables
+add_custom_target(copy_assets ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_SOURCE_DIR}/Assets"
-        "$<TARGET_FILE_DIR:NoGraphicsAPI>/Assets"
-    COMMENT "Copying Assets to build output directory"
-    VERBATIM)
+        "${CMAKE_SOURCE_DIR}/assets" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/assets"
+    COMMENT "Copying assets")
 
-# Prefer SDL3 CMake package; fall back to the Vulkan SDK copy via the env var
-if(TARGET SDL3::SDL3)
-    target_link_libraries(NoGraphicsAPI PRIVATE SDL3::SDL3)
-else()
-    find_path(SDL3_INCLUDE_DIR SDL3/SDL.h HINTS "${VULKAN_SDK}/Include")
-    find_library(SDL3_LIBRARY NAMES SDL3 HINTS "${VULKAN_SDK}/Lib" "${VULKAN_SDK}/lib")
-    if(SDL3_INCLUDE_DIR AND SDL3_LIBRARY)
-        target_include_directories(NoGraphicsAPI PRIVATE "${SDL3_INCLUDE_DIR}")
-        target_link_libraries(NoGraphicsAPI PRIVATE "${SDL3_LIBRARY}")
-    else()
-        message(FATAL_ERROR "SDL3 not found. Install via Vulkan SDK or provide SDL3 CMake package.")
-    endif()
-endif()
+# ---------------------------------------------------------------------------
+# Sample executables (one per sample, output to build/bin)
+# ---------------------------------------------------------------------------
+# Windowed samples: depend on the windowing layer, shared utilities, shaders and assets.
+function(add_windowed_sample name source)
+    add_executable(${name} ${source})
+    target_link_libraries(${name} PRIVATE nographicsapi nga-platform nga-samples-common stb glm::glm)
+    add_dependencies(${name} shaders copy_assets)
+endfunction()
 
-if(TARGET glm::glm)
-    target_link_libraries(NoGraphicsAPI PRIVATE glm::glm)
-else()
-    find_path(GLM_INCLUDE_DIR glm/glm.hpp HINTS "${VULKAN_SDK}/Include")
-    if(GLM_INCLUDE_DIR)
-        target_include_directories(NoGraphicsAPI PRIVATE "${GLM_INCLUDE_DIR}")
-    else()
-        message(FATAL_ERROR "GLM not found. Install via Vulkan SDK or provide glm CMake package.")
-    endif()
-endif()
+add_windowed_sample(compute    samples/compute/Compute.cpp)
+add_windowed_sample(graphics   samples/graphics/Graphics.cpp)
+add_windowed_sample(raytracing samples/raytracing/Raytracing.cpp)
+
+# Headless sample: no window, no shaders/assets.
+add_executable(multiplegpus samples/multiplegpus/MultipleGPUs.cpp)
+target_link_libraries(multiplegpus PRIVATE nographicsapi)

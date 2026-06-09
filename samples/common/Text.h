@@ -1,7 +1,7 @@
 #ifndef SAMPLES_SHADER_TEXT_H
 #define SAMPLES_SHADER_TEXT_H
 
-#include "../../NoGraphicsAPI.h"
+#include "NoGraphicsAPI.h"
 
 struct alignas(16) TextVertexData
 {
