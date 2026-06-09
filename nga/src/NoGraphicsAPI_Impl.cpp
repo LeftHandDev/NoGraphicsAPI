@@ -1310,7 +1310,7 @@ GpuTextureDescriptor gpuRWTextureViewDescriptor(GpuTexture texture, GpuViewDesc 
     return descriptor;
 }
 
-GpuPipeline gpuCreateComputePipeline(GpuDevice device, ByteSpan computeIR)
+GpuPipeline gpuCreateComputePipeline(GpuDevice device, ByteSpan computeIR, const char* entry)
 {
     VulkanDevice* vulkanDevice = device->vulkanDevice;
     VkShaderModuleCreateInfo shaderModuleCreateInfo = {};
@@ -1327,7 +1327,7 @@ GpuPipeline gpuCreateComputePipeline(GpuDevice device, ByteSpan computeIR)
     pipelineCreateInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     pipelineCreateInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     pipelineCreateInfo.stage.module = shaderModule;
-    pipelineCreateInfo.stage.pName = "main";
+    pipelineCreateInfo.stage.pName = entry;
 
     VkPipeline pipeline;
     vulkanDevice->dispatchTable.createComputePipelines(VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &pipeline);

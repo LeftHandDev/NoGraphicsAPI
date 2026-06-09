@@ -13,54 +13,48 @@
     using object = object##_T*;
 
 // Vector types
-// NOTE: these are named structs rather than aliases of anonymous structs
-// (e.g. `using uint3 = struct { ... };`). GCC does not extend the
-// "typedef name for linkage purposes" rule ([dcl.typedef]/9) to alias
-// declarations, so anonymous structs named only via `using` have no linkage
-// there, which makes API functions taking them by value fail to link. Named
-// structs have linkage on every compiler while preserving the same layout.
-struct int2
+using int2 = struct
 {
     int x, y;
 };
-struct int3
+using int3 = struct
 {
     int x, y, z;
 };
-struct int4
+using int4 = struct
 {
     int x, y, z, w;
 };
 using uint = uint32_t;
-struct uint2
+using uint2 = struct
 {
     uint x, y;
 };
-struct uint3
+using uint3 = struct
 {
     uint x, y, z;
 };
-struct uint4
+using uint4 = struct
 {
     uint x, y, z, w;
 };
-struct float2
+using float2 = struct
 {
     float x, y;
 };
-struct float3
+using float3 = struct
 {
     float x, y, z;
 };
-struct float4
+using float4 = struct
 {
     float x, y, z, w;
 };
-struct float3x4
+using float3x4 = struct
 {
     float4 row0, row1, row2;
 };
-struct float4x4
+using float4x4 = struct
 {
     float4 row0, row1, row2, row3;
 };
@@ -443,7 +437,7 @@ GpuTextureDescriptor gpuTextureViewDescriptor(GpuTexture texture, GpuViewDesc de
 GpuTextureDescriptor gpuRWTextureViewDescriptor(GpuTexture texture, GpuViewDesc desc);
 
 // Pipelines
-GpuPipeline gpuCreateComputePipeline(GpuDevice device, ByteSpan computeIR);
+GpuPipeline gpuCreateComputePipeline(GpuDevice device, ByteSpan computeIR, const char* entry = "main");
 GpuPipeline gpuCreateGraphicsPipeline(GpuDevice device, ByteSpan vertexIR, ByteSpan pixelIR, GpuRasterDesc desc);
 GpuPipeline gpuCreateGraphicsMeshletPipeline(GpuDevice device, ByteSpan meshletIR, ByteSpan pixelIR, GpuRasterDesc desc);
 void gpuFreePipeline(GpuPipeline pipeline);
