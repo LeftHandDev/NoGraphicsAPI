@@ -33,6 +33,11 @@ add_subdirectory(external/vk-bootstrap)
 add_library(stb STATIC external/stb/stb.cpp)
 target_include_directories(stb PUBLIC external/stb)
 
+# The windowed samples and their windowing backend are optional. CI builds only
+# the core library, shaders and headless tests via -DNGA_BUILD_SAMPLES=OFF.
+option(NGA_BUILD_SAMPLES "Build the windowed sample executables" ON)
+
+if(NGA_BUILD_SAMPLES)
 if(NGA_WINDOW_BACKEND STREQUAL "GLFW")
     set(GLFW_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
     set(GLFW_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
@@ -53,6 +58,7 @@ elseif(NGA_WINDOW_BACKEND STREQUAL "SDL3")
 else()
     message(FATAL_ERROR "NGA_WINDOW_BACKEND must be GLFW or SDL3 (got '${NGA_WINDOW_BACKEND}')")
 endif()
+endif() # NGA_BUILD_SAMPLES
 
 # ---------------------------------------------------------------------------
 # Core "No Graphics API" library
@@ -65,8 +71,9 @@ target_link_libraries(nographicsapi
     PRIVATE Vulkan::Vulkan vk-bootstrap::vk-bootstrap)
 
 # ---------------------------------------------------------------------------
-# Windowing abstraction (one backend compiled in)
+# Windowing abstraction (one backend compiled in) -- only with the samples.
 # ---------------------------------------------------------------------------
+if(NGA_BUILD_SAMPLES)
 if(NGA_WINDOW_BACKEND STREQUAL "GLFW")
     add_library(nga-platform STATIC platform/window_glfw.cpp)
     target_link_libraries(nga-platform PRIVATE glfw Vulkan::Vulkan)
@@ -76,6 +83,7 @@ else()
 endif()
 target_include_directories(nga-platform PUBLIC platform)
 target_link_libraries(nga-platform PUBLIC nographicsapi)
+endif()
 
 # ---------------------------------------------------------------------------
 # Shared sample utilities
@@ -136,7 +144,9 @@ compile_shader(SOURCE shaders/PatchDescriptors.slang    STAGE compute  OUTPUT Pa
 
 add_custom_target(shaders ALL DEPENDS ${NGA_SHADER_OUTPUTS})
 
-# Copy assets next to the executables
+# Copy assets next to the executables (samples load these from the run dir; the
+# tests read assets straight from the source tree, so this is samples-only).
+if(NGA_BUILD_SAMPLES)
 add_custom_target(copy_assets ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_SOURCE_DIR}/assets" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/assets"
@@ -159,3 +169,12 @@ add_windowed_sample(raytracing samples/raytracing/Raytracing.cpp)
 # Headless sample: no window, no shaders/assets.
 add_executable(multiplegpus samples/multiplegpus/MultipleGPUs.cpp)
 target_link_libraries(multiplegpus PRIVATE nographicsapi)
+endif() # NGA_BUILD_SAMPLES
+
+# ---------------------------------------------------------------------------
+# Headless rendering tests
+# ---------------------------------------------------------------------------
+option(NGA_BUILD_TESTS "Build the headless rendering tests" ON)
+if(NGA_BUILD_TESTS)
+    add_subdirectory(tests)
+endif()
