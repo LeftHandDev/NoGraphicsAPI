@@ -22,8 +22,19 @@ if(NOT DEFINED NGA_SHADER_INCLUDE_DIR)
     get_filename_component(NGA_SHADER_INCLUDE_DIR "${CMAKE_CURRENT_LIST_DIR}/../include" ABSOLUTE)
 endif()
 
+if(NOT SLANGC)
+    find_program(SLANGC slangc
+        HINTS "${VULKAN_SDK}/Bin" "${VULKAN_SDK}/bin" "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin")
+endif()
+
 function(compile_shader)
     cmake_parse_arguments(S "" "SOURCE;STAGE;OUTPUT;ENTRY" "EXTRA_DEPENDS" ${ARGN})
+
+    # An empty COMMAND would be dropped silently, producing a rule that never
+    # compiles anything — fail loudly instead.
+    if(NOT SLANGC)
+        message(FATAL_ERROR "compile_shader: slangc not found; put it on PATH, set VULKAN_SDK, or set SLANGC")
+    endif()
 
     if(S_ENTRY)
         set(ENTRY_ARG -entry ${S_ENTRY})

@@ -54,7 +54,10 @@ include(path/to/nga/nga.cmake)
 
 ```cmake
 include(FetchContent)
-FetchContent_Declare(NoGraphicsAPI GIT_REPOSITORY <repo-url> GIT_TAG main)
+FetchContent_Declare(NoGraphicsAPI
+    GIT_REPOSITORY <repo-url>
+    GIT_TAG        main
+    GIT_SUBMODULES "")   # submodules are samples-only; vk-bootstrap is fetched on demand
 FetchContent_MakeAvailable(NoGraphicsAPI)
 ```
 
@@ -97,11 +100,15 @@ compile_shader(SOURCE shaders/MyShader.slang STAGE compute OUTPUT MyShader.spv)
 add_custom_target(my_shaders ALL DEPENDS ${NGA_SHADER_OUTPUTS})
 ```
 
+`slangc` is picked up from `PATH` or the `VULKAN_SDK` environment variable;
+pass `-DSLANGC=/path/to/slangc` to override.
+
 ## Developing NGA itself
 
 `src/PatchDescriptorsSpv.h` is generated from `shaders/PatchDescriptors.slang`
-and checked in. After editing that shader, regenerate it — preferably with the
-slangc pinned in `ci/Dockerfile` so the header stays reproducible:
+and checked in. After editing that shader, regenerate it (run these from the
+repository root, one level above this folder) — preferably with the slangc
+pinned in `ci/Dockerfile` so the header stays reproducible:
 
 ```sh
 docker build -t nga-ci ci   # once

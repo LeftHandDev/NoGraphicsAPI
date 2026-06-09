@@ -17,7 +17,7 @@ The reusable library is the self-contained [`nga/`](nga/) folder. Add this
 repo (or just that folder) as a submodule, a copy, or via FetchContent, then:
 
 ```cmake
-add_subdirectory(path/to/NoGraphicsAPI)   # or path/to/nga, or include(nga/nga.cmake)
+add_subdirectory(path/to/NoGraphicsAPI)   # or just the nga/ folder, or include(<path>/nga/nga.cmake)
 target_link_libraries(your_app PRIVATE nga::nga)
 ```
 
@@ -133,7 +133,7 @@ int main()
 
 ## Window Usage
 
-Include `window.h` to create a window and Vulkan surface through the selected windowing backend (GLFW or SDL3).
+Include `window.h` to create a window and Vulkan surface through the selected windowing backend (GLFW or SDL3). Note that `window.h` is part of this repo's sample scaffolding ([`platform/`](platform/)), not the embeddable `nga/` library — in your own project, create the window and `VkSurfaceKHR` with your windowing library of choice and hand the surface to `gpuCreateSurface()`.
 
 ```c++
 #include "window.h"
