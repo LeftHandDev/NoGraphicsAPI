@@ -48,27 +48,39 @@ struct alignas(16) Sampler
 
 #ifndef __cplusplus
 
-// Texel-space address resolution; returns -1 when the texel is outside the
-// texture and the border color should be substituted.
+// Wrapping modes are applied in float UV space, once per sample: integer
+// modulo has no hardware instruction on GPUs (it expands to a ~20-op
+// emulation), while frac() is a single op.
+float ngapiNormalizeUV(float u, uint mode)
+{
+    if (mode == WRAP)
+        return frac(u);
+    if (mode == MIRROR)
+    {
+        float t = frac(u * 0.5) * 2.0; // [0,2): forward half then mirrored half
+        return t < 1.0 ? t : 2.0 - t;
+    }
+    return u; // CLAMP / BORDER resolve out-of-range texels below
+}
+
+// Texel-space fixup. After ngapiNormalizeUV a filter footprint leaves
+// [0, size-1] by at most one texel on either side, so the wrapping modes need
+// only a single conditional step — callers must normalize first. Returns -1
+// when the texel is outside the texture and the border color applies.
 int ngapiResolveTexelAddress(int coord, int size, uint mode)
 {
     switch (mode)
     {
     case WRAP:
-    {
-        int m = coord % size;
-        return m < 0 ? m + size : m;
-    }
+        if (coord < 0)
+            return coord + size;
+        return coord >= size ? coord - size : coord;
+    case MIRROR:
+        if (coord < 0)
+            return -coord - 1;
+        return coord >= size ? 2 * size - 1 - coord : coord;
     case CLAMP:
         return clamp(coord, 0, size - 1);
-    case MIRROR:
-    {
-        int period = 2 * size;
-        int m = coord % period;
-        if (m < 0)
-            m += period;
-        return m < size ? m : period - 1 - m;
-    }
     default: // BORDER
         return (coord < 0 || coord >= size) ? -1 : coord;
     }
@@ -83,11 +95,10 @@ float4 ngapiFetchTexel(Texture2D<float4> tex, Sampler s, int2 coord, int2 size, 
     return tex.Load(int3(x, y, mip));
 }
 
-float4 ngapiSampleMip(Texture2D<float4> tex, Sampler s, float2 uv, int mip, uint filter)
+// `uv` must already be normalized by ngapiNormalizeUV; `baseSize` is mip 0.
+float4 ngapiSampleMip(Texture2D<float4> tex, Sampler s, float2 uv, int mip, uint filter, int2 baseSize)
 {
-    uint width, height, mipCount;
-    tex.GetDimensions(uint(mip), width, height, mipCount);
-    int2 size = int2(int(width), int(height));
+    int2 size = max(int2(1, 1), baseSize >> mip); // Vulkan mip sizing: max(1, floor(base / 2^mip))
 
     if (filter == NEAREST)
     {
@@ -113,11 +124,16 @@ extension Sampler
 {
     float4 SampleLevel(Texture2D<float4> tex, float2 uv, float lod = 0.0)
     {
+        // The only dimension query per sample; mip sizes derive from it.
         uint width, height, mipCount;
         tex.GetDimensions(0, width, height, mipCount);
+        int2 baseSize = int2(int(width), int(height));
 
         lod = clamp(lod, 0.0, float(mipCount - 1));
         uint filter = lod <= 0.0 ? this.magFilter : this.minFilter;
+
+        uv.x = ngapiNormalizeUV(uv.x, this.addressU);
+        uv.y = ngapiNormalizeUV(uv.y, this.addressV);
 
         if (this.mipFilter == LINEAR)
         {
@@ -125,13 +141,13 @@ extension Sampler
             int mip1 = min(mip0 + 1, int(mipCount) - 1);
             float mipWeight = lod - float(mip0);
 
-            float4 color0 = ngapiSampleMip(tex, this, uv, mip0, filter);
+            float4 color0 = ngapiSampleMip(tex, this, uv, mip0, filter, baseSize);
             if (mipWeight <= 0.0 || mip1 == mip0)
                 return color0;
-            return lerp(color0, ngapiSampleMip(tex, this, uv, mip1, filter), mipWeight);
+            return lerp(color0, ngapiSampleMip(tex, this, uv, mip1, filter, baseSize), mipWeight);
         }
 
-        return ngapiSampleMip(tex, this, uv, int(round(lod)), filter);
+        return ngapiSampleMip(tex, this, uv, int(round(lod)), filter, baseSize);
     }
 }
 

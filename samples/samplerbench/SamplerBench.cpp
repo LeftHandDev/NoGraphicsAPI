@@ -22,66 +22,72 @@
 namespace
 {
 
-// Deterministic noise so the texture has no compressible structure.
-uint32_t hash32(uint32_t x)
-{
-    x ^= x >> 16;
-    x *= 0x7feb352du;
-    x ^= x >> 15;
-    x *= 0x846ca68bu;
-    x ^= x >> 16;
-    return x;
-}
-
-struct BatchTimer
-{
-    GpuDevice device;
-    GpuQueue queue;
-    GpuSemaphore semaphore;
-    uint64_t tick = 0;
-
-    BatchTimer(GpuDevice device, GpuQueue queue) : device(device), queue(queue), semaphore(gpuCreateSemaphore(device, 0)) {}
-    ~BatchTimer() { gpuDestroySemaphore(semaphore); }
-
-    void runBatch(GpuPipeline pipeline, void* heapGpu, void* dataGpu, uint3 grid, int dispatches)
+    // Deterministic noise so the texture has no compressible structure.
+    uint32_t hash32(uint32_t x)
     {
-        auto cb = gpuStartCommandRecording(queue);
-        for (int i = 0; i < dispatches; i++)
+        x ^= x >> 16;
+        x *= 0x7feb352du;
+        x ^= x >> 15;
+        x *= 0x846ca68bu;
+        x ^= x >> 16;
+        return x;
+    }
+
+    struct BatchTimer
+    {
+        GpuDevice device;
+        GpuQueue queue;
+        GpuSemaphore semaphore;
+        uint64_t tick = 0;
+
+        BatchTimer(GpuDevice device, GpuQueue queue)
+            : device(device), queue(queue), semaphore(gpuCreateSemaphore(device, 0))
         {
-            gpuSetPipeline(cb, pipeline);
-            gpuSetActiveTextureHeapPtr(cb, heapGpu);
-            gpuDispatch(cb, dataGpu, grid);
-            gpuBarrier(cb, STAGE_COMPUTE, STAGE_COMPUTE);
         }
-        gpuSubmit(queue, Span<GpuCommandBuffer>(&cb, 1), semaphore, ++tick);
-        gpuWaitSemaphore(semaphore, tick);
-    }
+        ~BatchTimer()
+        {
+            gpuDestroySemaphore(semaphore);
+        }
 
-    // Returns milliseconds per dispatch (1 warmup batch, `repeats` timed ones).
-    double time(GpuPipeline pipeline, void* heapGpu, void* dataGpu, uint3 grid, int dispatches, int repeats)
-    {
-        runBatch(pipeline, heapGpu, dataGpu, grid, dispatches);
-        auto t0 = std::chrono::steady_clock::now();
-        for (int rep = 0; rep < repeats; rep++)
+        void runBatch(GpuPipeline pipeline, void* heapGpu, void* dataGpu, uint3 grid, int dispatches)
+        {
+            auto cb = gpuStartCommandRecording(queue);
+            for (int i = 0; i < dispatches; i++)
+            {
+                gpuSetPipeline(cb, pipeline);
+                gpuSetActiveTextureHeapPtr(cb, heapGpu);
+                gpuDispatch(cb, dataGpu, grid);
+                gpuBarrier(cb, STAGE_COMPUTE, STAGE_COMPUTE);
+            }
+            gpuSubmit(queue, Span<GpuCommandBuffer>(&cb, 1), semaphore, ++tick);
+            gpuWaitSemaphore(semaphore, tick);
+        }
+
+        // Returns milliseconds per dispatch (1 warmup batch, `repeats` timed ones).
+        double time(GpuPipeline pipeline, void* heapGpu, void* dataGpu, uint3 grid, int dispatches, int repeats)
+        {
             runBatch(pipeline, heapGpu, dataGpu, grid, dispatches);
-        auto t1 = std::chrono::steady_clock::now();
-        return std::chrono::duration<double, std::milli>(t1 - t0).count() / (dispatches * repeats);
-    }
-};
+            auto t0 = std::chrono::steady_clock::now();
+            for (int rep = 0; rep < repeats; rep++)
+                runBatch(pipeline, heapGpu, dataGpu, grid, dispatches);
+            auto t1 = std::chrono::steady_clock::now();
+            return std::chrono::duration<double, std::milli>(t1 - t0).count() / (dispatches * repeats);
+        }
+    };
 
-std::vector<uint8_t> readbackRGBA8(GpuDevice device, GpuQueue queue, GpuTexture texture, size_t bytes)
-{
-    uint8_t* readback = static_cast<uint8_t*>(gpuMalloc(device, bytes, MEMORY_READBACK));
-    auto semaphore = gpuCreateSemaphore(device, 0);
-    auto cb = gpuStartCommandRecording(queue);
-    gpuCopyFromTexture(cb, gpuHostToDevicePointer(device, readback), texture);
-    gpuSubmit(queue, Span<GpuCommandBuffer>(&cb, 1), semaphore, 1);
-    gpuWaitSemaphore(semaphore, 1);
-    std::vector<uint8_t> result(readback, readback + bytes);
-    gpuDestroySemaphore(semaphore);
-    gpuFree(device, readback);
-    return result;
-}
+    std::vector<uint8_t> readbackRGBA8(GpuDevice device, GpuQueue queue, GpuTexture texture, size_t bytes)
+    {
+        uint8_t* readback = static_cast<uint8_t*>(gpuMalloc(device, bytes, MEMORY_READBACK));
+        auto semaphore = gpuCreateSemaphore(device, 0);
+        auto cb = gpuStartCommandRecording(queue);
+        gpuCopyFromTexture(cb, gpuHostToDevicePointer(device, readback), texture);
+        gpuSubmit(queue, Span<GpuCommandBuffer>(&cb, 1), semaphore, 1);
+        gpuWaitSemaphore(semaphore, 1);
+        std::vector<uint8_t> result(readback, readback + bytes);
+        gpuDestroySemaphore(semaphore);
+        gpuFree(device, readback);
+        return result;
+    }
 
 } // namespace
 
@@ -155,40 +161,40 @@ int main()
 
     // Scoped so the timer's semaphore dies before the device teardown below.
     {
-    BatchTimer timer(device, queue);
+        BatchTimer timer(device, queue);
 
-    // Correctness cross-check first: one dispatch per path at radius 2,
-    // hardware vs software readback. Reduced-precision hardware weights mean
-    // a few LSBs of difference; anything large is a real bug.
-    data.cpu->kernelRadius = 2;
-    timer.runBatch(hwPipeline, textureHeap.gpu, data.gpu, grid, 1);
-    auto hwImage = readbackRGBA8(device, queue, dstTexture, textureBytes);
-    timer.runBatch(swPipeline, textureHeap.gpu, data.gpu, grid, 1);
-    auto swImage = readbackRGBA8(device, queue, dstTexture, textureBytes);
-    int maxDiff = 0;
-    for (size_t i = 0; i < textureBytes; i++)
-        maxDiff = std::max(maxDiff, std::abs(int(hwImage[i]) - int(swImage[i])));
-    std::printf("hardware vs software output: maxDiff=%d/255 %s\n\n", maxDiff, maxDiff <= 8 ? "(ok)" : "(SUSPICIOUS)");
+        // Correctness cross-check first: one dispatch per path at radius 2,
+        // hardware vs software readback. Reduced-precision hardware weights mean
+        // a few LSBs of difference; anything large is a real bug.
+        data.cpu->kernelRadius = 2;
+        timer.runBatch(hwPipeline, textureHeap.gpu, data.gpu, grid, 1);
+        auto hwImage = readbackRGBA8(device, queue, dstTexture, textureBytes);
+        timer.runBatch(swPipeline, textureHeap.gpu, data.gpu, grid, 1);
+        auto swImage = readbackRGBA8(device, queue, dstTexture, textureBytes);
+        int maxDiff = 0;
+        for (size_t i = 0; i < textureBytes; i++)
+            maxDiff = std::max(maxDiff, std::abs(int(hwImage[i]) - int(swImage[i])));
+        std::printf("hardware vs software output: maxDiff=%d/255 %s\n\n", maxDiff, maxDiff <= 8 ? "(ok)" : "(SUSPICIOUS)");
 
-    std::printf("%-28s %12s %12s %14s\n", "config", "hw ms", "sw ms", "sw/hw");
-    for (int radius : { 0, 4, 16 })
-    {
-        data.cpu->kernelRadius = radius;
-        const int taps = (2 * radius + 1) * (2 * radius + 1);
-        // Keep each batch around the same total work so runtimes stay sane.
-        const int dispatches = std::max(2, 512 / taps);
-        const int repeats = 3;
+        std::printf("%-28s %12s %12s %14s\n", "config", "hw ms", "sw ms", "sw/hw");
+        for (int radius : { 0, 4, 16 })
+        {
+            data.cpu->kernelRadius = radius;
+            const int taps = (2 * radius + 1) * (2 * radius + 1);
+            // Keep each batch around the same total work so runtimes stay sane.
+            const int dispatches = std::max(2, 512 / taps);
+            const int repeats = 3;
 
-        double hwMs = timer.time(hwPipeline, textureHeap.gpu, data.gpu, grid, dispatches, repeats);
-        double swMs = timer.time(swPipeline, textureHeap.gpu, data.gpu, grid, dispatches, repeats);
+            double hwMs = timer.time(hwPipeline, textureHeap.gpu, data.gpu, grid, dispatches, repeats);
+            double swMs = timer.time(swPipeline, textureHeap.gpu, data.gpu, grid, dispatches, repeats);
 
-        const double gsamples = double(width) * height * taps / 1.0e9;
-        char label[64];
-        std::snprintf(label, sizeof(label), "r=%-2d (%4d taps/pixel)", radius, taps);
-        std::printf("%-28s %9.3f ms %9.3f ms %10.2fx   (hw %.1f, sw %.1f Gsamples/s)\n",
-                    label, hwMs, swMs, swMs / hwMs,
-                    gsamples / (hwMs / 1000.0), gsamples / (swMs / 1000.0));
-    }
+            const double gsamples = double(width) * height * taps / 1.0e9;
+            char label[64];
+            std::snprintf(label, sizeof(label), "r=%-2d (%4d taps/pixel)", radius, taps);
+            std::printf("%-28s %9.3f ms %9.3f ms %10.2fx   (hw %.1f, sw %.1f Gsamples/s)\n",
+                        label, hwMs, swMs, swMs / hwMs,
+                        gsamples / (hwMs / 1000.0), gsamples / (swMs / 1000.0));
+        }
     } // timer scope
 
     allocator.free();

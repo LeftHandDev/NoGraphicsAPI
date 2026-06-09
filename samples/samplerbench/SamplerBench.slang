@@ -33,7 +33,7 @@ float2 tapUV(int2 pixelCoord, int kx, int ky, float2 invSize)
     rwTextureHeap[data->dstTexture][pixelCoord] = acc / taps;
 }
 
-[numthreads(16, 16, 1)] void benchSoftware(uint3 threadId : SV_DispatchThreadID, SamplerBenchData* data)
+    [numthreads(16, 16, 1)] void benchSoftware(uint3 threadId : SV_DispatchThreadID, SamplerBenchData* data)
 {
     int2 imgSize = int2(data->imageSize.x, data->imageSize.y);
     int2 pixelCoord = int2(threadId.x, threadId.y);
