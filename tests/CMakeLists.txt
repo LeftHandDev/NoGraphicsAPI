@@ -7,7 +7,7 @@ target_include_directories(test-common PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(test-common PUBLIC nographicsapi PRIVATE stb Vulkan::Vulkan)
 target_compile_definitions(test-common PUBLIC
     NGA_TEST_REFERENCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/reference"
-    NGA_TEST_SHADER_DIR="${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders"
+    NGA_TEST_SHADER_DIR="${NGA_SHADER_OUTPUT_DIR}"
     NGA_TEST_ASSET_DIR="${CMAKE_SOURCE_DIR}/assets")
 
 # add_render_test(<target> <source> <sample-include-dir>)

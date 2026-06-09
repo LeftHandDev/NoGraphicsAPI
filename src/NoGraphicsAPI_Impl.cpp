@@ -506,7 +506,9 @@ struct VulkanDevice
         physicalDeviceVulkan12Features.bufferDeviceAddress = VK_TRUE;
         physicalDeviceVulkan12Features.runtimeDescriptorArray = VK_TRUE;
         physicalDeviceVulkan12Features.shaderInt8 = VK_TRUE;
+#ifndef _WIN32
         physicalDeviceVulkan12Features.storagePushConstant8 = VK_TRUE;
+#endif
 
         vulkanDevice->physicalDevice.features.shaderInt64 = VK_TRUE;
 
