@@ -38,7 +38,7 @@ add_subdirectory(external/NoGraphicsAPI)
 Samples and tests are skipped automatically when the repo is not the top-level
 project, so only the library (and its one dependency) builds.
 
-**2. Just this folder, copied or submoduled into your tree:**
+**2. Just this folder, copied into your tree:**
 
 ```cmake
 add_subdirectory(path/to/nga)

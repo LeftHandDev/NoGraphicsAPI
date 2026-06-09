@@ -240,7 +240,7 @@ PixelOut main(PixelIn pixel, VertexData* _, PixelData* data)
 
 Raytracing pipelines and acceleration structures are not mentioned in the original header, so some liberties had to be taken in the API design. Since raytracing pipelines are not required to trace rays, for now they are not implemented.
 
-To trace rays, simply create and build acceleration structures, and then pass the TLAS gpu pointer to a shader and use ray query. See the [Raytracing.cpp](https://github.com/LeftHandDev/NoGraphicsAPI/blob/main/Samples/Raytracing/Raytracing.cpp) sample for an example.
+To trace rays, simply create and build acceleration structures, and then pass the TLAS gpu pointer to a shader and use ray query. See the [Raytracing.cpp](https://github.com/LeftHandDev/NoGraphicsAPI/blob/main/samples/raytracing/Raytracing.cpp) sample for an example.
 
 ## Dependencies
 

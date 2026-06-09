@@ -11,7 +11,9 @@ project(nga
 include("${CMAKE_CURRENT_LIST_DIR}/nga.cmake")
 
 # Variables from nga.cmake are scoped to this directory; re-export the ones
-# consumers need (see nga.cmake's header comment).
+# consumers need (see nga.cmake's header comment) so that NGA_INCLUDE_DIR and
+# include(CompileShaders) also work from the consuming project's CMakeLists.
 if(NOT PROJECT_IS_TOP_LEVEL)
     set(NGA_INCLUDE_DIR "${NGA_INCLUDE_DIR}" PARENT_SCOPE)
+    set(CMAKE_MODULE_PATH "${CMAKE_MODULE_PATH}" PARENT_SCOPE)
 endif()

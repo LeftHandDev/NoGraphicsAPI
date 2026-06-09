@@ -15,9 +15,11 @@ project(NoGraphicsAPI
 # samples, windowing backends and the headless rendering tests.
 add_subdirectory(nga)
 
-# Consumers embedding this whole repo still get nga's exported variables.
+# Consumers embedding this whole repo still get nga's exported variables
+# (NGA_INCLUDE_DIR and the module path that makes include(CompileShaders) work).
 if(NOT PROJECT_IS_TOP_LEVEL)
     set(NGA_INCLUDE_DIR "${NGA_INCLUDE_DIR}" PARENT_SCOPE)
+    set(CMAKE_MODULE_PATH "${CMAKE_MODULE_PATH}" PARENT_SCOPE)
 endif()
 
 # Samples and tests are for working on NGA itself; when this repo is consumed
