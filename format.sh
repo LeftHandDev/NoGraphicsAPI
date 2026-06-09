@@ -17,7 +17,7 @@ if ! command -v clang-format >/dev/null 2>&1; then
 fi
 
 # Only our own source trees — external/ (submodules + vendored stb) is excluded.
-roots=(src platform samples shaders)
+roots=(src platform samples shaders tests)
 
 mapfile -d '' files < <(find "${roots[@]}" -type f \
     \( -name '*.cpp' -o -name '*.h' -o -name '*.hpp' -o -name '*.slang' \) -print0)

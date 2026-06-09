@@ -331,6 +331,9 @@ struct VulkanInstance
 
         std::vector<const char*> requiredInstanceExtensions = {};
         std::vector<const char*> optionalInstanceExtensions = {};
+        // Enabled when available so tools (and the test harness) can attach a
+        // VK_EXT_debug_utils messenger to observe validation messages.
+        optionalInstanceExtensions.push_back("VK_EXT_debug_utils");
         inst->requiredDeviceExtensions = {
             VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME,
             VK_EXT_MESH_SHADER_EXTENSION_NAME,
@@ -1439,9 +1442,9 @@ VkPipeline gpuCreateGraphicsPipelineInternal(VulkanDevice* vulkanDevice, ByteSpa
 
     VkPipelineInputAssemblyStateCreateInfo inputAssemblyInfo = {};
     inputAssemblyInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    inputAssemblyInfo.topology = desc.topology == TOPOLOGY_TRIANGLE_LIST ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST : desc.topology == TOPOLOGY_TRIANGLE_STRIP          ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP
-                                                                                                             : desc.topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN
-                                                                                                                                                                   : VK_PRIMITIVE_TOPOLOGY_MAX_ENUM;
+    inputAssemblyInfo.topology = desc.topology == TOPOLOGY_TRIANGLE_LIST ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST : desc.topology == TOPOLOGY_TRIANGLE_STRIP ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP
+                                                                                                             : desc.topology == TOPOLOGY_TRIANGLE_FAN     ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN
+                                                                                                                                                          : VK_PRIMITIVE_TOPOLOGY_MAX_ENUM;
 
     VkPipelineViewportStateCreateInfo viewportState = {};
     viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;

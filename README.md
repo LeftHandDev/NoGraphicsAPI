@@ -1,5 +1,7 @@
 # No Graphics API
 
+[![CI](https://github.com/LeftHandDev/NoGraphicsAPI/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/LeftHandDev/NoGraphicsAPI/actions/workflows/ci.yml)
+
 A demo of the simplified graphics API from Sebastian Aaltonen's blog post [No Graphics API](https://www.sebastianaaltonen.com/blog/no-graphics-api), implemented in Vulkan. The entire API is not implemented, just enough to get some samples working.
 
 The project started with the original header from the blog post, and built from there. The style and design attempts to match the blog post where possible.
