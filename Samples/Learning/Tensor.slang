@@ -74,6 +74,26 @@ void _mT(uint t: SV_DispatchThreadID, TensorTransposeData *data)
 }
 
 [numthreads(64, 1, 1)]
+void _matmul(uint t: SV_DispatchThreadID, TensorMatMulData *data)
+{
+    if (t >= data->n)
+    {
+        return;
+    }
+
+    int x_row = t / data->c;
+    int y_col = t % data->c;
+
+    float d = 0;
+    for (int i = 0; i < data->b; i++)
+    {
+        d += data->x[x_row * data->b + i] * data->y[data->c * i + y_col];
+    }
+
+    data->z[t] = d;
+}
+
+[numthreads(64, 1, 1)]
 void _pow(uint t: SV_DispatchThreadID, TensorData *data)
 {
     if (t >= data->n)

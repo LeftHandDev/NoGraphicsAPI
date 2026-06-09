@@ -7,129 +7,135 @@
 #include <ostream>
 #include <memory>
 
-using shape = std::vector<unsigned int>;
+using Shape = std::vector<unsigned int>;
 
-class tensor_impl;
-class device_impl;
-class device;
+class Tensor_impl;
+class Device_impl;
+class Device;
 
-class tensor
+template <typename T>
+class Allocation;
+
+class Tensor
 {
 public:
-    tensor(tensor &&) noexcept;
-    tensor &operator=(tensor &&) noexcept;
-    ~tensor();
+    Tensor(Tensor&&) noexcept;
+    Tensor& operator=(Tensor&&) noexcept;
+    ~Tensor();
 
     operator std::string() const;
 
     std::vector<float> cpu();
 
-    shape shape() const;
-    tensor reshape(::shape) const;
+    Shape shape() const;
+    Tensor reshape(Shape) const;
 
+    void copy(const Tensor&) const;
     void backward();
 
-    tensor operator+(const tensor &) const; // element-wise addition
-    tensor operator-(const tensor &) const; // element-wise subtraction
-    tensor operator*(const tensor &) const; // element-wise multiplication
-    tensor operator/(const tensor &) const; // element-wise division
+    Tensor operator+(const Tensor&) const; // element-wise addition
+    Tensor operator-(const Tensor&) const; // element-wise subtraction
+    Tensor operator*(const Tensor&) const; // element-wise multiplication
+    Tensor operator/(const Tensor&) const; // element-wise division
 
-    tensor operator[](unsigned int) const; // takes a slice of a matrix
+    Tensor operator[](unsigned int) const; // takes a slice of a matrix
 
-    tensor mT() const;                   // 2D matrix transpose, +3D batched matrix transpose
-    tensor dot(const tensor &) const;    // 1D dot product
-    tensor matmul(const tensor &) const; // 2D matrix multiplication, +3D batched matrix multiplcation
+    Tensor mT() const;                  // 2D matrix transpose, +3D batched matrix transpose
+    Tensor dot(const Tensor&) const;    // 1D dot product
+    Tensor matmul(const Tensor&) const; // 2D matrix multiplication, +3D batched matrix multiplcation
 
-    tensor pow(const tensor &) const;
-    tensor exp() const;
-    tensor tanh() const;
+    Tensor pow(const Tensor&) const;
+    Tensor exp() const;
+    Tensor tanh() const;
 
 private:
     const float e = 2.718281828459045;
-    ::shape _shape;
-    friend class device_impl;
-    explicit tensor(device_impl *, std::vector<float>, ::shape = {});
-    explicit tensor(tensor_impl, ::shape = {});
-    std::unique_ptr<tensor_impl> _tensor;
+    Shape _shape;
+    friend class Device_impl;
+    explicit Tensor(Device_impl*, std::vector<float>, Shape = {}, bool slice = false);
+    explicit Tensor(Device_impl*, Allocation<float>, Shape = {}, bool slice = false);
+    std::unique_ptr<Tensor_impl> _tensor;
 };
 
-inline std::ostream &operator<<(std::ostream &os, const tensor &t)
+inline std::ostream& operator<<(std::ostream& os, const Tensor& t)
 {
     return os << static_cast<std::string>(t);
 }
 
-class device
+class Device
 {
 public:
-    virtual tensor tensor(std::vector<float>, shape = {}) = 0;
-    virtual ::tensor rand(::shape) = 0;
-    virtual ::tensor zeros(::shape) = 0;
-    virtual ::tensor ones(::shape) = 0;
-    virtual ::tensor repeat(float, ::shape = {}) = 0;
+    virtual Tensor tensor(std::vector<float>, Shape = {}) = 0;
+    virtual Tensor rand(Shape) = 0;
+    virtual Tensor zeros(Shape) = 0;
+    virtual Tensor ones(Shape) = 0;
+    virtual Tensor repeat(float, Shape = {}) = 0;
 };
 
-class instance
+class Instance
 {
 public:
-    instance();
+    Instance();
 
-    ~instance();
+    ~Instance();
 
-    device *device();
+    Device* device(int index = 0);
 };
 
-class module
+class Module
 {
 public:
-    ~module() {}
-    virtual tensor forward(tensor) = 0;
+    ~Module()
+    {
+    }
+    virtual Tensor forward(const Tensor& in) = 0;
 };
 
-class layer : public module
+class Layer : public Module
 {
 public:
-    layer(device *device, unsigned int in, unsigned int out)
-        : _weights(device->rand({in, out})), _biases(device->zeros({1, out}))
+    Layer(Device* device, unsigned int in, unsigned int out)
+        : _weights(device->rand({ in, out })), _biases(device->zeros({ 1, out }))
     {
     }
 
-    virtual tensor forward(tensor in) override
+    virtual Tensor forward(const Tensor& in) override
     {
         if (in.shape().size() == 1)
         {
-            in = in.reshape({1, in.shape().front()});
+            return (in.reshape({ 1, in.shape().front() }).matmul(_weights) + _biases).tanh();
         }
         return (in.matmul(_weights) + _biases).tanh();
     }
 
 private:
-    tensor _weights;
-    tensor _biases;
+    Tensor _weights;
+    Tensor _biases;
 };
 
-class network : public module
+class Network : public Module
 {
 public:
-    network(device *device, shape layers)
+    Network(Device* device, Shape layers)
     {
         for (size_t i = 1; i < layers.size(); i++)
         {
-            _layers.push_back({device, layers[i - 1], layers[i]});
+            _layers.push_back({ device, layers[i - 1], layers[i] });
         }
     }
 
-    virtual tensor forward(tensor in) override
+    virtual Tensor forward(const Tensor& in) override
     {
-        tensor flow = _layers.front().forward(std::move(in));
+        Tensor flow = _layers.front().forward(in);
         for (size_t i = 1; i < _layers.size(); i++)
         {
-            flow = _layers[i].forward(std::move(flow));
+            flow = _layers[i].forward(flow);
         }
         return flow;
     }
 
 private:
-    std::vector<layer> _layers;
+    std::vector<Layer> _layers;
 };
 
 #endif
