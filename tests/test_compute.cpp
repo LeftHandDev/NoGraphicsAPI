@@ -89,6 +89,7 @@ int main(int argc, char** argv)
     tints.cpu[3] = { { 1.0f, 1.0f, 0.5f }, 0.6f };
     data.cpu->tints = tints.gpu;
     data.cpu->tintCount = tintCount;
+    data.cpu->sampler = Sampler{ .minFilter = LINEAR, .magFilter = LINEAR, .addressU = CLAMP, .addressV = CLAMP };
 
     // Fresh timeline for the frame loop (matches the sample structure).
     gpuDestroySemaphore(semaphore);

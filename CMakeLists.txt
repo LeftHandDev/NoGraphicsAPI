@@ -126,7 +126,8 @@ include(ngapi/cmake/CompileShaders.cmake)
 set(COMMON_SHADER_DEPS
     "${NGAPI_INCLUDE_DIR}/NoGraphicsAPI.h"
     "${NGAPI_INCLUDE_DIR}/NoGraphicsAPI_Impl.h"
-    "${NGAPI_INCLUDE_DIR}/Config.h")
+    "${NGAPI_INCLUDE_DIR}/Config.h"
+    "${NGAPI_INCLUDE_DIR}/Sampler.h")
 
 set(NGAPI_SHADER_OUTPUTS "")
 compile_shader(SOURCE samples/compute/Compute.slang     STAGE compute  OUTPUT compute/Compute.spv
