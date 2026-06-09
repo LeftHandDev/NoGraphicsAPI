@@ -1,7 +1,7 @@
 #ifndef SAMPLES_TENSOR_COMMON_H
 #define SAMPLES_TENSOR_COMMON_H
 
-#include "../../NoGraphicsAPI.h"
+#include "NoGraphicsAPI.h"
 
 struct alignas(16) TensorData
 {

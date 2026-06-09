@@ -1,6 +1,6 @@
 #include "Common.h"
 #include "Tensor.h"
-#include "../Common/Utilities.h"
+#include "Utilities.h"
 #include <map>
 #include <algorithm>
 #include <random>
@@ -37,7 +37,7 @@ public:
         queue = gpuCreateQueue(device);
         allocator = new LinearAllocator<MEMORY_DEFAULT>(device);
 
-        auto tensorIR = loadIR("../Shaders/Learning/Tensor.spv");
+        auto tensorIR = loadIR("shaders/learning/Tensor.spv");
         pipelines["add"] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_add");
         pipelines["sub"] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_sub");
         pipelines["mul"] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_mul");
@@ -51,11 +51,23 @@ public:
 
     ~Device_impl()
     {
+        submit();
+        delete readback_ring;
+        delete struct_allocator;
         delete allocator;
-        std::for_each(pipelines.begin(), pipelines.end(), [](const auto& pair)
-                      { 
-                        auto [entry, pipeline] = pair;
-                        gpuFreePipeline(pipeline); });
+
+        if (semaphore)
+        {
+            gpuDestroySemaphore(semaphore);
+        }
+
+        gpuDestroyQueue(queue);
+
+        for (auto [entry, pipeline] : pipelines)
+        {
+            gpuFreePipeline(pipeline);
+        }
+
         auto iter = std::remove(devices.begin(), devices.end(), reinterpret_cast<Device*>(this));
         if (iter == devices.end())
         {
@@ -142,6 +154,11 @@ public:
 
     void submit()
     {
+        if (!cmd)
+        {
+            return; // no work to submit
+        }
+
         if (!semaphore)
         {
             semaphore = gpuCreateSemaphore(device, 0);

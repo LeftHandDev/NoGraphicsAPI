@@ -1,5 +1,3 @@
-#include "../../External/stb_image.h"
-#include "../../External/stb_image_write.h"
 #include "Learning.h"
 #include "Tensor.h"
 
@@ -12,11 +10,12 @@ void learningSample()
 
     try
     {
-        Network mlp(device, { 2, 3, 3, 2 });
+        Network mlp(device, { 2, 3, 2 });
 
         auto x = device->rand({ 2 });
 
-        std::cout << mlp.forward(x) << std::endl;
+        std::cout << x << std::endl
+                  << mlp.forward(x) << std::endl;
     }
     catch (const std::exception& e)
     {
@@ -24,4 +23,10 @@ void learningSample()
     }
 
     return;
+}
+
+int main()
+{
+    learningSample();
+    return 0;
 }

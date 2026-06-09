@@ -65,6 +65,7 @@ inline std::ostream& operator<<(std::ostream& os, const Tensor& t)
 class Device
 {
 public:
+    virtual ~Device() = default;
     virtual Tensor tensor(std::vector<float>, Shape = {}) = 0;
     virtual Tensor rand(Shape) = 0;
     virtual Tensor zeros(Shape) = 0;
