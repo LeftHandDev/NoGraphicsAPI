@@ -10,13 +10,20 @@
 // A sampler is plain data plus shader code — not an API object and not a
 // descriptor. Following the blog post, declare one inline in GPU code:
 //
-//     Sampler sampler = {.minFilter = LINEAR, .magFilter = LINEAR};
+//     Sampler sampler = {};        // `= {}` applies the defaults below;
+//     sampler.minFilter = LINEAR;  // a bare `Sampler sampler;` declaration
+//     sampler.magFilter = LINEAR;  // is uninitialized in slang!
 //     float4 color = sampler.SampleLevel(textureHeap[t], uv, 0);
 //
-// or put one in your own data struct and fill it in on the CPU — it is just a
-// struct, so both work. Filtering runs in shader code; only the raw texel
-// fetches go through the texture units (Load), so tiling, format decode and
-// caching still come from hardware. There is no hardware sampler behind this.
+// or put one in your own data struct and fill it in on the CPU — C++20
+// designated initializers work there (slang has none):
+//
+//     data.cpu->sampler = Sampler{ .minFilter = LINEAR, .addressU = CLAMP };
+//
+// It is just a struct, so both work. Filtering runs in shader code; only the
+// raw texel fetches go through the texture units (Load), so tiling, format
+// decode and caching still come from hardware. There is no hardware sampler
+// behind this.
 
 // Filter modes
 #define NEAREST 0

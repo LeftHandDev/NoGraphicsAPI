@@ -21,11 +21,6 @@ struct alignas(16) ComputeData
     // directly (a GPU address), no descriptor binding involved.
     Tint* tints;
     uint tintCount;
-
-    // A software sampler (see Sampler.h): plain data filled in on the CPU and
-    // used by the shader straight from this struct — no descriptor, no API
-    // object, no global heap.
-    Sampler sampler;
 };
 
 #endif // SAMPLES_SHADER_COMPUTE_H

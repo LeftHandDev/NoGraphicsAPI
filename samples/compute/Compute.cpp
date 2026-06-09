@@ -87,10 +87,6 @@ int main()
     data.cpu->tints = tints.gpu;
     data.cpu->tintCount = tintCount;
 
-    // The sampler is plain data too: describe the filtering here and the shader
-    // reads it from the struct. No sampler object is ever created.
-    data.cpu->sampler = Sampler{ .minFilter = LINEAR, .magFilter = LINEAR, .addressU = CLAMP, .addressV = CLAMP };
-
     commandBuffer = gpuStartCommandRecording(queue);
     gpuSetPipeline(commandBuffer, pipeline);
     gpuSetActiveTextureHeapPtr(commandBuffer, textureHeap.gpu);
