@@ -97,7 +97,16 @@ if(NOT SLANGC)
     message(FATAL_ERROR "slangc not found; set VULKAN_SDK or put slangc on PATH.")
 endif()
 
-set(NGA_SHADER_OUTPUT_DIR  "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders")
+# Multi-config generators (e.g. Visual Studio) automatically append $<CONFIG>
+# to the executable output directory, so shaders and assets must follow suit
+# to land next to the .exe at runtime.
+if(CMAKE_CONFIGURATION_TYPES)
+    set(NGA_RUNTIME_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>")
+else()
+    set(NGA_RUNTIME_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
+endif()
+
+set(NGA_SHADER_OUTPUT_DIR  "${NGA_RUNTIME_DIR}/shaders")
 set(NGA_SHADER_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/src")
 include(CompileShaders)
 
@@ -139,7 +148,7 @@ add_custom_target(shaders ALL DEPENDS ${NGA_SHADER_OUTPUTS})
 # Copy assets next to the executables
 add_custom_target(copy_assets ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_SOURCE_DIR}/assets" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/assets"
+        "${CMAKE_SOURCE_DIR}/assets" "${NGA_RUNTIME_DIR}/assets"
     COMMENT "Copying assets")
 
 # ---------------------------------------------------------------------------
