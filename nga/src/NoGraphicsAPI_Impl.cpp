@@ -4,27 +4,12 @@
 
 #include "Config.h"
 #include "PatchDescriptors.h"
+#include "PatchDescriptorsSpv.h"
 
 #include <map>
 #include <vector>
-#include <fstream>
-#include <filesystem>
 #include <algorithm>
 #include "NoGraphicsAPI_Impl.h"
-
-std::vector<uint8_t> gpuHiddenLoadIR(const std::filesystem::path& path)
-{
-    std::ifstream file{ path, std::ios::binary | std::ios::ate };
-    if (!file.is_open())
-    {
-        return {};
-    }
-    auto size = file.tellg();
-    std::vector<uint8_t> buffer(size);
-    file.seekg(0);
-    file.read(reinterpret_cast<char*>(buffer.data()), size);
-    return buffer;
-}
 
 struct GpuPipeline_T
 {
@@ -1805,7 +1790,9 @@ void gpuSetActiveTextureHeapPtr(GpuCommandBuffer cb, void* ptrGpu)
         GpuPipeline currentPipeline = vulkanDevice->currentPipeline[cb];
         if (vulkanDevice->patchDescriptorsPipeline == nullptr)
         {
-            auto patchDescriptorsSpv = gpuHiddenLoadIR("shaders/PatchDescriptors.spv");
+            // Embedded at build time (PatchDescriptorsSpv.h) so the library works
+            // without a .spv file on disk; copied because ByteSpan is non-const.
+            std::vector<uint8_t> patchDescriptorsSpv(std::begin(NgaPatchDescriptorsSpv), std::end(NgaPatchDescriptorsSpv));
             vulkanDevice->patchDescriptorsPipeline = gpuCreateComputePipeline(device, patchDescriptorsSpv);
         }
 

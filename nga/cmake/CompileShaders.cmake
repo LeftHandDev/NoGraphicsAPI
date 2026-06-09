@@ -1,18 +1,27 @@
-# Slang -> SPIR-V compilation helper.
+# Slang -> SPIR-V compilation helper. NGA shader code includes NoGraphicsAPI.h
+# (the header is shared between C++ and slang), so consumers compiling their
+# own shaders can use this too — nga.cmake puts this directory on
+# CMAKE_MODULE_PATH, making it available as include(CompileShaders).
 #
 # Expects these variables to be set before use:
 #   SLANGC                  - path to the slangc compiler
 #   NGA_SHADER_OUTPUT_DIR   - directory the .spv files are written to (next to the executables)
-#   NGA_SHADER_INCLUDE_DIR  - include search path passed to slangc (-I)
+#   NGA_SHADER_INCLUDE_DIR  - include search path passed to slangc (-I);
+#                             defaults to nga's public include directory
 #
 # compile_shader(SOURCE <path> STAGE <stage> OUTPUT <rel.spv> [ENTRY <name>] [EXTRA_DEPENDS ...])
-#   SOURCE        - .slang path relative to the project root
+#   SOURCE        - .slang path, absolute or relative to the calling CMakeLists
 #   STAGE         - SPIR-V stage (compute, vertex, fragment, ...)
 #   OUTPUT        - output .spv path relative to NGA_SHADER_OUTPUT_DIR
 #   ENTRY         - optional entry point (defaults to "main")
 #   EXTRA_DEPENDS - additional files that should trigger a recompile
 #
 # Appends the produced output path to NGA_SHADER_OUTPUTS in the caller's scope.
+
+if(NOT DEFINED NGA_SHADER_INCLUDE_DIR)
+    get_filename_component(NGA_SHADER_INCLUDE_DIR "${CMAKE_CURRENT_LIST_DIR}/../include" ABSOLUTE)
+endif()
+
 function(compile_shader)
     cmake_parse_arguments(S "" "SOURCE;STAGE;OUTPUT;ENTRY" "EXTRA_DEPENDS" ${ARGN})
 
@@ -22,17 +31,21 @@ function(compile_shader)
         set(ENTRY_ARG -entry main)
     endif()
 
+    if(NOT IS_ABSOLUTE "${S_SOURCE}")
+        set(S_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/${S_SOURCE}")
+    endif()
+
     set(OUT "${NGA_SHADER_OUTPUT_DIR}/${S_OUTPUT}")
     get_filename_component(OUT_DIR "${OUT}" DIRECTORY)
 
     add_custom_command(
         OUTPUT "${OUT}"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${OUT_DIR}"
-        COMMAND "${SLANGC}" "${CMAKE_SOURCE_DIR}/${S_SOURCE}"
+        COMMAND "${SLANGC}" "${S_SOURCE}"
                 -target spirv -stage ${S_STAGE} ${ENTRY_ARG}
                 -I "${NGA_SHADER_INCLUDE_DIR}"
                 -o "${OUT}"
-        DEPENDS "${CMAKE_SOURCE_DIR}/${S_SOURCE}" ${S_EXTRA_DEPENDS}
+        DEPENDS "${S_SOURCE}" ${S_EXTRA_DEPENDS}
         COMMENT "Compiling shader ${S_OUTPUT}"
         VERBATIM)
 

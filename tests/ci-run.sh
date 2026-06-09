@@ -35,8 +35,8 @@ cmake -S "$ROOT" -B "$BUILD" -G Ninja \
 echo "==> Build"
 cmake --build "$BUILD" -j"$(nproc)"
 
-# PatchDescriptors.spv is loaded relative to the working directory, so run the
-# tests from the bin dir where the compiled shaders live.
+# Run from the bin dir: failure artifacts (<name>_actual.png / <name>_diff.png)
+# are written to the working directory, and CI collects them from build-ci/bin.
 cd "$BUILD/bin"
 
 status=0

@@ -16,11 +16,13 @@ if ! command -v clang-format >/dev/null 2>&1; then
     exit 1
 fi
 
-# Only our own source trees — external/ (submodules + vendored stb) is excluded.
-roots=(src platform samples shaders tests)
+# Only our own source trees — external/ (submodules + vendored stb) is
+# excluded, as is the generated SPIR-V header under nga/src.
+roots=(nga platform samples tests)
 
 mapfile -d '' files < <(find "${roots[@]}" -type f \
-    \( -name '*.cpp' -o -name '*.h' -o -name '*.hpp' -o -name '*.slang' \) -print0)
+    \( -name '*.cpp' -o -name '*.h' -o -name '*.hpp' -o -name '*.slang' \) \
+    ! -name 'PatchDescriptorsSpv.h' -print0)
 
 if [ "${#files[@]}" -eq 0 ]; then
     echo "no source files found"

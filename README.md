@@ -11,7 +11,23 @@ The project started with the original header from the blog post, and built from 
 
 To see what the API looks like in practice, check out the [samples](https://github.com/LeftHandDev/NoGraphicsAPI/tree/main/samples). For simple usage of the API, see below.
 
-## Building
+## Using NGA in your project
+
+The reusable library is the self-contained [`nga/`](nga/) folder. Add this
+repo (or just that folder) as a submodule, a copy, or via FetchContent, then:
+
+```cmake
+add_subdirectory(path/to/NoGraphicsAPI)   # or path/to/nga, or include(nga/nga.cmake)
+target_link_libraries(your_app PRIVATE nga::nga)
+```
+
+That's it — samples and tests build only when NGA is the top-level project,
+the one library dependency (vk-bootstrap) resolves itself (submodule or
+automatic download), and no shader compiler is required to build the library.
+You only need CMake 3.22+, a C++20 compiler and Vulkan. See
+[nga/README.md](nga/README.md) for the details.
+
+## Building the samples
 
 Clone with submodules (or initialize them afterwards):
 
@@ -228,13 +244,15 @@ To trace rays, simply create and build acceleration structures, and then pass th
 
 ## Dependencies
 
-Fetched as git submodules under `external/` and built from source — nothing to install:
+The library itself ([`nga/`](nga/)) depends only on Vulkan and
+[vk-bootstrap](https://github.com/charles-lunarg/vk-bootstrap) (a submodule,
+auto-downloaded if missing). The rest is samples/tests-only, fetched as git
+submodules under `external/` and built from source — nothing to install:
 - [GLFW](https://github.com/glfw/glfw) and [SDL3](https://github.com/libsdl-org/SDL) — windowing (pick one via `NGA_WINDOW_BACKEND`)
 - [GLM](https://github.com/g-truc/glm) — math
-- [vk-bootstrap](https://github.com/charles-lunarg/vk-bootstrap) — Vulkan instance/device setup
 
 Vendored in the repo:
 - [stb_image & stb_image_write](https://github.com/nothings/stb/tree/master)
 
 Must be installed separately (the one prerequisite):
-- [Vulkan SDK](https://vulkan.lunarg.com/sdk/home) — Vulkan loader/headers and the `slangc` shader compiler
+- [Vulkan SDK](https://vulkan.lunarg.com/sdk/home) — Vulkan loader/headers, plus the `slangc` shader compiler used by the samples and tests (the library itself does not need it)
