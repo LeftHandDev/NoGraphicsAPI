@@ -12,49 +12,54 @@
     struct object##_T;            \
     using object = object##_T*;
 
-// Vector types
-using int2 = struct
+// NOTE: these are named structs rather than aliases of anonymous structs
+// (e.g. `using uint3 = struct { ... };`). GCC does not extend the
+// "typedef name for linkage purposes" rule ([dcl.typedef]/9) to alias
+// declarations, so anonymous structs named only via `using` have no linkage
+// there, which makes API functions taking them by value fail to link. Named
+// structs have linkage on every compiler while preserving the same layout.
+struct int2
 {
     int x, y;
 };
-using int3 = struct
+struct int3
 {
     int x, y, z;
 };
-using int4 = struct
+struct int4
 {
     int x, y, z, w;
 };
 using uint = uint32_t;
-using uint2 = struct
+struct uint2
 {
     uint x, y;
 };
-using uint3 = struct
+struct uint3
 {
     uint x, y, z;
 };
-using uint4 = struct
+struct uint4
 {
     uint x, y, z, w;
 };
-using float2 = struct
+struct float2
 {
     float x, y;
 };
-using float3 = struct
+struct float3
 {
     float x, y, z;
 };
-using float4 = struct
+struct float4
 {
     float x, y, z, w;
 };
-using float3x4 = struct
+struct float3x4
 {
     float4 row0, row1, row2;
 };
-using float4x4 = struct
+struct float4x4
 {
     float4 row0, row1, row2, row3;
 };
