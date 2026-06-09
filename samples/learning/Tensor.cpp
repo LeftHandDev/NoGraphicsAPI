@@ -23,8 +23,10 @@ std::string to_string(Shape shape)
 uint64_t flatten(Shape shape)
 {
     uint64_t size = 1;
-    std::for_each(shape.begin(), shape.end(), [&size](const auto& n)
-                  { size *= n; });
+    for (auto& x : shape)
+    {
+        size *= x;
+    }
     return size;
 }
 

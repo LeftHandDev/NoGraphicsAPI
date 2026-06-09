@@ -88,33 +88,30 @@ public:
     {
         auto u = static_cast<const uint8_t*>(ptr);
 
-        auto large = std::find_if(largePages.begin(), largePages.end(),
-                                  [&](const Page& p)
-                                  {
-                                      auto base = static_cast<const uint8_t*>(p.basePtr);
-                                      auto gbase = static_cast<const uint8_t*>(p.baseGpuPtr);
-                                      return (base && u >= base && u < base + p.size) || (gbase && u >= gbase && u < gbase + p.size);
-                                  });
-        if (large != largePages.end())
+        for (auto iter = largePages.begin(); iter != largePages.end(); iter++)
         {
-            gpuFree(device, large->basePtr);
-            largePages.erase(large);
-            return;
+            auto base = static_cast<const uint8_t*>(iter->basePtr);
+            auto gbase = static_cast<const uint8_t*>(iter->baseGpuPtr);
+            if (base && u >= base && u < base + iter->size || gbase && u >= gbase && u < gbase + iter->size)
+            {
+                gpuFree(device, iter->basePtr);
+                largePages.erase(iter);
+                return;
+            }
         }
 
-        auto small = std::find_if(pages.begin(), pages.end(),
-                                  [&](const Page& p)
-                                  {
-                                      auto base = static_cast<const uint8_t*>(p.basePtr);
-                                      auto gbase = static_cast<const uint8_t*>(p.baseGpuPtr);
-                                      return (base && u >= base && u < base + p.size) || (gbase && u >= gbase && u < gbase + p.size);
-                                  });
-        if (small != pages.end() && small->allocations > 0)
+        for (auto iter = pages.begin(); iter != pages.end(); iter++)
         {
-            if (--small->allocations == 0)
+            auto base = static_cast<const uint8_t*>(iter->basePtr);
+            auto gbase = static_cast<const uint8_t*>(iter->baseGpuPtr);
+            if (base && u >= base && u < base + iter->size || gbase && u >= gbase && u < gbase + iter->size)
             {
-                gpuFree(device, small->basePtr);
-                pages.erase(small);
+                if (--iter->allocations == 0)
+                {
+                    gpuFree(device, iter->basePtr);
+                    pages.erase(iter);
+                    return;
+                }
             }
         }
     }
