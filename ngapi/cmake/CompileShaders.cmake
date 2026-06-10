@@ -9,11 +9,12 @@
 #   NGAPI_SHADER_INCLUDE_DIR  - include search path passed to slangc (-I);
 #                             defaults to ngapi's public include directory
 #
-# compile_shader(SOURCE <path> STAGE <stage> OUTPUT <rel.spv> [ENTRY <name>] [EXTRA_DEPENDS ...])
+# compile_shader(SOURCE <path> STAGE <stage> OUTPUT <rel.spv> [ENTRY <name>...] [EXTRA_DEPENDS ...])
 #   SOURCE        - .slang path, absolute or relative to the calling CMakeLists
 #   STAGE         - SPIR-V stage (compute, vertex, fragment, ...)
 #   OUTPUT        - output .spv path relative to NGAPI_SHADER_OUTPUT_DIR
-#   ENTRY         - optional entry point (defaults to "main")
+#   ENTRY         - optional entry point(s) (defaults to "main"); pass several
+#                   names to compile multiple entry points into a single .spv
 #   EXTRA_DEPENDS - additional files that should trigger a recompile
 #
 # Appends the produced output path to NGAPI_SHADER_OUTPUTS in the caller's scope.
@@ -28,7 +29,7 @@ if(NOT SLANGC)
 endif()
 
 function(compile_shader)
-    cmake_parse_arguments(S "" "SOURCE;STAGE;OUTPUT;ENTRY" "EXTRA_DEPENDS" ${ARGN})
+    cmake_parse_arguments(S "" "SOURCE;STAGE;OUTPUT" "ENTRY;EXTRA_DEPENDS" ${ARGN})
 
     # An empty COMMAND would be dropped silently, producing a rule that never
     # compiles anything — fail loudly instead.
@@ -36,11 +37,16 @@ function(compile_shader)
         message(FATAL_ERROR "compile_shader: slangc not found; put it on PATH, set VULKAN_SDK, or set SLANGC")
     endif()
 
-    if(S_ENTRY)
-        set(ENTRY_ARG -entry ${S_ENTRY})
-    else()
-        set(ENTRY_ARG -entry main)
+    # Pair each entry point with the stage; slangc requires the -stage option to
+    # follow the -entry it applies to, so this lets a single .spv hold several
+    # entry points (e.g. the tensor ops in the learning sample).
+    if(NOT S_ENTRY)
+        set(S_ENTRY main)
     endif()
+    set(STAGE_ENTRY_ARGS "")
+    foreach(entry IN LISTS S_ENTRY)
+        list(APPEND STAGE_ENTRY_ARGS -entry ${entry} -stage ${S_STAGE})
+    endforeach()
 
     if(NOT IS_ABSOLUTE "${S_SOURCE}")
         set(S_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/${S_SOURCE}")

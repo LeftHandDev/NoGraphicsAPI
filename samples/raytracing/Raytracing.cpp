@@ -597,7 +597,7 @@ int main()
     delete textRenderer;
     stbi_image_free(inputImage);
 
-    allocator.free();
+    allocator.reset();
 
     gpuDestroyTexture(texture);
     gpuFree(device, texturePtr);

@@ -1317,7 +1317,7 @@ GpuTextureDescriptor gpuRWTextureViewDescriptor(GpuTexture texture, GpuViewDesc 
     return descriptor;
 }
 
-GpuPipeline gpuCreateComputePipeline(GpuDevice device, ByteSpan computeIR)
+GpuPipeline gpuCreateComputePipeline(GpuDevice device, ByteSpan computeIR, const char* entry)
 {
     VulkanDevice* vulkanDevice = device->vulkanDevice;
     VkShaderModuleCreateInfo shaderModuleCreateInfo = {};
@@ -1334,7 +1334,7 @@ GpuPipeline gpuCreateComputePipeline(GpuDevice device, ByteSpan computeIR)
     pipelineCreateInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     pipelineCreateInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     pipelineCreateInfo.stage.module = shaderModule;
-    pipelineCreateInfo.stage.pName = "main";
+    pipelineCreateInfo.stage.pName = entry;
 
     VkPipeline pipeline;
     vulkanDevice->dispatchTable.createComputePipelines(VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &pipeline);
@@ -1883,6 +1883,54 @@ void gpuBarrier(GpuCommandBuffer cb, STAGE before, STAGE after, HAZARD_FLAGS haz
 {
     VulkanDevice* vulkanDevice = cb->device->vulkanDevice;
     std::vector<VkMemoryBarrier> memoryBarriers;
+
+    auto stageWriteAccess = [](STAGE stage) -> VkAccessFlags
+    {
+        switch (stage)
+        {
+        case STAGE_TRANSFER:
+            return VK_ACCESS_TRANSFER_WRITE_BIT;
+        case STAGE_COMPUTE:
+        case STAGE_PIXEL_SHADER:
+        case STAGE_VERTEX_SHADER:
+            return VK_ACCESS_SHADER_WRITE_BIT;
+        case STAGE_RASTER_COLOR_OUT:
+            return VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        case STAGE_ACCELERATION_STRUCTURE_BUILD:
+            return VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        default:
+            return VK_ACCESS_MEMORY_WRITE_BIT;
+        }
+    };
+
+    auto stageReadWriteAccess = [](STAGE stage) -> VkAccessFlags
+    {
+        switch (stage)
+        {
+        case STAGE_TRANSFER:
+            return VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+        case STAGE_COMPUTE:
+        case STAGE_PIXEL_SHADER:
+        case STAGE_VERTEX_SHADER:
+            return VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+                   VK_ACCESS_UNIFORM_READ_BIT;
+        case STAGE_RASTER_COLOR_OUT:
+            return VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        case STAGE_ACCELERATION_STRUCTURE_BUILD:
+            return VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+                   VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        default:
+            return VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+        }
+    };
+
+    {
+        VkMemoryBarrier memoryBarrier = {};
+        memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        memoryBarrier.srcAccessMask = stageWriteAccess(before);
+        memoryBarrier.dstAccessMask = stageReadWriteAccess(after);
+        memoryBarriers.push_back(memoryBarrier);
+    }
 
     if (hazards & HAZARD_DRAW_ARGUMENTS)
     {

@@ -12,7 +12,6 @@
     struct object##_T;            \
     using object = object##_T*;
 
-// Vector types
 // NOTE: these are named structs rather than aliases of anonymous structs
 // (e.g. `using uint3 = struct { ... };`). GCC does not extend the
 // "typedef name for linkage purposes" rule ([dcl.typedef]/9) to alias
@@ -443,7 +442,7 @@ GpuTextureDescriptor gpuTextureViewDescriptor(GpuTexture texture, GpuViewDesc de
 GpuTextureDescriptor gpuRWTextureViewDescriptor(GpuTexture texture, GpuViewDesc desc);
 
 // Pipelines
-GpuPipeline gpuCreateComputePipeline(GpuDevice device, ByteSpan computeIR);
+GpuPipeline gpuCreateComputePipeline(GpuDevice device, ByteSpan computeIR, const char* entry = "main");
 GpuPipeline gpuCreateGraphicsPipeline(GpuDevice device, ByteSpan vertexIR, ByteSpan pixelIR, GpuRasterDesc desc);
 GpuPipeline gpuCreateGraphicsMeshletPipeline(GpuDevice device, ByteSpan meshletIR, ByteSpan pixelIR, GpuRasterDesc desc);
 void gpuFreePipeline(GpuPipeline pipeline);
