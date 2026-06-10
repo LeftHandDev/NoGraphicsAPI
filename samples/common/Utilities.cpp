@@ -129,12 +129,42 @@ void getCube(std::vector<float3>& vertices, std::vector<float3>& normals, std::v
     };
 
     indices = {
-        0, 1, 2, 2, 3, 0,       // Front
-        4, 5, 6, 6, 7, 4,       // Back
-        8, 9, 10, 10, 11, 8,    // Left
-        12, 13, 14, 14, 15, 12, // Right
-        16, 17, 18, 18, 19, 16, // Bottom
-        20, 21, 22, 22, 23, 20, // Top
+        0,
+        1,
+        2,
+        2,
+        3,
+        0, // Front
+        4,
+        5,
+        6,
+        6,
+        7,
+        4, // Back
+        8,
+        9,
+        10,
+        10,
+        11,
+        8, // Left
+        12,
+        13,
+        14,
+        14,
+        15,
+        12, // Right
+        16,
+        17,
+        18,
+        18,
+        19,
+        16, // Bottom
+        20,
+        21,
+        22,
+        22,
+        23,
+        20, // Top
     };
 }
 
@@ -242,7 +272,7 @@ TextRenderer::~TextRenderer()
     gpuFreeDepthStencilState(depthStencilState);
     gpuDestroyTexture(atlas);
     gpuFree(device, atlasPtr);
-    allocator->free();
+    allocator->reset();
     delete allocator;
 }
 
