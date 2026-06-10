@@ -262,7 +262,7 @@ int main(int argc, char** argv)
     test::Image actual = test::readbackRGBA8(device, queue, capture, RENDER_W, RENDER_H);
     int rc = test::finalize(args, "graphics", actual);
 
-    allocator.free();
+    allocator.reset();
     stbi_image_free(inputImage);
     gpuDestroyTexture(texture);
     gpuFree(device, texturePtr);

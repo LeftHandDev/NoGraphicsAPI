@@ -30,12 +30,11 @@ public:
     LinearAllocator(GpuDevice gpuDevice, size_t pageSize = 65536)
         : device(gpuDevice), pageSize(pageSize)
     {
-        allocatePage(pageSize);
     }
 
     ~LinearAllocator()
     {
-        free();
+        reset();
     }
 
     void* allocate(size_t size, size_t align = GPU_DEFAULT_ALIGNMENT)
@@ -53,6 +52,11 @@ public:
             return allocateLarge<T>(totalBytes, align);
         }
 
+        if (pages.empty())
+        {
+            allocatePage(pageSize);
+        }
+
         Page& current = pages.back();
         size_t alignedOffset = (current.used + (align - 1)) & ~(align - 1);
 
@@ -64,6 +68,7 @@ public:
 
         Page& page = pages.back();
         page.used = alignedOffset + totalBytes;
+        page.allocations++;
 
         if (isGpuOnly())
         {
@@ -79,7 +84,39 @@ public:
         };
     }
 
-    void free()
+    void free(const void* ptr)
+    {
+        auto u = static_cast<const uint8_t*>(ptr);
+
+        for (auto iter = largePages.begin(); iter != largePages.end(); iter++)
+        {
+            auto base = static_cast<const uint8_t*>(iter->basePtr);
+            auto gbase = static_cast<const uint8_t*>(iter->baseGpuPtr);
+            if (base && u >= base && u < base + iter->size || gbase && u >= gbase && u < gbase + iter->size)
+            {
+                gpuFree(device, iter->basePtr);
+                largePages.erase(iter);
+                return;
+            }
+        }
+
+        for (auto iter = pages.begin(); iter != pages.end(); iter++)
+        {
+            auto base = static_cast<const uint8_t*>(iter->basePtr);
+            auto gbase = static_cast<const uint8_t*>(iter->baseGpuPtr);
+            if (base && u >= base && u < base + iter->size || gbase && u >= gbase && u < gbase + iter->size)
+            {
+                if (--iter->allocations == 0)
+                {
+                    gpuFree(device, iter->basePtr);
+                    pages.erase(iter);
+                    return;
+                }
+            }
+        }
+    }
+
+    void reset()
     {
         for (auto& page : pages)
         {
@@ -101,6 +138,7 @@ private:
         void* baseGpuPtr;
         size_t size;
         size_t used;
+        size_t allocations = 0;
     };
 
     void allocatePage(size_t size)
@@ -149,19 +187,20 @@ private:
     std::vector<Page> largePages;
 };
 
+template <MEMORY memory = MEMORY_DEFAULT>
 class RingBuffer
 {
 public:
-    RingBuffer(GpuDevice gpuDevice, size_t size, MEMORY memory = MEMORY_DEFAULT)
-        : device(gpuDevice), totalSize(size), memory(memory)
+    RingBuffer(GpuDevice gpuDevice, size_t size = 65536)
+        : device(gpuDevice), totalSize(size)
     {
-        basePtr = gpuMalloc(device, size, memory);
         if (memory == MEMORY_GPU)
         {
-            baseGpuPtr = nullptr;
+            baseGpuPtr = gpuMalloc(device, size, memory);
         }
         else
         {
+            basePtr = gpuMalloc(device, size, memory);
             baseGpuPtr = gpuHostToDevicePointer(device, basePtr);
         }
     }
@@ -172,9 +211,26 @@ public:
     }
 
     template <typename T>
+    bool wrap(size_t count = 1, size_t align = GPU_DEFAULT_ALIGNMENT)
+    {
+        size_t totalBytes = count * sizeof(T);
+        size_t alignedHead = (head + (align - 1)) & ~(align - 1);
+        if (alignedHead + totalBytes > totalSize)
+        {
+            return true;
+        }
+        return false;
+    }
+
+    template <typename T>
     Allocation<T> allocate(size_t count = 1, size_t align = GPU_DEFAULT_ALIGNMENT)
     {
         size_t totalBytes = count * sizeof(T);
+        if (totalBytes > totalSize)
+        {
+            return {};
+        }
+
         size_t alignedHead = (head + (align - 1)) & ~(align - 1);
 
         if (alignedHead + totalBytes > totalSize)
@@ -182,23 +238,13 @@ public:
             alignedHead = 0;
         }
 
-        size_t newHead = alignedHead + totalBytes;
-        size_t usedAfter = newHead > tail
-                               ? newHead - tail
-                               : (totalSize - tail) + newHead;
-
-        if (usedAfter > totalSize)
-        {
-            return {};
-        }
-
-        head = newHead;
+        head = alignedHead + totalBytes;
 
         if (memory == MEMORY_GPU)
         {
             return {
                 .cpu = nullptr,
-                .gpu = reinterpret_cast<T*>(static_cast<uint8_t*>(basePtr) + alignedHead)
+                .gpu = reinterpret_cast<T*>(static_cast<uint8_t*>(baseGpuPtr) + alignedHead)
             };
         }
 
@@ -208,29 +254,21 @@ public:
         };
     }
 
-    void finishFrame()
-    {
-        frameMarkers.push_back(head);
-    }
-
-    void releaseFrame()
-    {
-        if (frameMarkers.empty())
-            return;
-        tail = frameMarkers.front();
-        frameMarkers.erase(frameMarkers.begin());
-    }
-
     void free()
     {
         if (basePtr == nullptr)
+        {
             return;
+        }
         gpuFree(device, basePtr);
         basePtr = nullptr;
         baseGpuPtr = nullptr;
         head = 0;
-        tail = 0;
-        frameMarkers.clear();
+    }
+
+    size_t size()
+    {
+        return totalSize;
     }
 
 private:
@@ -239,9 +277,6 @@ private:
     void* baseGpuPtr = nullptr;
     size_t totalSize = 0;
     size_t head = 0;
-    size_t tail = 0;
-    MEMORY memory;
-    std::vector<size_t> frameMarkers;
 };
 
 class TextRenderer
@@ -257,7 +292,7 @@ private:
 
     GpuDevice device;
     GpuPipeline pipeline;
-    GpuDepthStencilState depthStencilState;
+    GpuDepthStencilState depthStencilState = nullptr;
 
     Allocation<GpuTextureDescriptor> textureHeap;
     Allocation<TextVertexData> vertexData;

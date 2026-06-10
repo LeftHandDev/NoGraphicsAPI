@@ -119,7 +119,7 @@ int main(int argc, char** argv)
     int rc = test::finalize(args, "compute", actual);
 
     stbi_image_free(inputImage);
-    allocator.free();
+    allocator.reset();
     gpuDestroySemaphore(semaphore);
     gpuDestroyTexture(texture);
     gpuDestroyTexture(outputTexture);
