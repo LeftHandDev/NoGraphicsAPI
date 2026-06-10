@@ -38,8 +38,8 @@ int main()
 
     const uint FRAMES_IN_FLIGHT = 2;
 
-    auto window = nga::createWindow("Test Window", 1920, 1080);
-    auto surface = nga::createSurface(window);
+    auto window = ngapi::createWindow("Test Window", 1920, 1080);
+    auto surface = ngapi::createSurface(window);
 
     LinearAllocator allocator(device);
 
@@ -401,17 +401,17 @@ int main()
     // use the swapchain's format/dimensions (not the float RT output texture).
     TextRenderer* textRenderer = new TextRenderer(device, swapchainDesc);
 
-    while (!nga::shouldClose(window))
+    while (!ngapi::shouldClose(window))
     {
-        nga::pollEvents(window);
+        ngapi::pollEvents(window);
 
-        if (nga::wasKeyPressed(window, nga::Key::Escape))
+        if (ngapi::wasKeyPressed(window, ngapi::Key::Escape))
         {
             break;
         }
 
         // Hold A to accumulate frames; release to stop.
-        bool accumulateHeld = nga::isKeyDown(window, nga::Key::A);
+        bool accumulateHeld = ngapi::isKeyDown(window, ngapi::Key::A);
         if (accumulateHeld && raytracingData.accumulate == 0)
         {
             raytracingData.accumulate = 1;
@@ -424,40 +424,40 @@ int main()
             raytracingData.accumulatedFrames = 0;
         }
 
-        if (nga::wasKeyPressed(window, nga::Key::S))
+        if (ngapi::wasKeyPressed(window, ngapi::Key::S))
         {
             raytracingData.spatial = raytracingData.spatial == 0 ? 1 : 0;
             raytracingData.frame = 0;
             raytracingData.accumulatedFrames = 0;
             taaData.cpu->frame = 0;
         }
-        if (nga::wasKeyPressed(window, nga::Key::T))
+        if (ngapi::wasKeyPressed(window, ngapi::Key::T))
         {
             raytracingData.temporal = raytracingData.temporal == 0 ? 1 : 0;
             raytracingData.frame = 0;
             raytracingData.accumulatedFrames = 0;
             taaData.cpu->frame = 0;
         }
-        if (nga::wasKeyPressed(window, nga::Key::R))
+        if (ngapi::wasKeyPressed(window, ngapi::Key::R))
         {
             reference = !reference;
             raytracingData.frame = 0;
             raytracingData.accumulatedFrames = 0;
             taaData.cpu->frame = 0;
         }
-        if (nga::wasKeyPressed(window, nga::Key::X))
+        if (ngapi::wasKeyPressed(window, ngapi::Key::X))
         {
             taaOn = !taaOn;
             taaData.cpu->frame = 0;
         }
 
         // Arrow keys move the camera while held.
-        velocity.x = nga::isKeyDown(window, nga::Key::Left)    ? -velocityScale
-                     : nga::isKeyDown(window, nga::Key::Right) ? velocityScale
-                                                               : 0.0f;
-        velocity.y = nga::isKeyDown(window, nga::Key::Up)     ? velocityScale
-                     : nga::isKeyDown(window, nga::Key::Down) ? -velocityScale
-                                                              : 0.0f;
+        velocity.x = ngapi::isKeyDown(window, ngapi::Key::Left)    ? -velocityScale
+                     : ngapi::isKeyDown(window, ngapi::Key::Right) ? velocityScale
+                                                                   : 0.0f;
+        velocity.y = ngapi::isKeyDown(window, ngapi::Key::Up)     ? velocityScale
+                     : ngapi::isKeyDown(window, ngapi::Key::Down) ? -velocityScale
+                                                                  : 0.0f;
 
         auto offset = (nextFrame - 1) % FRAMES_IN_FLIGHT;
 
@@ -628,8 +628,8 @@ int main()
     // Destroy the swapchain first: it drains all queues (including the present
     // queue), so the timeline semaphore is no longer in use when destroyed.
     gpuDestroySwapchain(swapchain);
-    nga::destroySurface(window, surface);
-    nga::destroyWindow(window);
+    ngapi::destroySurface(window, surface);
+    ngapi::destroyWindow(window);
     gpuDestroySemaphore(semaphore);
     gpuDestroyQueue(queue);
 

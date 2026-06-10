@@ -9,8 +9,8 @@
 # least-significant bits in the output, so regenerate the goldens (ci-run.sh
 # --generate) in the same image whenever you change these versions.
 #
-# Build:  docker build -t nga-ci ci
-# Run:    docker run --rm -v "$PWD":/src -w /src nga-ci tests/ci-run.sh
+# Build:  docker build -t ngapi-ci ci
+# Run:    docker run --rm -v "$PWD":/src -w /src ngapi-ci tests/ci-run.sh
 FROM archlinux:base-devel
 
 # --- Mesa / toolchain, pinned to a single Arch Linux Archive snapshot --------

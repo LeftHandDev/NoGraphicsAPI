@@ -1,8 +1,8 @@
-# nga — the embeddable NoGraphicsAPI library
+# ngapi — the embeddable NoGraphicsAPI library
 
 This folder is the entire reusable library, packaged so you can drop it into
 your own CMake project in one step. Everything outside it (samples, windowing
-backends, tests) is development scaffolding for NGA itself and is not needed
+backends, tests) is development scaffolding for NGAPI itself and is not needed
 to use the API.
 
 ## Requirements
@@ -23,7 +23,7 @@ shaders.
 Pick whichever fits your project; all of them end the same way:
 
 ```cmake
-target_link_libraries(your_app PRIVATE nga::nga)
+target_link_libraries(your_app PRIVATE ngapi::ngapi)
 ```
 
 **1. Whole repo as a git submodule (or clone):**
@@ -41,13 +41,13 @@ project, so only the library (and its one dependency) builds.
 **2. Just this folder, copied into your tree:**
 
 ```cmake
-add_subdirectory(path/to/nga)
+add_subdirectory(path/to/ngapi)
 ```
 
 **3. No subdirectory at all — plain include:**
 
 ```cmake
-include(path/to/nga/nga.cmake)
+include(path/to/ngapi/ngapi.cmake)
 ```
 
 **4. FetchContent:**
@@ -71,39 +71,39 @@ See the top-level [README](../README.md) for an API walkthrough.
 
 ## The vk-bootstrap dependency
 
-NGA uses [vk-bootstrap](https://github.com/charles-lunarg/vk-bootstrap) for
-Vulkan instance/device setup, linked privately (it does not appear in NGA's
-headers). `nga.cmake` resolves it automatically, in this order:
+NGAPI uses [vk-bootstrap](https://github.com/charles-lunarg/vk-bootstrap) for
+Vulkan instance/device setup, linked privately (it does not appear in NGAPI's
+headers). `ngapi.cmake` resolves it automatically, in this order:
 
 1. a `vk-bootstrap::vk-bootstrap` target your project already defines
-2. `-DNGA_VK_BOOTSTRAP_DIR=<path>` — a local checkout you point it at
+2. `-DNGAPI_VK_BOOTSTRAP_DIR=<path>` — a local checkout you point it at
 3. the repo's `external/vk-bootstrap` submodule, when this folder lives in the
    full NoGraphicsAPI repo and the submodule is initialized
 4. FetchContent — downloaded at configure time, pinned to the same tag as the
    submodule
 
 So with the full repo either initialize the submodule or let FetchContent
-grab it; with a copied `nga/` folder it just downloads (or use 1/2 for
+grab it; with a copied `ngapi/` folder it just downloads (or use 1/2 for
 offline builds).
 
 ## Compiling your own shaders
 
-`NoGraphicsAPI.h` is shared between C++ and slang — pass nga's include
-directory (exported as `NGA_INCLUDE_DIR`) to `slangc -I` when compiling your
+`NoGraphicsAPI.h` is shared between C++ and slang — pass ngapi's include
+directory (exported as `NGAPI_INCLUDE_DIR`) to `slangc -I` when compiling your
 shader code. `cmake/CompileShaders.cmake` is a ready-made helper for that;
-`nga.cmake` adds it to `CMAKE_MODULE_PATH`:
+`ngapi.cmake` adds it to `CMAKE_MODULE_PATH`:
 
 ```cmake
 include(CompileShaders)
-set(NGA_SHADER_OUTPUT_DIR "${CMAKE_BINARY_DIR}/shaders")
+set(NGAPI_SHADER_OUTPUT_DIR "${CMAKE_BINARY_DIR}/shaders")
 compile_shader(SOURCE shaders/MyShader.slang STAGE compute OUTPUT MyShader.spv)
-add_custom_target(my_shaders ALL DEPENDS ${NGA_SHADER_OUTPUTS})
+add_custom_target(my_shaders ALL DEPENDS ${NGAPI_SHADER_OUTPUTS})
 ```
 
 `slangc` is picked up from `PATH` or the `VULKAN_SDK` environment variable;
 pass `-DSLANGC=/path/to/slangc` to override.
 
-## Developing NGA itself
+## Developing NGAPI itself
 
 `src/PatchDescriptorsSpv.h` is generated from `shaders/PatchDescriptors.slang`
 and checked in. After editing that shader, regenerate it (run these from the
@@ -111,11 +111,11 @@ repository root, one level above this folder) — preferably with the slangc
 pinned in `ci/Dockerfile` so the header stays reproducible:
 
 ```sh
-docker build -t nga-ci ci   # once
-docker run --rm --user "$(id -u):$(id -g)" -v "$PWD":/src -w /src nga-ci \
-    cmake -P nga/cmake/EmbedPatchDescriptors.cmake
+docker build -t ngapi-ci ci   # once
+docker run --rm --user "$(id -u):$(id -g)" -v "$PWD":/src -w /src ngapi-ci \
+    cmake -P ngapi/cmake/EmbedPatchDescriptors.cmake
 ```
 
-or, with your own slangc on PATH, `cmake -P nga/cmake/EmbedPatchDescriptors.cmake`
-(also available as the `nga-embed-patch-descriptors` build target in the full
+or, with your own slangc on PATH, `cmake -P ngapi/cmake/EmbedPatchDescriptors.cmake`
+(also available as the `ngapi-embed-patch-descriptors` build target in the full
 repo).

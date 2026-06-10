@@ -1,5 +1,5 @@
-#ifndef NGA_TEST_COMMON_H
-#define NGA_TEST_COMMON_H
+#ifndef NGAPI_TEST_COMMON_H
+#define NGAPI_TEST_COMMON_H
 
 #include "NoGraphicsAPI.h"
 
@@ -10,7 +10,7 @@
 // Shared helpers for the headless rendering tests. Each test renders a fixed,
 // deterministic sequence of frames into an RGBA8 capture texture, reads it back,
 // and either writes a golden PNG (--generate) or threshold-compares against the
-// committed one. Goldens live in NGA_TEST_REFERENCE_DIR (the source tree) so they
+// committed one. Goldens live in NGAPI_TEST_REFERENCE_DIR (the source tree) so they
 // are easy to view and review.
 namespace test
 {
@@ -53,4 +53,4 @@ namespace test
     int finalize(const Args& args, const std::string& name, const Image& actual);
 } // namespace test
 
-#endif // NGA_TEST_COMMON_H
+#endif // NGAPI_TEST_COMMON_H

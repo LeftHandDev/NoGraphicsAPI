@@ -31,13 +31,13 @@ int main(int argc, char** argv)
     auto semaphore = gpuCreateSemaphore(device, 0);
     LinearAllocator allocator(device);
 
-    auto computeIR = loadIR(std::string(NGA_TEST_SHADER_DIR) + "/compute/Compute.spv");
+    auto computeIR = loadIR(std::string(NGAPI_TEST_SHADER_DIR) + "/compute/Compute.spv");
     auto pipeline = gpuCreateComputePipeline(device, ByteSpan(computeIR.data(), computeIR.size()));
 
     auto textureHeap = allocator.allocate<GpuTextureDescriptor>(1024);
 
     int width, height, channels;
-    const std::string inputPath = std::string(NGA_TEST_ASSET_DIR) + "/Default.png";
+    const std::string inputPath = std::string(NGAPI_TEST_ASSET_DIR) + "/Default.png";
     stbi_uc* inputImage = stbi_load(inputPath.c_str(), &width, &height, &channels, 4);
     if (!inputImage)
     {

@@ -9,6 +9,10 @@
 #include <map>
 #include <vector>
 #include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <thread>
 #include "NoGraphicsAPI_Impl.h"
 
 struct GpuPipeline_T
@@ -66,6 +70,9 @@ struct GpuSurface_T
 struct GpuSwapchain_T
 {
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+    // Kept so the swapchain can be rebuilt in place when the window system
+    // retires it (resize, scale change, ...).
+    VkSurfaceKHR surface = VK_NULL_HANDLE;
     VkQueue presentQueue = VK_NULL_HANDLE;
     uint32_t imageIndex = 0;
     GpuTextureDesc desc = {};
@@ -1792,7 +1799,7 @@ void gpuSetActiveTextureHeapPtr(GpuCommandBuffer cb, void* ptrGpu)
         {
             // Embedded at build time (PatchDescriptorsSpv.h) so the library works
             // without a .spv file on disk; copied because ByteSpan is non-const.
-            std::vector<uint8_t> patchDescriptorsSpv(std::begin(NgaPatchDescriptorsSpv), std::end(NgaPatchDescriptorsSpv));
+            std::vector<uint8_t> patchDescriptorsSpv(std::begin(NgapiPatchDescriptorsSpv), std::end(NgapiPatchDescriptorsSpv));
             vulkanDevice->patchDescriptorsPipeline = gpuCreateComputePipeline(device, patchDescriptorsSpv);
         }
 
@@ -2353,37 +2360,83 @@ Span<FORMAT> gpuSurfaceFormats(GpuDevice device, GpuSurface surface)
     return Span<FORMAT>(surface->formats);
 }
 
-GpuSwapchain gpuCreateSwapchain(GpuDevice device, GpuSurface surface, uint32_t images)
+// Frees the per-image resources (image wrappers/views, present semaphores,
+// present command buffers) but not the VkSwapchainKHR itself:
+// recreateSwapchain hands the old chain to the builder as oldSwapchain before
+// destroying it, and gpuDestroySwapchain destroys it after.
+static void destroySwapchainResources(GpuSwapchain swapchain)
 {
-    VulkanDevice* vulkanDevice = device->vulkanDevice;
-    struct GpuSurfaceImpl
+    VulkanDevice* vulkanDevice = swapchain->device->vulkanDevice;
+    if (!swapchain->presentCommandBuffers.empty())
     {
-        VkSurfaceKHR surface;
-    };
-    auto surf = reinterpret_cast<GpuSurfaceImpl*>(surface);
+        vulkanDevice->dispatchTable.freeCommandBuffers(
+            vulkanDevice->commandPool,
+            static_cast<uint32_t>(swapchain->presentCommandBuffers.size()),
+            swapchain->presentCommandBuffers.data());
+        swapchain->presentCommandBuffers.clear();
+    }
+    for (auto image : swapchain->images)
+    {
+        vulkanDevice->dispatchTable.destroyImageView(image->view, nullptr);
+        delete image;
+    }
+    swapchain->images.clear();
+    for (auto sema : swapchain->presentSemaphores)
+    {
+        vulkanDevice->dispatchTable.destroySemaphore(sema, nullptr);
+    }
+    swapchain->presentSemaphores.clear();
+}
 
-    VkSurfaceFormatKHR surfaceFormat;
+// Builds (or rebuilds) the VkSwapchainKHR and its per-image resources into
+// `swapchain`. An existing chain is passed as oldSwapchain so the presentation
+// engine can carry resources over, then destroyed.
+static void buildSwapchainResources(GpuSwapchain swapchain)
+{
+    VulkanDevice* vulkanDevice = swapchain->device->vulkanDevice;
 
-    auto builder = vkb::SwapchainBuilder{ vulkanDevice->device, surf->surface }
-                       .add_image_usage_flags(VK_IMAGE_USAGE_TRANSFER_DST_BIT);
-    vulkanDevice->device.surface = surf->surface;
-    auto presentQueue = new GpuQueue_T{ vulkanDevice->device.get_queue(vkb::QueueType::present).value(), device };
-    auto swapchain = builder.build().value();
+    // A minimized window can report a 0x0 surface, for which no swapchain can
+    // be built. Stall until the window is presentable again — this pauses the
+    // frame loop while the window is minimized instead of failing.
+    while (true)
+    {
+        VkSurfaceCapabilitiesKHR caps = {};
+        VkResult capsResult = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
+            vulkanDevice->device.physical_device, swapchain->surface, &caps);
+        if (capsResult != VK_SUCCESS || (caps.currentExtent.width != 0 && caps.currentExtent.height != 0))
+        {
+            break; // presentable (or the surface is lost — let the build below report it)
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
 
-    auto desc = GpuTextureDesc{};
-    desc.dimensions = uint3{ swapchain.extent.width, swapchain.extent.height, 1 };
-    desc.format = gpuVkFormatToGpuFormat(swapchain.image_format);
-    desc.usage = gpuVkUsageToGpuUsage(swapchain.image_usage_flags);
+    auto built = vkb::SwapchainBuilder{ vulkanDevice->device, swapchain->surface }
+                     .add_image_usage_flags(VK_IMAGE_USAGE_TRANSFER_DST_BIT)
+                     .set_old_swapchain(swapchain->swapchain)
+                     .build();
+    if (!built)
+    {
+        fprintf(stderr, "NoGraphicsAPI: swapchain creation failed: %s\n", built.error().message().c_str());
+        abort();
+    }
+    if (swapchain->swapchain != VK_NULL_HANDLE)
+    {
+        vulkanDevice->dispatchTable.destroySwapchainKHR(swapchain->swapchain, nullptr);
+    }
+    auto vkbSwapchain = built.value();
+    swapchain->swapchain = vkbSwapchain.swapchain;
 
-    std::vector<GpuTexture> swapchainImages;
+    swapchain->desc.dimensions = uint3{ vkbSwapchain.extent.width, vkbSwapchain.extent.height, 1 };
+    swapchain->desc.format = gpuVkFormatToGpuFormat(vkbSwapchain.image_format);
+    swapchain->desc.usage = gpuVkUsageToGpuUsage(vkbSwapchain.image_usage_flags);
 
-    for (const auto& image : swapchain.get_images().value())
+    for (const auto& image : vkbSwapchain.get_images().value())
     {
         VkImageViewCreateInfo viewInfo = {};
         viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         viewInfo.image = image;
         viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        viewInfo.format = swapchain.image_format;
+        viewInfo.format = vkbSwapchain.image_format;
         viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         viewInfo.subresourceRange.baseMipLevel = 0;
         viewInfo.subresourceRange.levelCount = 1;
@@ -2393,44 +2446,61 @@ GpuSwapchain gpuCreateSwapchain(GpuDevice device, GpuSurface surface, uint32_t i
         VkImageView view;
         vulkanDevice->dispatchTable.createImageView(&viewInfo, nullptr, &view);
 
-        swapchainImages.push_back(new GpuTexture_T{
-            desc,
+        swapchain->images.push_back(new GpuTexture_T{
+            swapchain->desc,
             image,
             view,
-            device });
+            swapchain->device });
     }
 
-    std::vector<VkSemaphore> presentSemaphores;
-
-    for (size_t i = 0; i < swapchainImages.size(); i++)
+    for (size_t i = 0; i < swapchain->images.size(); i++)
     {
         VkSemaphoreCreateInfo semaphoreInfo = {};
         semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
         VkSemaphore presentSemaphore;
         vulkanDevice->dispatchTable.createSemaphore(&semaphoreInfo, nullptr, &presentSemaphore);
-        presentSemaphores.push_back(presentSemaphore);
+        swapchain->presentSemaphores.push_back(presentSemaphore);
     }
 
     // One command buffer per swapchain image, used by gpuPresent to transition
     // the image into PRESENT_SRC before presenting. Reused (reset) each frame.
-    std::vector<VkCommandBuffer> presentCommandBuffers(swapchainImages.size());
+    swapchain->presentCommandBuffers.resize(swapchain->images.size());
     VkCommandBufferAllocateInfo presentCbAllocInfo = {};
     presentCbAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     presentCbAllocInfo.commandPool = vulkanDevice->commandPool;
     presentCbAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    presentCbAllocInfo.commandBufferCount = static_cast<uint32_t>(presentCommandBuffers.size());
-    vulkanDevice->dispatchTable.allocateCommandBuffers(&presentCbAllocInfo, presentCommandBuffers.data());
+    presentCbAllocInfo.commandBufferCount = static_cast<uint32_t>(swapchain->presentCommandBuffers.size());
+    vulkanDevice->dispatchTable.allocateCommandBuffers(&presentCbAllocInfo, swapchain->presentCommandBuffers.data());
+}
 
-    return new GpuSwapchain_T{
-        swapchain.swapchain,
-        presentQueue->queue,
-        0,
-        desc,
-        swapchainImages,
-        presentSemaphores,
-        presentCommandBuffers,
-        device
-    };
+// The window system can retire a swapchain at any time (window resize, scale
+// change, ...): acquire/present then report OUT_OF_DATE and the chain must be
+// rebuilt before it can be used again. Rebuilds in place so the GpuSwapchain
+// handle the app holds stays valid. A size change is transparent to the app:
+// the per-frame blit into the swapchain image scales, and render passes take
+// their render area from the new image wrappers.
+static void recreateSwapchain(GpuSwapchain swapchain)
+{
+    VulkanDevice* vulkanDevice = swapchain->device->vulkanDevice;
+    // The per-image resources may still be referenced by in-flight frames.
+    vulkanDevice->dispatchTable.deviceWaitIdle();
+    destroySwapchainResources(swapchain);
+    buildSwapchainResources(swapchain);
+}
+
+GpuSwapchain gpuCreateSwapchain(GpuDevice device, GpuSurface surface, uint32_t images)
+{
+    VulkanDevice* vulkanDevice = device->vulkanDevice;
+
+    // vk-bootstrap's get_queue(present) needs the surface to query support.
+    vulkanDevice->device.surface = surface->surface;
+
+    auto swapchain = new GpuSwapchain_T{};
+    swapchain->surface = surface->surface;
+    swapchain->presentQueue = vulkanDevice->device.get_queue(vkb::QueueType::present).value();
+    swapchain->device = device;
+    buildSwapchainResources(swapchain);
+    return swapchain;
 }
 
 void gpuDestroySwapchain(GpuSwapchain swapchain)
@@ -2440,23 +2510,8 @@ void gpuDestroySwapchain(GpuSwapchain swapchain)
     // swapchain's images, present semaphores and command buffers, which may
     // still be referenced by in-flight presentation work.
     vulkanDevice->dispatchTable.deviceWaitIdle();
-    if (!swapchain->presentCommandBuffers.empty())
-    {
-        vulkanDevice->dispatchTable.freeCommandBuffers(
-            vulkanDevice->commandPool,
-            static_cast<uint32_t>(swapchain->presentCommandBuffers.size()),
-            swapchain->presentCommandBuffers.data());
-    }
-    for (auto image : swapchain->images)
-    {
-        vulkanDevice->dispatchTable.destroyImageView(image->view, nullptr);
-        delete image;
-    }
+    destroySwapchainResources(swapchain);
     vulkanDevice->dispatchTable.destroySwapchainKHR(swapchain->swapchain, nullptr);
-    for (auto sema : swapchain->presentSemaphores)
-    {
-        vulkanDevice->dispatchTable.destroySemaphore(sema, nullptr);
-    }
     delete swapchain;
 }
 
@@ -2468,18 +2523,42 @@ GpuTextureDesc gpuSwapchainDesc(GpuSwapchain swapchain)
 GpuTexture gpuSwapchainImage(GpuSwapchain swapchain)
 {
     VulkanDevice* vulkanDevice = swapchain->device->vulkanDevice;
-    vulkanDevice->dispatchTable.resetFences(1, &vulkanDevice->acquireFence);
 
-    vulkanDevice->dispatchTable.acquireNextImageKHR(
-        swapchain->swapchain,
-        UINT64_MAX,
-        VK_NULL_HANDLE,
-        vulkanDevice->acquireFence,
-        &swapchain->imageIndex);
+    // The acquire result must be checked before imageIndex is used: once the
+    // window system has retired the chain, acquire fails with OUT_OF_DATE and
+    // leaves imageIndex undefined, so indexing images[] with it reads garbage
+    // (this was an intermittent invalid-VkImage crash on RADV/Wayland).
+    // Recreate and retry instead. SUBOPTIMAL still acquires a presentable
+    // image; the recreate then happens after the present.
+    for (int attempt = 0; attempt < 4; attempt++)
+    {
+        vulkanDevice->dispatchTable.resetFences(1, &vulkanDevice->acquireFence);
 
-    vulkanDevice->dispatchTable.waitForFences(1, &vulkanDevice->acquireFence, VK_TRUE, UINT64_MAX);
+        VkResult result = vulkanDevice->dispatchTable.acquireNextImageKHR(
+            swapchain->swapchain,
+            UINT64_MAX,
+            VK_NULL_HANDLE,
+            vulkanDevice->acquireFence,
+            &swapchain->imageIndex);
 
-    return swapchain->images[swapchain->imageIndex];
+        if (result == VK_ERROR_OUT_OF_DATE_KHR)
+        {
+            recreateSwapchain(swapchain);
+            continue;
+        }
+        if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
+        {
+            fprintf(stderr, "NoGraphicsAPI: vkAcquireNextImageKHR failed (VkResult %d)\n", result);
+            abort();
+        }
+
+        vulkanDevice->dispatchTable.waitForFences(1, &vulkanDevice->acquireFence, VK_TRUE, UINT64_MAX);
+
+        return swapchain->images[swapchain->imageIndex];
+    }
+
+    fprintf(stderr, "NoGraphicsAPI: swapchain still out of date after repeated recreation\n");
+    abort();
 }
 
 void gpuPresent(GpuSwapchain swapchain, GpuSemaphore sema, uint64_t value)
@@ -2548,9 +2627,25 @@ void gpuPresent(GpuSwapchain swapchain, GpuSemaphore sema, uint64_t value)
     presentInfo.waitSemaphoreCount = 1;
     presentInfo.pWaitSemaphores = &swapchain->presentSemaphores[swapchain->imageIndex];
 
-    vulkanDevice->dispatchTable.queuePresentKHR(
+    VkResult result = vulkanDevice->dispatchTable.queuePresentKHR(
         swapchain->presentQueue,
         &presentInfo);
+
+    // OUT_OF_DATE rejects the present (its semaphore wait still executes, so
+    // nothing is left pending); SUBOPTIMAL presents but signals the chain no
+    // longer matches the surface. Rebuild now in either case — waiting for the
+    // next acquire to fail would render one more frame into a dead chain.
+    // Note the rebuild deletes the image wrappers: the texture returned by
+    // gpuSwapchainImage is valid until gpuPresent only.
+    if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
+    {
+        recreateSwapchain(swapchain);
+    }
+    else if (result != VK_SUCCESS)
+    {
+        fprintf(stderr, "NoGraphicsAPI: vkQueuePresentKHR failed (VkResult %d)\n", result);
+        abort();
+    }
 }
 #endif // GPU_SURFACE_EXTENSION
 

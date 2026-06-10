@@ -1,11 +1,11 @@
-#ifndef NGA_WINDOW_H
-#define NGA_WINDOW_H
+#ifndef NGAPI_WINDOW_H
+#define NGAPI_WINDOW_H
 
 #include "NoGraphicsAPI.h"
 
 // A minimal, backend-agnostic window + input layer for the samples. Exactly one
-// backend (GLFW or SDL3) is compiled in, selected by the build (NGA_WINDOW_BACKEND).
-namespace nga
+// backend (GLFW or SDL3) is compiled in, selected by the build (NGAPI_WINDOW_BACKEND).
+namespace ngapi
 {
     enum class Key
     {
@@ -43,6 +43,6 @@ namespace nga
     // wasKeyPressed == transitioned to down on the most recent pollEvents().
     bool isKeyDown(Window* window, Key key);
     bool wasKeyPressed(Window* window, Key key);
-} // namespace nga
+} // namespace ngapi
 
-#endif // NGA_WINDOW_H
+#endif // NGAPI_WINDOW_H

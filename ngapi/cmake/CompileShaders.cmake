@@ -1,26 +1,26 @@
-# Slang -> SPIR-V compilation helper. NGA shader code includes NoGraphicsAPI.h
+# Slang -> SPIR-V compilation helper. NGAPI shader code includes NoGraphicsAPI.h
 # (the header is shared between C++ and slang), so consumers compiling their
-# own shaders can use this too — nga.cmake puts this directory on
+# own shaders can use this too — ngapi.cmake puts this directory on
 # CMAKE_MODULE_PATH, making it available as include(CompileShaders).
 #
 # Expects these variables to be set before use:
 #   SLANGC                  - path to the slangc compiler
-#   NGA_SHADER_OUTPUT_DIR   - directory the .spv files are written to (next to the executables)
-#   NGA_SHADER_INCLUDE_DIR  - include search path passed to slangc (-I);
-#                             defaults to nga's public include directory
+#   NGAPI_SHADER_OUTPUT_DIR   - directory the .spv files are written to (next to the executables)
+#   NGAPI_SHADER_INCLUDE_DIR  - include search path passed to slangc (-I);
+#                             defaults to ngapi's public include directory
 #
 # compile_shader(SOURCE <path> STAGE <stage> OUTPUT <rel.spv> [ENTRY <name>...] [EXTRA_DEPENDS ...])
 #   SOURCE        - .slang path, absolute or relative to the calling CMakeLists
 #   STAGE         - SPIR-V stage (compute, vertex, fragment, ...)
-#   OUTPUT        - output .spv path relative to NGA_SHADER_OUTPUT_DIR
+#   OUTPUT        - output .spv path relative to NGAPI_SHADER_OUTPUT_DIR
 #   ENTRY         - optional entry point(s) (defaults to "main"); pass several
 #                   names to compile multiple entry points into a single .spv
 #   EXTRA_DEPENDS - additional files that should trigger a recompile
 #
-# Appends the produced output path to NGA_SHADER_OUTPUTS in the caller's scope.
+# Appends the produced output path to NGAPI_SHADER_OUTPUTS in the caller's scope.
 
-if(NOT DEFINED NGA_SHADER_INCLUDE_DIR)
-    get_filename_component(NGA_SHADER_INCLUDE_DIR "${CMAKE_CURRENT_LIST_DIR}/../include" ABSOLUTE)
+if(NOT DEFINED NGAPI_SHADER_INCLUDE_DIR)
+    get_filename_component(NGAPI_SHADER_INCLUDE_DIR "${CMAKE_CURRENT_LIST_DIR}/../include" ABSOLUTE)
 endif()
 
 if(NOT SLANGC)
@@ -52,7 +52,7 @@ function(compile_shader)
         set(S_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/${S_SOURCE}")
     endif()
 
-    set(OUT "${NGA_SHADER_OUTPUT_DIR}/${S_OUTPUT}")
+    set(OUT "${NGAPI_SHADER_OUTPUT_DIR}/${S_OUTPUT}")
     get_filename_component(OUT_DIR "${OUT}" DIRECTORY)
 
     add_custom_command(
@@ -60,12 +60,12 @@ function(compile_shader)
         COMMAND ${CMAKE_COMMAND} -E make_directory "${OUT_DIR}"
         COMMAND "${SLANGC}" "${S_SOURCE}"
                 -target spirv ${STAGE_ENTRY_ARGS}
-                -I "${NGA_SHADER_INCLUDE_DIR}"
+                -I "${NGAPI_SHADER_INCLUDE_DIR}"
                 -o "${OUT}"
         DEPENDS "${S_SOURCE}" ${S_EXTRA_DEPENDS}
         COMMENT "Compiling shader ${S_OUTPUT}"
         VERBATIM)
 
-    list(APPEND NGA_SHADER_OUTPUTS "${OUT}")
-    set(NGA_SHADER_OUTPUTS "${NGA_SHADER_OUTPUTS}" PARENT_SCOPE)
+    list(APPEND NGAPI_SHADER_OUTPUTS "${OUT}")
+    set(NGAPI_SHADER_OUTPUTS "${NGAPI_SHADER_OUTPUTS}" PARENT_SCOPE)
 endfunction()

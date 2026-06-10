@@ -40,7 +40,7 @@ int main(int argc, char** argv)
     LinearAllocator allocator(device);
 
     int width, height, channels;
-    const std::string inputPath = std::string(NGA_TEST_ASSET_DIR) + "/Default.png";
+    const std::string inputPath = std::string(NGAPI_TEST_ASSET_DIR) + "/Default.png";
     stbi_uc* inputImage = stbi_load(inputPath.c_str(), &width, &height, &channels, 4);
     if (!inputImage)
     {
@@ -112,14 +112,14 @@ int main(int argc, char** argv)
         .colorTargets = Span<ColorTarget>(colorTargets, 2)
     };
 
-    auto vertexIR = loadIR(std::string(NGA_TEST_SHADER_DIR) + "/graphics/Vertex.spv");
-    auto pixelIR = loadIR(std::string(NGA_TEST_SHADER_DIR) + "/graphics/Pixel.spv");
+    auto vertexIR = loadIR(std::string(NGAPI_TEST_SHADER_DIR) + "/graphics/Vertex.spv");
+    auto pixelIR = loadIR(std::string(NGAPI_TEST_SHADER_DIR) + "/graphics/Pixel.spv");
     auto pipeline = gpuCreateGraphicsPipeline(device, ByteSpan(vertexIR), ByteSpan(pixelIR), rasterPipeDesc);
 
     GpuDepthStencilDesc depthDescState = { .depthMode = (DEPTH_FLAGS)(DEPTH_READ | DEPTH_WRITE), .depthTest = OP_LESS };
     auto depthState = gpuCreateDepthStencilState(depthDescState);
 
-    auto taaIR = loadIR(std::string(NGA_TEST_SHADER_DIR) + "/common/TAA.spv");
+    auto taaIR = loadIR(std::string(NGAPI_TEST_SHADER_DIR) + "/common/TAA.spv");
     auto taaPipeline = gpuCreateComputePipeline(device, ByteSpan(taaIR));
 
     std::vector<float3> cubeVertices, cubeNormals;
@@ -186,6 +186,29 @@ int main(int argc, char** argv)
 
     for (uint32_t frame = 0; frame < args.frames; frame++)
     {
+        // The writes below mutate host-visible memory that in-flight frames
+        // read (instance matrices, view projections, TAA constants), so the
+        // previous frame must have fully completed first. Waiting after the
+        // writes let a still-executing frame occasionally read its successor's
+        // values — a rare nondeterministic edge shift in the output.
+        if (nextFrame > FRAMES_IN_FLIGHT)
+        {
+            gpuWaitSemaphore(semaphore, nextFrame - FRAMES_IN_FLIGHT);
+        }
+
+        if (nextFrame > 1)
+        {
+            xRotation += 0.0001f;
+            yRotation += 0.0001f;
+            auto next0 = glm::translate(glm::mat4(1.f), translation) * glm::rotate(glm::mat4(1.f), xRotation, glm::vec3(1, 0, 0));
+            auto next1 = glm::translate(glm::mat4(1.f), -translation) * glm::rotate(glm::mat4(1.f), yRotation, glm::vec3(0, 1, 0));
+            memcpy(&instances.cpu[0].prevModel, &instances.cpu[0].model, sizeof(float4x4));
+            memcpy(&instances.cpu[1].prevModel, &instances.cpu[1].model, sizeof(float4x4));
+            memcpy(&instances.cpu[0].model, &next0, sizeof(float4x4));
+            memcpy(&instances.cpu[1].model, &next1, sizeof(float4x4));
+            taaData.cpu->frame++;
+        }
+
         auto prevViewProjectionNj = projection * view;
 
         float jitterX = (haltonSeq[nextFrame % haltonSeq.size()].x - 0.5f) / RENDER_W;
@@ -207,11 +230,6 @@ int main(int argc, char** argv)
         {
             gpuCopyToTexture(commandBuffer, upload.gpu, texture);
             gpuBarrier(commandBuffer, STAGE_TRANSFER, STAGE_PIXEL_SHADER);
-        }
-
-        if (nextFrame > FRAMES_IN_FLIGHT)
-        {
-            gpuWaitSemaphore(semaphore, nextFrame - FRAMES_IN_FLIGHT);
         }
 
         GpuTexture colorTargetsGpu[2] = { rasterOutput, motionVectors };
@@ -238,17 +256,6 @@ int main(int argc, char** argv)
 
         gpuSubmit(queue, Span<GpuCommandBuffer>(&commandBuffer, 1), semaphore, nextFrame);
         nextFrame++;
-
-        xRotation += 0.0001f;
-        yRotation += 0.0001f;
-        auto next0 = glm::translate(glm::mat4(1.f), translation) * glm::rotate(glm::mat4(1.f), xRotation, glm::vec3(1, 0, 0));
-        auto next1 = glm::translate(glm::mat4(1.f), -translation) * glm::rotate(glm::mat4(1.f), yRotation, glm::vec3(0, 1, 0));
-        memcpy(&instances.cpu[0].prevModel, &instances.cpu[0].model, sizeof(float4x4));
-        memcpy(&instances.cpu[1].prevModel, &instances.cpu[1].model, sizeof(float4x4));
-        memcpy(&instances.cpu[0].model, &next0, sizeof(float4x4));
-        memcpy(&instances.cpu[1].model, &next1, sizeof(float4x4));
-
-        taaData.cpu->frame++;
     }
     gpuWaitSemaphore(semaphore, nextFrame - 1);
 

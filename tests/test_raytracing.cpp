@@ -44,7 +44,7 @@ int main(int argc, char** argv)
     LinearAllocator allocator(device);
 
     int width, height, channels;
-    const std::string inputPath = std::string(NGA_TEST_ASSET_DIR) + "/Default.png";
+    const std::string inputPath = std::string(NGAPI_TEST_ASSET_DIR) + "/Default.png";
     stbi_uc* inputImage = stbi_load(inputPath.c_str(), &width, &height, &channels, 4);
     if (!inputImage)
     {
@@ -96,7 +96,7 @@ int main(int argc, char** argv)
     textureHeap.cpu[INDEX_NORMALS] = gpuRWTextureViewDescriptor(normalsTexture, GpuViewDesc{ .format = FORMAT_RGBA16_FLOAT });
     textureHeap.cpu[INDEX_MOTION_VECTORS] = gpuRWTextureViewDescriptor(motionVectorsTexture, GpuViewDesc{ .format = FORMAT_RGBA16_FLOAT });
 
-    auto referenceIR = loadIR(std::string(NGA_TEST_SHADER_DIR) + "/raytracing/Raytracing.spv");
+    auto referenceIR = loadIR(std::string(NGAPI_TEST_SHADER_DIR) + "/raytracing/Raytracing.spv");
     auto referencePipeline = gpuCreateComputePipeline(device, ByteSpan(referenceIR));
 
     auto rtDataRing = allocator.allocate<RaytracingData>(FRAMES_IN_FLIGHT);

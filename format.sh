@@ -17,8 +17,8 @@ if ! command -v clang-format >/dev/null 2>&1; then
 fi
 
 # Only our own source trees — external/ (submodules + vendored stb) is
-# excluded, as is the generated SPIR-V header under nga/src.
-roots=(nga platform samples tests)
+# excluded, as is the generated SPIR-V header under ngapi/src.
+roots=(ngapi platform samples tests)
 
 mapfile -d '' files < <(find "${roots[@]}" -type f \
     \( -name '*.cpp' -o -name '*.h' -o -name '*.hpp' -o -name '*.slang' \) \

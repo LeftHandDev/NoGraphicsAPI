@@ -7,7 +7,7 @@
 #include <array>
 #include <cstddef>
 
-namespace nga
+namespace ngapi
 {
     struct Window
     {
@@ -111,4 +111,4 @@ namespace nga
     {
         return window->pressed[static_cast<size_t>(key)];
     }
-} // namespace nga
+} // namespace ngapi

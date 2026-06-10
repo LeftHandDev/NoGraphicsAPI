@@ -15,8 +15,8 @@ int main()
 
     const uint FRAMES_IN_FLIGHT = 2;
 
-    auto window = nga::createWindow("Test Window", 1920, 1080);
-    auto surface = nga::createSurface(window);
+    auto window = ngapi::createWindow("Test Window", 1920, 1080);
+    auto surface = ngapi::createSurface(window);
 
     LinearAllocator allocator(device);
 
@@ -100,9 +100,9 @@ int main()
 
     uint64_t nextFrame = 1;
 
-    while (!nga::shouldClose(window))
+    while (!ngapi::shouldClose(window))
     {
-        nga::pollEvents(window);
+        ngapi::pollEvents(window);
 
         if (nextFrame > FRAMES_IN_FLIGHT)
         {
@@ -124,8 +124,8 @@ int main()
     // before the device/instance are torn down. Destroying the device while
     // these children are still alive hangs drivers that honour object lifetimes.
     gpuDestroySwapchain(swapchain);
-    nga::destroySurface(window, surface);
-    nga::destroyWindow(window);
+    ngapi::destroySurface(window, surface);
+    ngapi::destroyWindow(window);
 
     stbi_image_free(inputImage);
 

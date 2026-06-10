@@ -17,10 +17,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-IMAGE=nga-ci
+IMAGE=ngapi-ci
 
 # The tests only need the core library's submodules; glfw / SDL are samples-only
-# and are skipped (NGA_BUILD_SAMPLES=OFF), so don't pull them in.
+# and are skipped (NGAPI_BUILD_SAMPLES=OFF), so don't pull them in.
 echo "==> Fetching core submodules"
 git submodule update --init external/glm external/vk-bootstrap
 

@@ -11,21 +11,21 @@ The project started with the original header from the blog post, and built from 
 
 To see what the API looks like in practice, check out the [samples](https://github.com/LeftHandDev/NoGraphicsAPI/tree/main/samples). For simple usage of the API, see below.
 
-## Using NGA in your project
+## Using NGAPI in your project
 
-The reusable library is the self-contained [`nga/`](nga/) folder. Add this
+The reusable library is the self-contained [`ngapi/`](ngapi/) folder. Add this
 repo (or just that folder) as a submodule, a copy, or via FetchContent, then:
 
 ```cmake
-add_subdirectory(path/to/NoGraphicsAPI)   # or just the nga/ folder, or include(<path>/nga/nga.cmake)
-target_link_libraries(your_app PRIVATE nga::nga)
+add_subdirectory(path/to/NoGraphicsAPI)   # or just the ngapi/ folder, or include(<path>/ngapi/ngapi.cmake)
+target_link_libraries(your_app PRIVATE ngapi::ngapi)
 ```
 
-That's it — samples and tests build only when NGA is the top-level project,
+That's it — samples and tests build only when NGAPI is the top-level project,
 the one library dependency (vk-bootstrap) resolves itself (submodule or
 automatic download), and no shader compiler is required to build the library.
 You only need CMake 3.22+, a C++20 compiler and Vulkan. See
-[nga/README.md](nga/README.md) for the details.
+[ngapi/README.md](ngapi/README.md) for the details.
 
 ## Building the samples
 
@@ -50,7 +50,7 @@ The per-sample executables (`compute`, `graphics`, `raytracing`, `multiplegpus`)
 cd build/bin && ./raytracing
 ```
 
-To use the SDL3 windowing backend instead of GLFW, configure with `cmake --preset linux-sdl3` (builds into `build/sdl3/`), or pass `-DNGA_WINDOW_BACKEND=SDL3`.
+To use the SDL3 windowing backend instead of GLFW, configure with `cmake --preset linux-sdl3` (builds into `build/sdl3/`), or pass `-DNGAPI_WINDOW_BACKEND=SDL3`.
 
 ## Windowless Usage
 ### Common header
@@ -133,7 +133,7 @@ int main()
 
 ## Window Usage
 
-Include `window.h` to create a window and Vulkan surface through the selected windowing backend (GLFW or SDL3). Note that `window.h` is part of this repo's sample scaffolding ([`platform/`](platform/)), not the embeddable `nga/` library — in your own project, create the window and `VkSurfaceKHR` with your windowing library of choice and hand the surface to `gpuCreateSurface()`.
+Include `window.h` to create a window and Vulkan surface through the selected windowing backend (GLFW or SDL3). Note that `window.h` is part of this repo's sample scaffolding ([`platform/`](platform/)), not the embeddable `ngapi/` library — in your own project, create the window and `VkSurfaceKHR` with your windowing library of choice and hand the surface to `gpuCreateSurface()`.
 
 ```c++
 #include "window.h"
@@ -150,17 +150,17 @@ int main()
     if (!device)
         return -1;
 
-    auto window = nga::createWindow("Example", 1920, 1080);
-    auto surface = nga::createSurface(window);
+    auto window = ngapi::createWindow("Example", 1920, 1080);
+    auto surface = ngapi::createSurface(window);
     auto swapchain = gpuCreateSwapchain(device, surface, FRAMES_IN_FLIGHT);
 
     // Queue, semaphore creation...
 
     uint64_t nextFrame = 1;
 
-    while (!nga::shouldClose(window))
+    while (!ngapi::shouldClose(window))
     {
-        nga::pollEvents(window);
+        ngapi::pollEvents(window);
 
         if (nextFrame > FRAMES_IN_FLIGHT)
             gpuWaitSemaphore(semaphore, nextFrame - FRAMES_IN_FLIGHT);
@@ -177,8 +177,8 @@ int main()
     // Cleanup
     // Semaphore, other objects...
     gpuDestroySwapchain(swapchain);
-    nga::destroySurface(window, surface);
-    nga::destroyWindow(window);
+    ngapi::destroySurface(window, surface);
+    ngapi::destroyWindow(window);
     gpuDestroyDevice(device);
     gpuDestroyInstance();
 }
@@ -244,11 +244,11 @@ To trace rays, simply create and build acceleration structures, and then pass th
 
 ## Dependencies
 
-The library itself ([`nga/`](nga/)) depends only on Vulkan and
+The library itself ([`ngapi/`](ngapi/)) depends only on Vulkan and
 [vk-bootstrap](https://github.com/charles-lunarg/vk-bootstrap) (a submodule,
 auto-downloaded if missing). The rest is samples/tests-only, fetched as git
 submodules under `external/` and built from source — nothing to install:
-- [GLFW](https://github.com/glfw/glfw) and [SDL3](https://github.com/libsdl-org/SDL) — windowing (pick one via `NGA_WINDOW_BACKEND`)
+- [GLFW](https://github.com/glfw/glfw) and [SDL3](https://github.com/libsdl-org/SDL) — windowing (pick one via `NGAPI_WINDOW_BACKEND`)
 - [GLM](https://github.com/g-truc/glm) — math
 
 Vendored in the repo:

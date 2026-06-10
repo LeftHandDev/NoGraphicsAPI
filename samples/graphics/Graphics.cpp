@@ -19,8 +19,8 @@ int main()
 
     const uint FRAMES_IN_FLIGHT = 2;
 
-    auto window = nga::createWindow("Test Window", 1920, 1080);
-    auto surface = nga::createSurface(window);
+    auto window = ngapi::createWindow("Test Window", 1920, 1080);
+    auto surface = ngapi::createSurface(window);
 
     LinearAllocator allocator(device);
 
@@ -209,10 +209,10 @@ int main()
 
     bool taaOn = true;
 
-    while (!nga::shouldClose(window))
+    while (!ngapi::shouldClose(window))
     {
-        nga::pollEvents(window);
-        if (nga::wasKeyPressed(window, nga::Key::T))
+        ngapi::pollEvents(window);
+        if (ngapi::wasKeyPressed(window, ngapi::Key::T))
         {
             taaOn = !taaOn;
         }
@@ -334,8 +334,8 @@ int main()
     // Destroy the swapchain first: it drains all queues (including the present
     // queue), so the timeline semaphore is no longer in use when destroyed.
     gpuDestroySwapchain(swapchain);
-    nga::destroySurface(window, surface);
-    nga::destroyWindow(window);
+    ngapi::destroySurface(window, surface);
+    ngapi::destroyWindow(window);
     gpuDestroySemaphore(semaphore);
     gpuDestroyQueue(queue);
 

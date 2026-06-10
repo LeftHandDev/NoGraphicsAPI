@@ -9,25 +9,25 @@ project(NoGraphicsAPI
 # ---------------------------------------------------------------------------
 # The library
 # ---------------------------------------------------------------------------
-# The reusable library is the self-contained nga/ folder — that folder (or
-# this whole repo) is what you embed in your own project; see nga/README.md.
+# The reusable library is the self-contained ngapi/ folder — that folder (or
+# this whole repo) is what you embed in your own project; see ngapi/README.md.
 # Everything below it is the development scaffolding around the library:
 # samples, windowing backends and the headless rendering tests.
-add_subdirectory(nga)
+add_subdirectory(ngapi)
 
-# Consumers embedding this whole repo still get nga's exported variables
-# (NGA_INCLUDE_DIR and the module path that makes include(CompileShaders) work).
+# Consumers embedding this whole repo still get ngapi's exported variables
+# (NGAPI_INCLUDE_DIR and the module path that makes include(CompileShaders) work).
 if(NOT PROJECT_IS_TOP_LEVEL)
-    set(NGA_INCLUDE_DIR "${NGA_INCLUDE_DIR}" PARENT_SCOPE)
+    set(NGAPI_INCLUDE_DIR "${NGAPI_INCLUDE_DIR}" PARENT_SCOPE)
     set(CMAKE_MODULE_PATH "${CMAKE_MODULE_PATH}" PARENT_SCOPE)
 endif()
 
-# Samples and tests are for working on NGA itself; when this repo is consumed
-# via add_subdirectory()/FetchContent they default to off and only nga builds.
-option(NGA_BUILD_SAMPLES "Build the windowed sample executables" ${PROJECT_IS_TOP_LEVEL})
-option(NGA_BUILD_TESTS "Build the headless rendering tests" ${PROJECT_IS_TOP_LEVEL})
+# Samples and tests are for working on NGAPI itself; when this repo is consumed
+# via add_subdirectory()/FetchContent they default to off and only ngapi builds.
+option(NGAPI_BUILD_SAMPLES "Build the windowed sample executables" ${PROJECT_IS_TOP_LEVEL})
+option(NGAPI_BUILD_TESTS "Build the headless rendering tests" ${PROJECT_IS_TOP_LEVEL})
 
-if(NOT (NGA_BUILD_SAMPLES OR NGA_BUILD_TESTS))
+if(NOT (NGAPI_BUILD_SAMPLES OR NGAPI_BUILD_TESTS))
     return()
 endif()
 
@@ -46,19 +46,19 @@ add_subdirectory(external/glm)
 add_library(stb STATIC external/stb/stb.cpp)
 target_include_directories(stb PUBLIC external/stb)
 
-# Windowing backend: GLFW (default) or SDL3. Build with -DNGA_WINDOW_BACKEND=SDL3
+# Windowing backend: GLFW (default) or SDL3. Build with -DNGAPI_WINDOW_BACKEND=SDL3
 # to switch. Only the windowed samples need a backend.
-set(NGA_WINDOW_BACKEND "GLFW" CACHE STRING "Windowing backend: GLFW or SDL3")
-set_property(CACHE NGA_WINDOW_BACKEND PROPERTY STRINGS GLFW SDL3)
+set(NGAPI_WINDOW_BACKEND "GLFW" CACHE STRING "Windowing backend: GLFW or SDL3")
+set_property(CACHE NGAPI_WINDOW_BACKEND PROPERTY STRINGS GLFW SDL3)
 
-if(NGA_BUILD_SAMPLES)
-if(NGA_WINDOW_BACKEND STREQUAL "GLFW")
+if(NGAPI_BUILD_SAMPLES)
+if(NGAPI_WINDOW_BACKEND STREQUAL "GLFW")
     set(GLFW_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
     set(GLFW_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
     set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(GLFW_INSTALL        OFF CACHE BOOL "" FORCE)
     add_subdirectory(external/glfw)
-elseif(NGA_WINDOW_BACKEND STREQUAL "SDL3")
+elseif(NGAPI_WINDOW_BACKEND STREQUAL "SDL3")
     set(SDL_TEST_LIBRARY    OFF CACHE BOOL "" FORCE)
     set(SDL_TESTS           OFF CACHE BOOL "" FORCE)
     set(SDL_EXAMPLES        OFF CACHE BOOL "" FORCE)
@@ -70,32 +70,32 @@ elseif(NGA_WINDOW_BACKEND STREQUAL "SDL3")
     set(SDL_WAYLAND         ON  CACHE BOOL "" FORCE)
     add_subdirectory(external/SDL)
 else()
-    message(FATAL_ERROR "NGA_WINDOW_BACKEND must be GLFW or SDL3 (got '${NGA_WINDOW_BACKEND}')")
+    message(FATAL_ERROR "NGAPI_WINDOW_BACKEND must be GLFW or SDL3 (got '${NGAPI_WINDOW_BACKEND}')")
 endif()
-endif() # NGA_BUILD_SAMPLES
+endif() # NGAPI_BUILD_SAMPLES
 
 # ---------------------------------------------------------------------------
 # Windowing abstraction (one backend compiled in) -- only with the samples.
 # ---------------------------------------------------------------------------
-if(NGA_BUILD_SAMPLES)
-if(NGA_WINDOW_BACKEND STREQUAL "GLFW")
-    add_library(nga-platform STATIC platform/window_glfw.cpp)
-    target_link_libraries(nga-platform PRIVATE glfw Vulkan::Vulkan)
+if(NGAPI_BUILD_SAMPLES)
+if(NGAPI_WINDOW_BACKEND STREQUAL "GLFW")
+    add_library(ngapi-platform STATIC platform/window_glfw.cpp)
+    target_link_libraries(ngapi-platform PRIVATE glfw Vulkan::Vulkan)
 else()
-    add_library(nga-platform STATIC platform/window_sdl3.cpp)
-    target_link_libraries(nga-platform PRIVATE SDL3::SDL3 Vulkan::Vulkan)
+    add_library(ngapi-platform STATIC platform/window_sdl3.cpp)
+    target_link_libraries(ngapi-platform PRIVATE SDL3::SDL3 Vulkan::Vulkan)
 endif()
-target_include_directories(nga-platform PUBLIC platform)
-target_link_libraries(nga-platform PUBLIC nga::nga)
+target_include_directories(ngapi-platform PUBLIC platform)
+target_link_libraries(ngapi-platform PUBLIC ngapi::ngapi)
 endif()
 
 # ---------------------------------------------------------------------------
 # Shared sample utilities
 # ---------------------------------------------------------------------------
-add_library(nga-samples-common STATIC samples/common/Utilities.cpp)
-target_include_directories(nga-samples-common PUBLIC samples/common)
-target_link_libraries(nga-samples-common
-    PUBLIC  nga::nga glm::glm
+add_library(ngapi-samples-common STATIC samples/common/Utilities.cpp)
+target_include_directories(ngapi-samples-common PUBLIC samples/common)
+target_link_libraries(ngapi-samples-common
+    PUBLIC  ngapi::ngapi glm::glm
     PRIVATE stb)
 
 # ---------------------------------------------------------------------------
@@ -107,28 +107,28 @@ endif()
 find_program(SLANGC slangc HINTS "${VULKAN_SDK}/Bin" "${VULKAN_SDK}/bin")
 if(NOT SLANGC)
     message(FATAL_ERROR "slangc not found; set VULKAN_SDK or put slangc on PATH. "
-        "(Only the samples and tests need it — consuming the nga/ library does not.)")
+        "(Only the samples and tests need it — consuming the ngapi/ library does not.)")
 endif()
 
 # Multi-config generators (e.g. Visual Studio) automatically append $<CONFIG>
 # to the executable output directory, so shaders and assets must follow suit
 # to land next to the .exe at runtime.
 if(CMAKE_CONFIGURATION_TYPES)
-    set(NGA_RUNTIME_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>")
+    set(NGAPI_RUNTIME_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>")
 else()
-    set(NGA_RUNTIME_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
+    set(NGAPI_RUNTIME_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
 endif()
 
-set(NGA_SHADER_OUTPUT_DIR  "${NGA_RUNTIME_DIR}/shaders")
-set(NGA_SHADER_INCLUDE_DIR "${NGA_INCLUDE_DIR}")
-include(nga/cmake/CompileShaders.cmake)
+set(NGAPI_SHADER_OUTPUT_DIR  "${NGAPI_RUNTIME_DIR}/shaders")
+set(NGAPI_SHADER_INCLUDE_DIR "${NGAPI_INCLUDE_DIR}")
+include(ngapi/cmake/CompileShaders.cmake)
 
 set(COMMON_SHADER_DEPS
-    "${NGA_INCLUDE_DIR}/NoGraphicsAPI.h"
-    "${NGA_INCLUDE_DIR}/NoGraphicsAPI_Impl.h"
-    "${NGA_INCLUDE_DIR}/Config.h")
+    "${NGAPI_INCLUDE_DIR}/NoGraphicsAPI.h"
+    "${NGAPI_INCLUDE_DIR}/NoGraphicsAPI_Impl.h"
+    "${NGAPI_INCLUDE_DIR}/Config.h")
 
-set(NGA_SHADER_OUTPUTS "")
+set(NGAPI_SHADER_OUTPUTS "")
 compile_shader(SOURCE samples/compute/Compute.slang     STAGE compute  OUTPUT compute/Compute.spv
     EXTRA_DEPENDS ${COMMON_SHADER_DEPS} "${CMAKE_CURRENT_SOURCE_DIR}/samples/compute/Compute.h")
 compile_shader(SOURCE samples/graphics/Vertex.slang     STAGE vertex   OUTPUT graphics/Vertex.spv
@@ -161,22 +161,22 @@ compile_shader(SOURCE samples/learning/Tensor.slang STAGE compute OUTPUT learnin
     ENTRY _add _sub _mul _div _dot _mT _matmul _pow _tanh
     EXTRA_DEPENDS ${COMMON_SHADER_DEPS} "${CMAKE_CURRENT_SOURCE_DIR}/samples/learning/Common.h")
 
-add_custom_target(shaders ALL DEPENDS ${NGA_SHADER_OUTPUTS})
+add_custom_target(shaders ALL DEPENDS ${NGAPI_SHADER_OUTPUTS})
 
 # The library's internal PatchDescriptors shader is embedded as a checked-in
 # header rather than compiled on every build; after editing the .slang,
-# regenerate it with this target (see nga/cmake/EmbedPatchDescriptors.cmake).
-add_custom_target(nga-embed-patch-descriptors
+# regenerate it with this target (see ngapi/cmake/EmbedPatchDescriptors.cmake).
+add_custom_target(ngapi-embed-patch-descriptors
     COMMAND ${CMAKE_COMMAND} -DSLANGC=${SLANGC}
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/nga/cmake/EmbedPatchDescriptors.cmake"
-    COMMENT "Re-embedding PatchDescriptors.slang into nga/src/PatchDescriptorsSpv.h")
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/ngapi/cmake/EmbedPatchDescriptors.cmake"
+    COMMENT "Re-embedding PatchDescriptors.slang into ngapi/src/PatchDescriptorsSpv.h")
 
 # Copy assets next to the executables (samples load these from the run dir; the
 # tests read assets straight from the source tree, so this is samples-only).
-if(NGA_BUILD_SAMPLES)
+if(NGAPI_BUILD_SAMPLES)
 add_custom_target(copy_assets ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_CURRENT_SOURCE_DIR}/assets" "${NGA_RUNTIME_DIR}/assets"
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets" "${NGAPI_RUNTIME_DIR}/assets"
     COMMENT "Copying assets")
 
 # ---------------------------------------------------------------------------
@@ -185,7 +185,7 @@ add_custom_target(copy_assets ALL
 # Windowed samples: depend on the windowing layer, shared utilities, shaders and assets.
 function(add_windowed_sample name source)
     add_executable(${name} ${source})
-    target_link_libraries(${name} PRIVATE nga::nga nga-platform nga-samples-common stb glm::glm)
+    target_link_libraries(${name} PRIVATE ngapi::ngapi ngapi-platform ngapi-samples-common stb glm::glm)
     add_dependencies(${name} shaders copy_assets)
 endfunction()
 
@@ -195,18 +195,18 @@ add_windowed_sample(raytracing samples/raytracing/Raytracing.cpp)
 
 # Headless sample: no window, no shaders/assets.
 add_executable(multiplegpus samples/multiplegpus/MultipleGPUs.cpp)
-target_link_libraries(multiplegpus PRIVATE nga::nga)
+target_link_libraries(multiplegpus PRIVATE ngapi::ngapi)
 
 # Headless sample that runs compute shaders (a tiny tensor/MLP library): no
 # window, but it loads the compiled Tensor.spv at runtime.
 add_executable(learning samples/learning/Learning.cpp samples/learning/Tensor.cpp)
-target_link_libraries(learning PRIVATE nga::nga nga-samples-common glm::glm)
+target_link_libraries(learning PRIVATE ngapi::ngapi ngapi-samples-common glm::glm)
 add_dependencies(learning shaders)
 endif() # NGA_BUILD_SAMPLES
 
 # ---------------------------------------------------------------------------
 # Headless rendering tests
 # ---------------------------------------------------------------------------
-if(NGA_BUILD_TESTS)
+if(NGAPI_BUILD_TESTS)
     add_subdirectory(tests)
 endif()

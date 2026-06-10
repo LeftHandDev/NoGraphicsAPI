@@ -14,7 +14,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILD="${NGA_BUILD_DIR:-$ROOT/build-ci}"
+BUILD="${NGAPI_BUILD_DIR:-$ROOT/build-ci}"
 
 MODE_ARGS=()
 if [[ "${1:-}" == "--generate" ]]; then
@@ -29,8 +29,8 @@ export LP_NUM_THREADS="${LP_NUM_THREADS:-1}"
 echo "==> Configure (core + tests only, samples off)"
 cmake -S "$ROOT" -B "$BUILD" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
-    -DNGA_BUILD_SAMPLES=OFF \
-    -DNGA_BUILD_TESTS=ON
+    -DNGAPI_BUILD_SAMPLES=OFF \
+    -DNGAPI_BUILD_TESTS=ON
 
 echo "==> Build"
 cmake --build "$BUILD" -j"$(nproc)"

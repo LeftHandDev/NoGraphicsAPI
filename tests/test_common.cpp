@@ -134,12 +134,12 @@ namespace test
     // ---- golden generation / comparison ------------------------------------
     int finalize(const Args& args, const std::string& name, const Image& actual)
     {
-        const std::string goldenPath = std::string(NGA_TEST_REFERENCE_DIR) + "/" + name + ".png";
+        const std::string goldenPath = std::string(NGAPI_TEST_REFERENCE_DIR) + "/" + name + ".png";
 
         if (args.generate)
         {
             std::error_code ec;
-            std::filesystem::create_directories(NGA_TEST_REFERENCE_DIR, ec);
+            std::filesystem::create_directories(NGAPI_TEST_REFERENCE_DIR, ec);
             if (!writePng(goldenPath, actual))
             {
                 std::cerr << "FAIL [" << name << "]: could not write golden " << goldenPath << "\n";
