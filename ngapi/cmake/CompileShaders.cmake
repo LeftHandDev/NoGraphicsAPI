@@ -59,7 +59,7 @@ function(compile_shader)
         OUTPUT "${OUT}"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${OUT_DIR}"
         COMMAND "${SLANGC}" "${S_SOURCE}"
-                -target spirv -stage ${S_STAGE} ${ENTRY_ARG}
+                -target spirv ${STAGE_ENTRY_ARGS}
                 -I "${NGAPI_SHADER_INCLUDE_DIR}"
                 -o "${OUT}"
         DEPENDS "${S_SOURCE}" ${S_EXTRA_DEPENDS}

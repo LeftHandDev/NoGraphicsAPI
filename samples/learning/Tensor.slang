@@ -81,8 +81,8 @@ void _matmul(uint t: SV_DispatchThreadID, TensorMatMulData *data)
         return;
     }
 
-    int x_row = t / data->c;
-    int y_col = t % data->c;
+    uint64_t x_row = t / data->c;
+    uint64_t y_col = t % data->c;
 
     float d = 0;
     for (int i = 0; i < data->b; i++)

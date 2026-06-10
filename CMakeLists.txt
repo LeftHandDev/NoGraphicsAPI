@@ -200,7 +200,7 @@ target_link_libraries(multiplegpus PRIVATE ngapi::ngapi)
 # Headless sample that runs compute shaders (a tiny tensor/MLP library): no
 # window, but it loads the compiled Tensor.spv at runtime.
 add_executable(learning samples/learning/Learning.cpp samples/learning/Tensor.cpp)
-target_link_libraries(learning PRIVATE nga::nga nga-samples-common glm::glm)
+target_link_libraries(learning PRIVATE ngapi::ngapi ngapi-samples-common glm::glm)
 add_dependencies(learning shaders)
 endif() # NGA_BUILD_SAMPLES
 
