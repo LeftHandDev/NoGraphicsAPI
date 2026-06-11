@@ -1,6 +1,6 @@
 #include "TAA.h"
 
-STATIC_SAMPLER(linearWrap, LINEAR, LINEAR, NEAREST, WRAP, WRAP)
+STATIC_SAMPLER(linearWrap, LINEAR, LINEAR, NEAREST, WRAP, WRAP, 1)
 
 [numthreads(16, 16, 1)] void main(uint3 threadId : SV_DispatchThreadID, TAAData* data)
 {

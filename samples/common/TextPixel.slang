@@ -1,6 +1,6 @@
 #include "Text.h"
 
-STATIC_SAMPLER(linearWrap, LINEAR, LINEAR, NEAREST, WRAP, WRAP)
+STATIC_SAMPLER(linearWrap, LINEAR, LINEAR, NEAREST, WRAP, WRAP, 1)
 
 struct PixelIn
 {

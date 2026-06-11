@@ -1,10 +1,8 @@
 #include "Compute.h"
 
-// The blur's sampler state is fixed, so declare it next to the shader code as
-// a static sampler — it runs on a real hardware sampler at full rate. For
-// sampler state only known at runtime, use the plain-data Sampler instead
-// (see Sampler.h); it is the same declaration style with shader-code filtering.
-STATIC_SAMPLER(linearClamp, LINEAR, LINEAR, NEAREST, CLAMP, CLAMP)
+// The sampler is declared next to the shader code that uses it — no API
+// object, no descriptor management; it runs on a real hardware sampler.
+STATIC_SAMPLER(linearClamp, LINEAR, LINEAR, NEAREST, CLAMP, CLAMP, 1)
 
 [numthreads(16, 16, 1)] void main(uint3 threadId : SV_DispatchThreadID, ComputeData* data)
 {

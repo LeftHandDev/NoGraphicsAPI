@@ -218,7 +218,7 @@ VertexOut main(uint vertexId: SV_VertexID, VertexData *data, PixelData *_)
 ```
 ### Pixel Shader
 ```cpp
-STATIC_SAMPLER(linearWrap, LINEAR, LINEAR, NEAREST, WRAP, WRAP)
+STATIC_SAMPLER(aniso16Wrap, LINEAR, LINEAR, LINEAR, WRAP, WRAP, 16)
 
 struct PixelIn
 {
@@ -234,15 +234,16 @@ struct PixelOut
 PixelOut main(PixelIn pixel, VertexData* _, PixelData* data)
 {
     PixelOut out;
-    out.color = linearWrap().SampleLevel(textureHeap[data->texture], pixel.uv, 0);
+    out.color = aniso16Wrap().Sample(textureHeap[data->texture], pixel.uv);
     return out;
 }
 ```
 
-Samplers are not API objects: `STATIC_SAMPLER` declares one next to the shader
-code and it runs on a real hardware sampler (the implementation creates it at
-pipeline creation). For sampler state only known at runtime, `Sampler` is a
-plain struct with shader-code filtering — see [`ngapi/include/Sampler.h`](ngapi/include/Sampler.h).
+Samplers are not API objects and there is no sampler API: `STATIC_SAMPLER`
+declares one next to the shader code — min/mag/mip filters, addressing and
+anisotropy all in the declaration — and it runs on a real hardware sampler
+created by the implementation at pipeline creation. See
+[`ngapi/include/Sampler.h`](ngapi/include/Sampler.h).
 ## Raytracing
 
 Raytracing pipelines and acceleration structures are not mentioned in the original header, so some liberties had to be taken in the API design. Since raytracing pipelines are not required to trace rays, for now they are not implemented.

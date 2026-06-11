@@ -1,6 +1,9 @@
 #include "Graphics.h"
 
-STATIC_SAMPLER(linearWrap, LINEAR, LINEAR, NEAREST, WRAP, WRAP)
+// The full sampler definition lives in the declaration: trilinear-ready
+// filtering, wrap addressing and 16x anisotropy. Sampled below with
+// Sample() (implicit derivatives) so the anisotropic footprint applies.
+STATIC_SAMPLER(aniso16Wrap, LINEAR, LINEAR, LINEAR, WRAP, WRAP, 16)
 
 struct PixelIn
 {
@@ -18,7 +21,7 @@ struct PixelOut
 PixelOut main(PixelIn inPixel, VertexData* _, PixelData* data)
 {
     PixelOut outPixel;
-    outPixel.color = linearWrap().SampleLevel(textureHeap[data->srcTexture], inPixel.uv, 0);
+    outPixel.color = aniso16Wrap().Sample(textureHeap[data->srcTexture], inPixel.uv);
     outPixel.motionVectors = float4(inPixel.motionVectors, 0.0, 0.0);
     return outPixel;
 }

@@ -510,6 +510,7 @@ struct VulkanDevice
 #endif
 
         vulkanDevice->physicalDevice.features.shaderInt64 = VK_TRUE;
+        vulkanDevice->physicalDevice.features.samplerAnisotropy = VK_TRUE; // static samplers can request anisotropy
 
 #ifdef GPU_RAY_TRACING_EXTENSION
 #endif // GPU_RAY_TRACING_EXTENSION
@@ -1422,6 +1423,14 @@ uint32_t staticSamplerSlot(VulkanDevice* vulkanDevice, uint32_t packedState)
     samplerInfo.addressModeW = samplerInfo.addressModeV;
     samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
     samplerInfo.maxLod = VK_LOD_CLAMP_NONE;
+
+    const uint32_t maxAnisotropy = (packedState >> 7) & 31;
+    if (maxAnisotropy > 1)
+    {
+        samplerInfo.anisotropyEnable = VK_TRUE;
+        samplerInfo.maxAnisotropy = std::min(static_cast<float>(maxAnisotropy),
+                                             vulkanDevice->physicalDeviceProperties2.properties.limits.maxSamplerAnisotropy);
+    }
 
     const uint32_t slot = vulkanDevice->nextSamplerSlot++;
     assert(slot < vulkanDevice->descriptorCount);

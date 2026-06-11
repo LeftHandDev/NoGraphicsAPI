@@ -7,23 +7,25 @@
 #error "Include NoGraphicsAPI.h instead of Sampler.h"
 #endif
 
-// A sampler is plain data plus shader code — not an API object and not a
-// descriptor. Following the blog post, declare one inline in GPU code:
+// Samplers are not API objects and there is no sampler API: following the
+// blog post, a sampler is declared next to the shader code that uses it.
 //
-//     Sampler sampler = {};        // `= {}` applies the defaults below;
-//     sampler.minFilter = LINEAR;  // a bare `Sampler sampler;` declaration
-//     sampler.magFilter = LINEAR;  // is uninitialized in slang!
-//     float4 color = sampler.SampleLevel(textureHeap[t], uv, 0);
+//     STATIC_SAMPLER(aniso16Wrap, LINEAR, LINEAR, LINEAR, WRAP, WRAP, 16)
+//     ...
+//     float4 c = aniso16Wrap().Sample(textureHeap[t], uv);          // implicit lod (pixel shaders)
+//     float4 d = aniso16Wrap().SampleLevel(textureHeap[t], uv, 0);  // explicit lod
 //
-// or put one in your own data struct and fill it in on the CPU — C++20
-// designated initializers work there (slang has none):
+// Each declaration runs on a real hardware sampler at full rate. The state is
+// packed into the default value of a specialization constant — tagged with
+// the magic high bits below so the implementation can find it by scanning the
+// SPIR-V at pipeline creation, with no sidecar metadata. The implementation
+// creates/dedups a matching VkSampler in its internal sampler heap and
+// specializes the constant to the allocated slot, so the shader-visible value
+// is the heap slot, folded to a literal at pipeline compile time.
 //
-//     data.cpu->sampler = Sampler{ .minFilter = LINEAR, .addressU = CLAMP };
-//
-// It is just a struct, so both work. Filtering runs in shader code; only the
-// raw texel fetches go through the texture units (Load), so tiling, format
-// decode and caching still come from hardware. There is no hardware sampler
-// behind this.
+// Note: a uint specialization constant whose default value has these high
+// bits is claimed by this scheme; pick other defaults for unrelated
+// constants.
 
 // Filter modes
 #define NEAREST 0
@@ -35,175 +37,49 @@
 #define MIRROR 2
 #define BORDER 3
 
-// --- static (hardware) samplers --------------------------------------------
-// STATIC_SAMPLER below declares a sampler whose state is fixed at shader
-// compile time and which therefore runs on a real hardware sampler at full
-// rate. The state is packed into the default value of a specialization
-// constant — tagged with the magic high bits so the implementation can find
-// it by scanning the SPIR-V at pipeline creation, with no sidecar metadata.
-// The implementation creates/dedups a matching VkSampler in its internal
-// sampler heap and specializes the constant to the allocated slot, so the
-// shader-visible value is the heap slot, folded to a literal at pipeline
-// compile time.
-//
-// Note: a uint specialization constant whose default value has these high
-// bits is claimed by this scheme; pick other defaults for unrelated
-// constants.
+// Packed state: bit 0 minFilter, bit 1 magFilter, bit 2 mipFilter,
+// bits 3-4 addressU, bits 5-6 addressV, bits 7-11 max anisotropy
+// (0/1 = isotropic, up to 16; needs Sample(), not SampleLevel(), to matter).
 #define STATIC_SAMPLER_MAGIC_MASK 0xffff0000
 #define STATIC_SAMPLER_MAGIC 0x4e470000 // "NG"
-#define STATIC_SAMPLER_STATE(minF, magF, mipF, aU, aV) \
-    (STATIC_SAMPLER_MAGIC | (minF) | ((magF) << 1) | ((mipF) << 2) | ((aU) << 3) | ((aV) << 5))
-
-struct alignas(16) Sampler
-{
-    uint minFilter = LINEAR;  // applied when lod > 0 (minification)
-    uint magFilter = LINEAR;  // applied when lod <= 0 (magnification)
-    uint mipFilter = NEAREST; // NEAREST rounds lod to a level, LINEAR blends two
-    uint addressU = WRAP;
-    uint addressV = WRAP;
-    uint padding[3] = { 0, 0, 0 };
-    float4 borderColor = { 0, 0, 0, 0 }; // out-of-range texels when address mode is BORDER
-};
+#define STATIC_SAMPLER_STATE(minF, magF, mipF, aU, aV, maxAniso) \
+    (STATIC_SAMPLER_MAGIC | (minF) | ((magF) << 1) | ((mipF) << 2) | ((aU) << 3) | ((aV) << 5) | ((maxAniso) << 7))
 
 #ifndef __cplusplus
 
-// Wrapping modes are applied in float UV space, once per sample: integer
-// modulo has no hardware instruction on GPUs (it expands to a ~20-op
-// emulation), while frac() is a single op.
-float ngapiNormalizeUV(float u, uint mode)
-{
-    if (mode == WRAP)
-        return frac(u);
-    if (mode == MIRROR)
-    {
-        float t = frac(u * 0.5) * 2.0; // [0,2): forward half then mirrored half
-        return t < 1.0 ? t : 2.0 - t;
-    }
-    return u; // CLAMP / BORDER resolve out-of-range texels below
-}
-
-// Texel-space fixup. After ngapiNormalizeUV a filter footprint leaves
-// [0, size-1] by at most one texel on either side, so the wrapping modes need
-// only a single conditional step — callers must normalize first. Returns -1
-// when the texel is outside the texture and the border color applies.
-int ngapiResolveTexelAddress(int coord, int size, uint mode)
-{
-    switch (mode)
-    {
-    case WRAP:
-        if (coord < 0)
-            return coord + size;
-        return coord >= size ? coord - size : coord;
-    case MIRROR:
-        if (coord < 0)
-            return -coord - 1;
-        return coord >= size ? 2 * size - 1 - coord : coord;
-    case CLAMP:
-        return clamp(coord, 0, size - 1);
-    default: // BORDER
-        return (coord < 0 || coord >= size) ? -1 : coord;
-    }
-}
-
-float4 ngapiFetchTexel(Texture2D<float4> tex, Sampler s, int2 coord, int2 size, int mip)
-{
-    int x = ngapiResolveTexelAddress(coord.x, size.x, s.addressU);
-    int y = ngapiResolveTexelAddress(coord.y, size.y, s.addressV);
-    if (x < 0 || y < 0)
-        return s.borderColor;
-    return tex.Load(int3(x, y, mip));
-}
-
-// `uv` must already be normalized by ngapiNormalizeUV; `baseSize` is mip 0.
-float4 ngapiSampleMip(Texture2D<float4> tex, Sampler s, float2 uv, int mip, uint filter, int2 baseSize)
-{
-    int2 size = max(int2(1, 1), baseSize >> mip); // Vulkan mip sizing: max(1, floor(base / 2^mip))
-
-    if (filter == NEAREST)
-    {
-        int2 coord = int2(floor(uv * float2(size)));
-        return ngapiFetchTexel(tex, s, coord, size, mip);
-    }
-
-    // LINEAR: fetch the 2x2 quad around the sample position and blend.
-    float2 pos = uv * float2(size) - 0.5;
-    float2 floorPos = floor(pos);
-    int2 base = int2(floorPos);
-    float2 weight = pos - floorPos;
-
-    float4 c00 = ngapiFetchTexel(tex, s, base + int2(0, 0), size, mip);
-    float4 c10 = ngapiFetchTexel(tex, s, base + int2(1, 0), size, mip);
-    float4 c01 = ngapiFetchTexel(tex, s, base + int2(0, 1), size, mip);
-    float4 c11 = ngapiFetchTexel(tex, s, base + int2(1, 1), size, mip);
-
-    return lerp(lerp(c00, c10, weight.x), lerp(c01, c11, weight.x), weight.y);
-}
-
 // Implementation detail: the hardware sampler heap (descriptor set 2) that
 // static sampler slots index into. The implementation owns its contents —
-// user code never references it; samplers reach shaders as Sampler data or
-// STATIC_SAMPLER declarations, mirroring the blog's API which has no sampler
-// heap at all.
+// user code never references it.
 [[vk::binding(0, 2)]]
 SamplerState ngapiSamplerHeap[];
 
 // A hardware sampler reached through a heap slot the host picked at pipeline
-// creation. Same call shape as the software Sampler.
+// creation. Sample() uses implicit derivatives (pixel shaders only, and the
+// path where anisotropy applies); SampleLevel() takes an explicit lod.
 struct HwSampler
 {
     uint slot;
+
+    float4 Sample(Texture2D<float4> tex, float2 uv)
+    {
+        return tex.Sample(ngapiSamplerHeap[slot], uv);
+    }
+
     float4 SampleLevel(Texture2D<float4> tex, float2 uv, float lod = 0.0)
     {
         return tex.SampleLevel(ngapiSamplerHeap[slot], uv, lod);
     }
 };
 
-// Declares a static sampler at global scope (see the comment above
-// STATIC_SAMPLER_MAGIC). Usage:
-//
-//     STATIC_SAMPLER(linearClamp, LINEAR, LINEAR, NEAREST, CLAMP, CLAMP)
-//     ...
-//     float4 c = linearClamp().SampleLevel(textureHeap[t], uv, 0);
-//
-// The accessor is a function because slang does not allow globals to be
+// Declares a static sampler at global scope (see the header comment). The
+// accessor is a function because slang does not allow globals to be
 // initialized from specialization constants.
-#define STATIC_SAMPLER(name, minF, magF, mipF, aU, aV)                                                     \
-    [SpecializationConstant] const uint name##_ngapiSlot = STATIC_SAMPLER_STATE(minF, magF, mipF, aU, aV); \
-    HwSampler name()                                                                                       \
-    {                                                                                                      \
-        return { name##_ngapiSlot };                                                                       \
+#define STATIC_SAMPLER(name, minF, magF, mipF, aU, aV, maxAniso)                                                     \
+    [SpecializationConstant] const uint name##_ngapiSlot = STATIC_SAMPLER_STATE(minF, magF, mipF, aU, aV, maxAniso); \
+    HwSampler name()                                                                                                 \
+    {                                                                                                                \
+        return { name##_ngapiSlot };                                                                                 \
     }
-
-extension Sampler
-{
-    float4 SampleLevel(Texture2D<float4> tex, float2 uv, float lod = 0.0)
-    {
-        // The only dimension query per sample; mip sizes derive from it.
-        uint width, height, mipCount;
-        tex.GetDimensions(0, width, height, mipCount);
-        int2 baseSize = int2(int(width), int(height));
-
-        lod = clamp(lod, 0.0, float(mipCount - 1));
-        uint filter = lod <= 0.0 ? this.magFilter : this.minFilter;
-
-        uv.x = ngapiNormalizeUV(uv.x, this.addressU);
-        uv.y = ngapiNormalizeUV(uv.y, this.addressV);
-
-        if (this.mipFilter == LINEAR)
-        {
-            int mip0 = int(floor(lod));
-            int mip1 = min(mip0 + 1, int(mipCount) - 1);
-            float mipWeight = lod - float(mip0);
-
-            float4 color0 = ngapiSampleMip(tex, this, uv, mip0, filter, baseSize);
-            if (mipWeight <= 0.0 || mip1 == mip0)
-                return color0;
-            return lerp(color0, ngapiSampleMip(tex, this, uv, mip1, filter, baseSize), mipWeight);
-        }
-
-        return ngapiSampleMip(tex, this, uv, int(round(lod)), filter, baseSize);
-    }
-}
 
 #endif // !__cplusplus
 
