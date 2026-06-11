@@ -35,6 +35,25 @@
 #define MIRROR 2
 #define BORDER 3
 
+// --- static (hardware) samplers --------------------------------------------
+// STATIC_SAMPLER below declares a sampler whose state is fixed at shader
+// compile time and which therefore runs on a real hardware sampler at full
+// rate. The state is packed into the default value of a specialization
+// constant — tagged with the magic high bits so the implementation can find
+// it by scanning the SPIR-V at pipeline creation, with no sidecar metadata.
+// The implementation creates/dedups a matching VkSampler in its internal
+// sampler heap and specializes the constant to the allocated slot, so the
+// shader-visible value is the heap slot, folded to a literal at pipeline
+// compile time.
+//
+// Note: a uint specialization constant whose default value has these high
+// bits is claimed by this scheme; pick other defaults for unrelated
+// constants.
+#define STATIC_SAMPLER_MAGIC_MASK 0xffff0000
+#define STATIC_SAMPLER_MAGIC 0x4e470000 // "NG"
+#define STATIC_SAMPLER_STATE(minF, magF, mipF, aU, aV) \
+    (STATIC_SAMPLER_MAGIC | (minF) | ((magF) << 1) | ((mipF) << 2) | ((aU) << 3) | ((aV) << 5))
+
 struct alignas(16) Sampler
 {
     uint minFilter = LINEAR;  // applied when lod > 0 (minification)
@@ -119,6 +138,33 @@ float4 ngapiSampleMip(Texture2D<float4> tex, Sampler s, float2 uv, int mip, uint
 
     return lerp(lerp(c00, c10, weight.x), lerp(c01, c11, weight.x), weight.y);
 }
+
+// A hardware sampler reached through a heap slot the host picked at pipeline
+// creation. Same call shape as the software Sampler.
+struct HwSampler
+{
+    uint slot;
+    float4 SampleLevel(Texture2D<float4> tex, float2 uv, float lod = 0.0)
+    {
+        return tex.SampleLevel(samplerHeap[slot], uv, lod);
+    }
+};
+
+// Declares a static sampler at global scope (see the comment above
+// STATIC_SAMPLER_MAGIC). Usage:
+//
+//     STATIC_SAMPLER(linearClamp, LINEAR, LINEAR, NEAREST, CLAMP, CLAMP)
+//     ...
+//     float4 c = linearClamp().SampleLevel(textureHeap[t], uv, 0);
+//
+// The accessor is a function because slang does not allow globals to be
+// initialized from specialization constants.
+#define STATIC_SAMPLER(name, minF, magF, mipF, aU, aV)                                                     \
+    [SpecializationConstant] const uint name##_ngapiSlot = STATIC_SAMPLER_STATE(minF, magF, mipF, aU, aV); \
+    HwSampler name()                                                                                       \
+    {                                                                                                      \
+        return { name##_ngapiSlot };                                                                       \
+    }
 
 extension Sampler
 {

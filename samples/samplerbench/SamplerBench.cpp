@@ -110,9 +110,13 @@ int main()
     auto hwIR = loadIR("shaders/samplerbench/BenchHW.spv");
     auto swIR = loadIR("shaders/samplerbench/BenchSW.spv");
     auto staticIR = loadIR("shaders/samplerbench/BenchStatic.spv");
+    auto staticNearestIR = loadIR("shaders/samplerbench/BenchStaticNearest.spv");
+    auto swNearestIR = loadIR("shaders/samplerbench/BenchSWNearest.spv");
     auto hwPipeline = gpuCreateComputePipeline(device, ByteSpan(hwIR.data(), hwIR.size()));
     auto swPipeline = gpuCreateComputePipeline(device, ByteSpan(swIR.data(), swIR.size()));
     auto staticPipeline = gpuCreateComputePipeline(device, ByteSpan(staticIR.data(), staticIR.size()));
+    auto staticNearestPipeline = gpuCreateComputePipeline(device, ByteSpan(staticNearestIR.data(), staticNearestIR.size()));
+    auto swNearestPipeline = gpuCreateComputePipeline(device, ByteSpan(swNearestIR.data(), swNearestIR.size()));
 
     const uint32_t width = 1024, height = 1024;
     const size_t textureBytes = static_cast<size_t>(width) * height * 4;
@@ -176,7 +180,20 @@ int main()
         int maxDiff = 0;
         for (size_t i = 0; i < textureBytes; i++)
             maxDiff = std::max(maxDiff, std::abs(int(hwImage[i]) - int(swImage[i])));
-        std::printf("hardware vs software output: maxDiff=%d/255 %s\n\n", maxDiff, maxDiff <= 8 ? "(ok)" : "(SUSPICIOUS)");
+        std::printf("hardware vs software output: maxDiff=%d/255 %s\n", maxDiff, maxDiff <= 8 ? "(ok)" : "(SUSPICIOUS)");
+
+        // Specialization proof: a STATIC_SAMPLER declared NEAREST/CLAMP must
+        // match the equivalent software sampler byte-for-byte (nearest picks
+        // exact texels). If pipeline creation failed to specialize the slot,
+        // the shader would read a different sampler and this would not hold.
+        timer.runBatch(staticNearestPipeline, textureHeap.gpu, data.gpu, grid, 1);
+        auto staticImage = readbackRGBA8(device, queue, dstTexture, textureBytes);
+        timer.runBatch(swNearestPipeline, textureHeap.gpu, data.gpu, grid, 1);
+        auto swNearestImage = readbackRGBA8(device, queue, dstTexture, textureBytes);
+        int staticDiff = 0;
+        for (size_t i = 0; i < textureBytes; i++)
+            staticDiff = std::max(staticDiff, std::abs(int(staticImage[i]) - int(swNearestImage[i])));
+        std::printf("static sampler specialization:  maxDiff=%d/255 %s\n\n", staticDiff, staticDiff == 0 ? "(ok)" : "(BROKEN)");
 
         std::printf("%-28s %12s %15s %12s %14s %12s\n", "config", "hw ms", "static ms", "sw ms", "static/hw", "sw/hw");
         for (int radius : { 0, 4, 16 })
@@ -204,6 +221,8 @@ int main()
     gpuFreePipeline(hwPipeline);
     gpuFreePipeline(swPipeline);
     gpuFreePipeline(staticPipeline);
+    gpuFreePipeline(staticNearestPipeline);
+    gpuFreePipeline(swNearestPipeline);
     gpuFree(device, srcPtr);
     gpuFree(device, dstPtr);
     gpuDestroyQueue(queue);
