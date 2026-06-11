@@ -454,6 +454,15 @@ void gpuFreeDepthStencilState(GpuDepthStencilState state);
 void gpuFreeBlendState(GpuBlendState state);
 
 // Queue
+//
+// Threading contract: resource creation/destruction (malloc/free, textures,
+// view descriptors, pipelines, semaphores, acceleration structures) and
+// queue operations (submit, wait, present) are callable from any thread
+// concurrently. Command recording is parallel across command buffers — each
+// GpuCommandBuffer belongs to one thread at a time and recording into it
+// takes no locks. Externally synchronized (one thread at a time): each
+// individual command buffer, each swapchain, and instance/device
+// creation/destruction. See docs/multithreading.md.
 GpuQueue gpuCreateQueue(GpuDevice device);
 void gpuDestroyQueue(GpuQueue queue);
 GpuCommandBuffer gpuStartCommandRecording(GpuQueue queue);

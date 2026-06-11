@@ -44,7 +44,7 @@ cmake --preset linux   # GLFW backend (default)
 cmake --build build
 ```
 
-The per-sample executables (`compute`, `graphics`, `raytracing`, `multiplegpus`) are written to `build/bin/`, next to the compiled `shaders/` and `assets/` they load at runtime:
+The per-sample executables (`compute`, `graphics`, `raytracing`, `multiplegpus`, `multithreading`) are written to `build/bin/`, next to the compiled `shaders/` and `assets/` they load at runtime:
 
 ```sh
 cd build/bin && ./raytracing
@@ -293,6 +293,17 @@ for `INLINE_SAMPLER` — then creates the `VkSampler`, and rewires the
 declaration to its heap slot. No sidecar metadata, no new API calls, and the
 slot folds to a literal in the compiled pipeline. See
 [`ngapi/include/Sampler.h`](ngapi/include/Sampler.h).
+## Multithreading
+
+Resource creation/destruction, pipeline creation and queue operations
+(`gpuSubmit`, `gpuWaitSemaphore`, `gpuPresent`) are callable from any thread.
+Command recording is parallel across command buffers: each `GpuCommandBuffer`
+belongs to one thread at a time and owns its own command pool, so recording
+takes no locks. Each swapchain and the instance/device lifecycle are
+externally synchronized. The [`multithreading`](samples/multithreading)
+sample demonstrates and self-tests the contract; details and known limits in
+[`docs/multithreading.md`](docs/multithreading.md).
+
 ## Raytracing
 
 Raytracing pipelines and acceleration structures are not mentioned in the original header, so some liberties had to be taken in the API design. Since raytracing pipelines are not required to trace rays, for now they are not implemented.

@@ -9,9 +9,12 @@
 #include <map>
 #include <vector>
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <mutex>
+#include <shared_mutex>
 #include <thread>
 #include "NoGraphicsAPI_Impl.h"
 
@@ -54,6 +57,13 @@ struct GpuCommandBuffer_T
 {
     VkCommandBuffer commandBuffer;
     GpuDevice device;
+    // Each command buffer owns its pool so recording needs no cross-thread
+    // synchronization (Vulkan command pools are externally synchronized,
+    // including during vkCmd* recording). The pool is destroyed when the
+    // submission it went into is retired by gpuWaitSemaphore.
+    VkCommandPool pool = VK_NULL_HANDLE;
+    // Recording-local state; a command buffer is owned by one thread at a time.
+    GpuPipeline currentPipeline = nullptr;
 };
 struct GpuSemaphore_T
 {
@@ -79,6 +89,9 @@ struct GpuSwapchain_T
     std::vector<GpuTexture> images;
     std::vector<VkSemaphore> presentSemaphores;
     std::vector<VkCommandBuffer> presentCommandBuffers;
+    // Per-swapchain so two swapchains (or threads) can acquire independently;
+    // each swapchain itself is externally synchronized.
+    VkFence acquireFence = VK_NULL_HANDLE;
     GpuDevice device;
 };
 #endif // GPU_SURFACE_EXTENSION
@@ -410,14 +423,26 @@ struct VulkanDevice
     vkb::DispatchTable dispatchTable;
 
     // Vulkan objects
+    // The device-level pool only backs the swapchains' present-transition
+    // command buffers (serialized by submitMutex + per-swapchain external
+    // synchronization); every GpuCommandBuffer owns its own pool so command
+    // recording is lock-free across threads.
     VkCommandPool commandPool = VK_NULL_HANDLE;
-    std::map<std::pair<VkSemaphore, uint64_t>, std::vector<VkCommandBuffer>> submittedCommandBuffers;
+    uint32_t graphicsQueueFamily = 0;
+    std::map<std::pair<VkSemaphore, uint64_t>, std::vector<VkCommandPool>> submittedCommandPools;
     VkSampler defaultSampler = VK_NULL_HANDLE;
-    VkFence acquireFence = VK_NULL_HANDLE;
     std::map<VkPipelineBindPoint, VkPipelineLayout> layout;
     VkDescriptorSetLayout textureSetLayout;
     VkDescriptorSetLayout rwTextureSetLayout;
     VkDescriptorSetLayout samplerSetLayout;
+
+    // Thread safety. submitMutex serializes the externally-synchronized
+    // VkQueue (submits, the present transition and the retirement map);
+    // allocationsMutex guards the allocations vector (lookups dominate);
+    // samplerMutex guards static-sampler slot allocation at pipeline creation.
+    std::mutex submitMutex;
+    std::shared_mutex allocationsMutex;
+    std::mutex samplerMutex;
 
     // Vulkan structs
     VkPhysicalDeviceMemoryProperties memoryProperties = {};
@@ -435,9 +460,6 @@ struct VulkanDevice
     std::vector<VkSampler> staticSamplers;
     uint32_t nextSamplerSlot = 1;
 
-    // Opaque handles
-    std::map<GpuCommandBuffer, GpuPipeline> currentPipeline;
-
     // Buffer descriptor sets
     VkDeviceSize descriptorSetLayoutSize = 0;
     VkDeviceSize descriptorSetLayoutOffset = 0;
@@ -454,8 +476,8 @@ struct VulkanDevice
     void* patchedDescriptorDataCpu = nullptr;   // the temporary patched descriptor data
     void* rwPatchedDescriptorDataCpu = nullptr; // the temporary patched read/write descriptor data
     PatchDescriptorsData* patchDescriptorsDataCpu = nullptr;
-    uint32_t descriptorsUsed = 0;
-    uint32_t rwDescriptorsUsed = 0;
+    std::atomic<uint32_t> descriptorsUsed = 0;
+    std::atomic<uint32_t> rwDescriptorsUsed = 0;
 
     static VulkanDevice* createVulkan(uint32_t deviceIndex)
     {
@@ -536,9 +558,11 @@ struct VulkanDevice
         vulkanDevice->device = deviceRet.value();
         vulkanDevice->dispatchTable = vulkanDevice->device.make_table();
 
+        vulkanDevice->graphicsQueueFamily = vulkanDevice->device.get_queue_index(vkb::QueueType::graphics).value();
+
         VkCommandPoolCreateInfo poolInfo = {};
         poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-        poolInfo.queueFamilyIndex = vulkanDevice->device.get_queue_index(vkb::QueueType::graphics).value();
+        poolInfo.queueFamilyIndex = vulkanDevice->graphicsQueueFamily;
         poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
         vulkanDevice->dispatchTable.createCommandPool(&poolInfo, nullptr, &vulkanDevice->commandPool);
 
@@ -553,10 +577,6 @@ struct VulkanDevice
         samplerInfo.unnormalizedCoordinates = VK_FALSE;
         vulkanDevice->dispatchTable.createSampler(&samplerInfo, nullptr, &vulkanDevice->defaultSampler);
 
-        VkFenceCreateInfo fenceInfo = {};
-        fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        vulkanDevice->dispatchTable.createFence(&fenceInfo, nullptr, &vulkanDevice->acquireFence);
-
         vulkanDevice->createPipelineLayout();
 
         return vulkanDevice;
@@ -566,11 +586,14 @@ struct VulkanDevice
     {
         dispatchTable.deviceWaitIdle();
 
-        for (auto& [key, commandBuffers] : submittedCommandBuffers)
+        for (auto& [key, pools] : submittedCommandPools)
         {
-            dispatchTable.freeCommandBuffers(commandPool, static_cast<uint32_t>(commandBuffers.size()), commandBuffers.data());
+            for (auto pool : pools)
+            {
+                dispatchTable.destroyCommandPool(pool, nullptr);
+            }
         }
-        submittedCommandBuffers.clear();
+        submittedCommandPools.clear();
 
         if (patchDescriptorsPipeline != nullptr)
         {
@@ -614,7 +637,6 @@ struct VulkanDevice
         {
             dispatchTable.destroySampler(sampler, nullptr);
         }
-        dispatchTable.destroyFence(acquireFence, nullptr);
         dispatchTable.destroyDescriptorSetLayout(textureSetLayout, nullptr);
         dispatchTable.destroyDescriptorSetLayout(rwTextureSetLayout, nullptr);
         dispatchTable.destroyDescriptorSetLayout(samplerSetLayout, nullptr);
@@ -645,6 +667,7 @@ struct VulkanDevice
 
     Allocation findAllocation(VkDeviceAddress address)
     {
+        std::shared_lock lock(allocationsMutex);
         for (auto& buffer : allocations)
         {
             if (address >= buffer.address && address < (buffer.address + buffer.size))
@@ -658,6 +681,7 @@ struct VulkanDevice
 
     Allocation findAllocation(void* ptr)
     {
+        std::shared_lock lock(allocationsMutex);
         for (auto& buffer : allocations)
         {
             if (ptr >= buffer.ptr && ptr < (static_cast<uint8_t*>(buffer.ptr) + buffer.size))
@@ -671,6 +695,14 @@ struct VulkanDevice
 
     void freeAllocation(Allocation alloc)
     {
+        {
+            std::unique_lock lock(allocationsMutex);
+            allocations.erase(std::remove_if(allocations.begin(), allocations.end(),
+                                             [alloc](const Allocation& b)
+                                             { return b.buffer == alloc.buffer; }),
+                              allocations.end());
+        }
+
         if (alloc.ptr)
         {
             dispatchTable.unmapMemory(alloc.memory);
@@ -678,11 +710,6 @@ struct VulkanDevice
 
         dispatchTable.destroyBuffer(alloc.buffer, nullptr);
         dispatchTable.freeMemory(alloc.memory, nullptr);
-
-        allocations.erase(std::remove_if(allocations.begin(), allocations.end(),
-                                         [alloc](const Allocation& b)
-                                         { return b.buffer == alloc.buffer; }),
-                          allocations.end());
     }
 
     Allocation createAllocation(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkDeviceSize alignment)
@@ -730,7 +757,10 @@ struct VulkanDevice
             alloc.ptr = static_cast<uint8_t*>(alloc.ptr) + offset;
         }
 
-        allocations.push_back(alloc);
+        {
+            std::unique_lock lock(allocationsMutex);
+            allocations.push_back(alloc);
+        }
 
         return alloc;
     }
@@ -989,6 +1019,10 @@ GpuDeviceDesc gpuDeviceDesc(uint32_t index)
     return vulkanInstance->deviceDescs[index];
 }
 
+// Defined after pipeline creation below; creates everything that used to be
+// lazily initialized so no first-use initialization races command recording.
+void initDeviceResources(GpuDevice device);
+
 GpuDevice gpuCreateDevice(uint32_t deviceIndex)
 {
     if (vulkanInstance == nullptr)
@@ -1003,6 +1037,7 @@ GpuDevice gpuCreateDevice(uint32_t deviceIndex)
     }
 
     GpuDevice device = new GpuDevice_T{ vulkanDevice };
+    initDeviceResources(device);
     return device;
 }
 
@@ -1104,13 +1139,21 @@ void* gpuMalloc(GpuDevice device, size_t bytes, size_t align, MEMORY memory)
 void gpuFree(GpuDevice device, void* ptr)
 {
     VulkanDevice* vulkanDevice = device->vulkanDevice;
-    for (auto& alloc : vulkanDevice->allocations)
+    Allocation match = {};
     {
-        if (alloc.ptr == ptr || reinterpret_cast<VkDeviceAddress>(ptr) == alloc.address)
+        std::shared_lock lock(vulkanDevice->allocationsMutex);
+        for (auto& alloc : vulkanDevice->allocations)
         {
-            vulkanDevice->freeAllocation(alloc);
-            return;
+            if (alloc.ptr == ptr || reinterpret_cast<VkDeviceAddress>(ptr) == alloc.address)
+            {
+                match = alloc;
+                break;
+            }
         }
+    }
+    if (match.buffer != VK_NULL_HANDLE)
+    {
+        vulkanDevice->freeAllocation(match);
     }
 }
 
@@ -1272,16 +1315,13 @@ GpuTextureDescriptor gpuTextureViewDescriptor(GpuTexture texture, GpuViewDesc de
 
     if (vulkanDevice->descriptorsNeedPatching())
     {
-        if (!vulkanDevice->descriptorDataCpu)
-        {
-            vulkanDevice->descriptorDataCpu = gpuMallocHidden(vulkanDevice, vulkanDevice->descriptorBufferProperties.sampledImageDescriptorSize * vulkanDevice->descriptorCount, GPU_DEFAULT_ALIGNMENT, MEMORY_DEFAULT);
-        }
-
-        uint8_t* dest = static_cast<uint8_t*>(vulkanDevice->descriptorDataCpu) + vulkanDevice->descriptorsUsed * vulkanDevice->descriptorBufferProperties.sampledImageDescriptorSize;
+        // descriptorDataCpu is created at device creation; the atomic counter
+        // makes concurrent view creation safe.
+        const uint32_t index = vulkanDevice->descriptorsUsed.fetch_add(1);
+        uint8_t* dest = static_cast<uint8_t*>(vulkanDevice->descriptorDataCpu) + index * vulkanDevice->descriptorBufferProperties.sampledImageDescriptorSize;
         memcpy(dest, buffer.data(), vulkanDevice->descriptorBufferProperties.sampledImageDescriptorSize);
-        descriptor.data[0] = vulkanDevice->descriptorsUsed * vulkanDevice->descriptorBufferProperties.sampledImageDescriptorSize; // Store byte offset in our internal buffer
-        descriptor.data[1] = 0;                                                                                                   // type 0 for read, 1 for read/write
-        vulkanDevice->descriptorsUsed++;
+        descriptor.data[0] = index * vulkanDevice->descriptorBufferProperties.sampledImageDescriptorSize; // Store byte offset in our internal buffer
+        descriptor.data[1] = 0;                                                                           // type 0 for read, 1 for read/write
     }
     else
     {
@@ -1311,16 +1351,11 @@ GpuTextureDescriptor gpuRWTextureViewDescriptor(GpuTexture texture, GpuViewDesc 
 
     if (vulkanDevice->descriptorsNeedPatching())
     {
-        if (!vulkanDevice->rwDescriptorDataCpu)
-        {
-            vulkanDevice->rwDescriptorDataCpu = gpuMallocHidden(vulkanDevice, vulkanDevice->descriptorBufferProperties.storageImageDescriptorSize * vulkanDevice->descriptorCount, GPU_DEFAULT_ALIGNMENT, MEMORY_DEFAULT);
-        }
-
-        uint8_t* dest = static_cast<uint8_t*>(vulkanDevice->rwDescriptorDataCpu) + vulkanDevice->rwDescriptorsUsed * vulkanDevice->descriptorBufferProperties.storageImageDescriptorSize;
+        const uint32_t index = vulkanDevice->rwDescriptorsUsed.fetch_add(1);
+        uint8_t* dest = static_cast<uint8_t*>(vulkanDevice->rwDescriptorDataCpu) + index * vulkanDevice->descriptorBufferProperties.storageImageDescriptorSize;
         memcpy(dest, buffer.data(), vulkanDevice->descriptorBufferProperties.storageImageDescriptorSize);
-        descriptor.data[0] = vulkanDevice->rwDescriptorsUsed * vulkanDevice->descriptorBufferProperties.storageImageDescriptorSize; // Store byte offset in our internal buffer
-        descriptor.data[1] = 1;                                                                                                     // type 0 for read, 1 for read/write
-        vulkanDevice->rwDescriptorsUsed++;
+        descriptor.data[0] = index * vulkanDevice->descriptorBufferProperties.storageImageDescriptorSize; // Store byte offset in our internal buffer
+        descriptor.data[1] = 1;                                                                           // type 0 for read, 1 for read/write
     }
     else
     {
@@ -1424,6 +1459,10 @@ StaticSamplerRequests findStaticSamplerRequests(ByteSpan ir)
 // and deduplicating the VkSampler on first use.
 uint32_t staticSamplerSlot(VulkanDevice* vulkanDevice, uint64_t packedState)
 {
+    // Pipelines may be created from any thread; the lock covers the dedup
+    // lookup, slot allocation and the descriptor write.
+    std::lock_guard lock(vulkanDevice->samplerMutex);
+
     auto existing = vulkanDevice->staticSamplerSlots.find(packedState);
     if (existing != vulkanDevice->staticSamplerSlots.end())
     {
@@ -1568,6 +1607,37 @@ GpuPipeline gpuCreateComputePipeline(GpuDevice device, ByteSpan computeIR, const
     vulkanDevice->dispatchTable.destroyShaderModule(shaderModule, nullptr);
 
     return new GpuPipeline_T{ pipeline, VK_PIPELINE_BIND_POINT_COMPUTE, device };
+}
+
+// Everything here used to be created lazily on first use — including inside
+// command recording. Creating it all at device creation removes that whole
+// class of cross-thread first-use races; the sizes are bounded by
+// descriptorCount, so eager creation costs a few fixed buffers.
+void initDeviceResources(GpuDevice device)
+{
+    VulkanDevice* vulkanDevice = device->vulkanDevice;
+
+    ensureSamplerHeap(vulkanDevice);
+
+    if (vulkanDevice->descriptorsNeedPatching())
+    {
+        const auto& props = vulkanDevice->descriptorBufferProperties;
+        vulkanDevice->descriptorDataCpu =
+            gpuMallocHidden(vulkanDevice, props.sampledImageDescriptorSize * vulkanDevice->descriptorCount, GPU_DEFAULT_ALIGNMENT, MEMORY_DEFAULT);
+        vulkanDevice->rwDescriptorDataCpu =
+            gpuMallocHidden(vulkanDevice, props.storageImageDescriptorSize * vulkanDevice->descriptorCount, GPU_DEFAULT_ALIGNMENT, MEMORY_DEFAULT);
+        vulkanDevice->patchedDescriptorDataCpu =
+            gpuMallocHidden(vulkanDevice, props.sampledImageDescriptorSize * vulkanDevice->descriptorCount, props.descriptorBufferOffsetAlignment, MEMORY_DEFAULT);
+        vulkanDevice->rwPatchedDescriptorDataCpu =
+            gpuMallocHidden(vulkanDevice, props.storageImageDescriptorSize * vulkanDevice->descriptorCount, props.descriptorBufferOffsetAlignment, MEMORY_DEFAULT);
+        vulkanDevice->patchDescriptorsDataCpu =
+            static_cast<PatchDescriptorsData*>(gpuMallocHidden(vulkanDevice, sizeof(PatchDescriptorsData), GPU_DEFAULT_ALIGNMENT, MEMORY_DEFAULT));
+
+        // Embedded at build time (PatchDescriptorsSpv.h) so the library works
+        // without a .spv file on disk; copied because ByteSpan is non-const.
+        std::vector<uint8_t> patchDescriptorsSpv(std::begin(NgapiPatchDescriptorsSpv), std::end(NgapiPatchDescriptorsSpv));
+        vulkanDevice->patchDescriptorsPipeline = gpuCreateComputePipeline(device, patchDescriptorsSpv);
+    }
 }
 
 VkPipeline gpuCreateGraphicsPipelineInternal(VulkanDevice* vulkanDevice, ByteSpan vertexIR, ByteSpan meshletIR, ByteSpan pixelIR, GpuRasterDesc desc)
@@ -1813,9 +1883,20 @@ void gpuDestroyQueue(GpuQueue queue)
 GpuCommandBuffer gpuStartCommandRecording(GpuQueue queue)
 {
     VulkanDevice* vulkanDevice = queue->device->vulkanDevice;
+
+    // One transient pool per command buffer: recording is then lock-free
+    // across threads (pools are externally synchronized, including during
+    // vkCmd* recording). The pool is destroyed when the submission retires.
+    VkCommandPoolCreateInfo poolInfo = {};
+    poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    poolInfo.queueFamilyIndex = vulkanDevice->graphicsQueueFamily;
+    poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    VkCommandPool pool;
+    vulkanDevice->dispatchTable.createCommandPool(&poolInfo, nullptr, &pool);
+
     VkCommandBufferAllocateInfo allocInfo = {};
     allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    allocInfo.commandPool = vulkanDevice->commandPool;
+    allocInfo.commandPool = pool;
     allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     allocInfo.commandBufferCount = 1;
 
@@ -1828,7 +1909,7 @@ GpuCommandBuffer gpuStartCommandRecording(GpuQueue queue)
 
     vulkanDevice->dispatchTable.beginCommandBuffer(commandBuffer, &beginInfo);
 
-    return new GpuCommandBuffer_T{ commandBuffer, queue->device };
+    return new GpuCommandBuffer_T{ commandBuffer, queue->device, pool };
 }
 
 void gpuSubmit(GpuQueue queue, Span<GpuCommandBuffer> commandBuffers, GpuSemaphore semaphore, uint64_t value)
@@ -1854,14 +1935,24 @@ void gpuSubmit(GpuQueue queue, Span<GpuCommandBuffer> commandBuffers, GpuSemapho
     submitInfo.signalSemaphoreCount = 1;
     submitInfo.pSignalSemaphores = &semaphore->semaphore;
 
-    vulkanDevice->dispatchTable.queueSubmit(queue->queue, 1, &submitInfo, VK_NULL_HANDLE);
+    std::vector<VkCommandPool> pools;
+    pools.reserve(commandBuffers.size());
+    for (auto cb : commandBuffers)
+    {
+        pools.push_back(cb->pool);
+    }
 
-    vulkanDevice->submittedCommandBuffers[{ semaphore->semaphore, value }] = vkCommandBuffers;
+    {
+        // VkQueue is externally synchronized (and every GpuQueue aliases the
+        // same graphics queue); the retirement map shares the same lock.
+        std::lock_guard lock(vulkanDevice->submitMutex);
+        vulkanDevice->dispatchTable.queueSubmit(queue->queue, 1, &submitInfo, VK_NULL_HANDLE);
+        vulkanDevice->submittedCommandPools[{ semaphore->semaphore, value }] = std::move(pools);
+    }
 
     for (auto cb : commandBuffers)
     {
-        vulkanDevice->currentPipeline.erase(cb);
-        delete cb; // Frees the wrapper, but not the actual VkCommandBuffer
+        delete cb; // Frees the wrapper; the pool lives until the submission retires
     }
 }
 
@@ -1894,19 +1985,25 @@ void gpuWaitSemaphore(GpuSemaphore sema, uint64_t value, uint64_t timeout)
 
     vulkanDevice->dispatchTable.waitSemaphores(&waitInfo, timeout);
 
-    // Free command buffers for this semaphore, and any earlier values if they exist
-    for (size_t i = value; i > 0; i--)
+    // Retire the command pools for this semaphore value and any earlier ones.
+    // Collected under the lock, destroyed outside it.
+    std::vector<VkCommandPool> retired;
     {
-        if (vulkanDevice->submittedCommandBuffers.find({ sema->semaphore, i }) != vulkanDevice->submittedCommandBuffers.end())
+        std::lock_guard lock(vulkanDevice->submitMutex);
+        for (size_t i = value; i > 0; i--)
         {
-            auto& cmdBuffers = vulkanDevice->submittedCommandBuffers[{ sema->semaphore, i }];
-            vulkanDevice->dispatchTable.freeCommandBuffers(vulkanDevice->commandPool, static_cast<uint32_t>(cmdBuffers.size()), cmdBuffers.data());
-            vulkanDevice->submittedCommandBuffers.erase({ sema->semaphore, i });
+            auto it = vulkanDevice->submittedCommandPools.find({ sema->semaphore, i });
+            if (it == vulkanDevice->submittedCommandPools.end())
+            {
+                break;
+            }
+            retired.insert(retired.end(), it->second.begin(), it->second.end());
+            vulkanDevice->submittedCommandPools.erase(it);
         }
-        else
-        {
-            break;
-        }
+    }
+    for (auto pool : retired)
+    {
+        vulkanDevice->dispatchTable.destroyCommandPool(pool, nullptr);
     }
 }
 
@@ -2007,47 +2104,22 @@ void gpuSetActiveTextureHeapPtr(GpuCommandBuffer cb, void* ptrGpu)
     VulkanDevice* vulkanDevice = device->vulkanDevice;
     auto alloc = vulkanDevice->findAllocation(reinterpret_cast<VkDeviceAddress>(ptrGpu));
 
-    // Default sampler at slot 0; static samplers land in the slots above
-    // (created at pipeline creation, see staticSamplerSlot).
-    ensureSamplerHeap(vulkanDevice);
-
     VkDeviceAddress address = reinterpret_cast<VkDeviceAddress>(ptrGpu);
     VkDeviceAddress rwAddress = address;
 
     if (vulkanDevice->descriptorsNeedPatching())
     {
-        GpuPipeline currentPipeline = vulkanDevice->currentPipeline[cb];
-        if (vulkanDevice->patchDescriptorsPipeline == nullptr)
-        {
-            // Embedded at build time (PatchDescriptorsSpv.h) so the library works
-            // without a .spv file on disk; copied because ByteSpan is non-const.
-            std::vector<uint8_t> patchDescriptorsSpv(std::begin(NgapiPatchDescriptorsSpv), std::end(NgapiPatchDescriptorsSpv));
-            vulkanDevice->patchDescriptorsPipeline = gpuCreateComputePipeline(device, patchDescriptorsSpv);
-        }
-
-        if (vulkanDevice->patchedDescriptorDataCpu == nullptr)
-        {
-            vulkanDevice->patchedDescriptorDataCpu =
-                gpuMallocHidden(vulkanDevice, vulkanDevice->descriptorBufferProperties.sampledImageDescriptorSize * vulkanDevice->descriptorCount,
-                                vulkanDevice->descriptorBufferProperties.descriptorBufferOffsetAlignment, MEMORY_DEFAULT);
-        }
-
-        if (vulkanDevice->rwPatchedDescriptorDataCpu == nullptr)
-        {
-            vulkanDevice->rwPatchedDescriptorDataCpu =
-                gpuMallocHidden(vulkanDevice, vulkanDevice->descriptorBufferProperties.storageImageDescriptorSize * vulkanDevice->descriptorCount,
-                                vulkanDevice->descriptorBufferProperties.descriptorBufferOffsetAlignment, MEMORY_DEFAULT);
-        }
+        // NOTE: the patch destination heaps and PatchDescriptorsData block are
+        // device-global (created in initDeviceResources). Recording is
+        // thread-safe, but on descriptor-patching devices submissions that
+        // patch concurrently would race these buffers on the GPU — see
+        // docs/multithreading.md.
+        GpuPipeline currentPipeline = cb->currentPipeline;
 
         auto patchedDescriptorDataGpu = gpuHostToDevicePointer(device, vulkanDevice->patchedDescriptorDataCpu);
         auto rwPatchedDescriptorDataGpu = gpuHostToDevicePointer(device, vulkanDevice->rwPatchedDescriptorDataCpu);
 
         gpuSetPipeline(cb, vulkanDevice->patchDescriptorsPipeline);
-
-        if (vulkanDevice->patchDescriptorsDataCpu == nullptr)
-        {
-            vulkanDevice->patchDescriptorsDataCpu = static_cast<PatchDescriptorsData*>(gpuMallocHidden(vulkanDevice, sizeof(PatchDescriptorsData), GPU_DEFAULT_ALIGNMENT, MEMORY_DEFAULT));
-        }
 
         vulkanDevice->patchDescriptorsDataCpu->numDescriptors = (alloc.size - (alloc.address - address)) / sizeof(GpuTextureDescriptor);
         vulkanDevice->patchDescriptorsDataCpu->descriptorSize = vulkanDevice->descriptorBufferProperties.sampledImageDescriptorSize;
@@ -2093,8 +2165,8 @@ void gpuSetActiveTextureHeapPtr(GpuCommandBuffer cb, void* ptrGpu)
 
     vulkanDevice->dispatchTable.cmdSetDescriptorBufferOffsetsEXT(
         cb->commandBuffer,
-        vulkanDevice->currentPipeline[cb]->bindPoint,
-        vulkanDevice->layout[vulkanDevice->currentPipeline[cb]->bindPoint],
+        cb->currentPipeline->bindPoint,
+        vulkanDevice->layout[cb->currentPipeline->bindPoint],
         0,
         3,
         indices,
@@ -2104,7 +2176,12 @@ void gpuSetActiveTextureHeapPtr(GpuCommandBuffer cb, void* ptrGpu)
 void gpuBarrier(GpuCommandBuffer cb, STAGE before, STAGE after, HAZARD_FLAGS hazards)
 {
     VulkanDevice* vulkanDevice = cb->device->vulkanDevice;
-    std::vector<VkMemoryBarrier> memoryBarriers;
+    // At most one barrier per hazard flag plus the base barrier; a fixed
+    // array keeps this hot, per-thread recording path free of heap traffic
+    // (a per-call std::vector here was a malloc-lock convoy under parallel
+    // recording).
+    VkMemoryBarrier memoryBarriers[5];
+    uint32_t memoryBarrierCount = 0;
 
     auto stageWriteAccess = [](STAGE stage) -> VkAccessFlags
     {
@@ -2151,7 +2228,7 @@ void gpuBarrier(GpuCommandBuffer cb, STAGE before, STAGE after, HAZARD_FLAGS haz
         memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
         memoryBarrier.srcAccessMask = stageWriteAccess(before);
         memoryBarrier.dstAccessMask = stageReadWriteAccess(after);
-        memoryBarriers.push_back(memoryBarrier);
+        memoryBarriers[memoryBarrierCount++] = memoryBarrier;
     }
 
     if (hazards & HAZARD_DRAW_ARGUMENTS)
@@ -2160,7 +2237,7 @@ void gpuBarrier(GpuCommandBuffer cb, STAGE before, STAGE after, HAZARD_FLAGS haz
         memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
         memoryBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
         memoryBarrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
-        memoryBarriers.push_back(memoryBarrier);
+        memoryBarriers[memoryBarrierCount++] = memoryBarrier;
     }
 
     if (hazards & HAZARD_DESCRIPTORS)
@@ -2169,7 +2246,7 @@ void gpuBarrier(GpuCommandBuffer cb, STAGE before, STAGE after, HAZARD_FLAGS haz
         memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
         memoryBarrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
         memoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        memoryBarriers.push_back(memoryBarrier);
+        memoryBarriers[memoryBarrierCount++] = memoryBarrier;
     }
 
     if (hazards & HAZARD_DEPTH_STENCIL)
@@ -2178,7 +2255,7 @@ void gpuBarrier(GpuCommandBuffer cb, STAGE before, STAGE after, HAZARD_FLAGS haz
         memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
         memoryBarrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
         memoryBarrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        memoryBarriers.push_back(memoryBarrier);
+        memoryBarriers[memoryBarrierCount++] = memoryBarrier;
     }
 
     if (hazards & HAZARD_ACCELERATION_STRUCTURE)
@@ -2187,7 +2264,7 @@ void gpuBarrier(GpuCommandBuffer cb, STAGE before, STAGE after, HAZARD_FLAGS haz
         memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
         memoryBarrier.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
         memoryBarrier.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
-        memoryBarriers.push_back(memoryBarrier);
+        memoryBarriers[memoryBarrierCount++] = memoryBarrier;
     }
 
     vulkanDevice->dispatchTable.cmdPipelineBarrier(
@@ -2195,7 +2272,7 @@ void gpuBarrier(GpuCommandBuffer cb, STAGE before, STAGE after, HAZARD_FLAGS haz
         gpuStageToVkStage(before),
         gpuStageToVkStage(after),
         0,
-        static_cast<uint32_t>(memoryBarriers.size()), memoryBarriers.data(),
+        memoryBarrierCount, memoryBarriers,
         0, nullptr,
         0, nullptr);
 }
@@ -2218,7 +2295,7 @@ void gpuSetPipeline(GpuCommandBuffer cb, GpuPipeline pipeline)
         pipeline->bindPoint,
         pipeline->pipeline);
 
-    vulkanDevice->currentPipeline[cb] = pipeline;
+    cb->currentPipeline = pipeline;
 }
 
 void gpuSetDepthStencilState(GpuCommandBuffer cb, GpuDepthStencilState state)
@@ -2277,7 +2354,7 @@ void gpuDispatch(GpuCommandBuffer cb, void* dataGpu, uint3 gridDimensions)
     VkDeviceAddress address = reinterpret_cast<VkDeviceAddress>(dataGpu);
     vulkanDevice->dispatchTable.cmdPushConstants(
         cb->commandBuffer,
-        vulkanDevice->layout[vulkanDevice->currentPipeline[cb]->bindPoint],
+        vulkanDevice->layout[cb->currentPipeline->bindPoint],
         VK_SHADER_STAGE_COMPUTE_BIT,
         0,
         sizeof(VkDeviceAddress),
@@ -2296,7 +2373,7 @@ void gpuDispatchIndirect(GpuCommandBuffer cb, void* dataGpu, void* gridDimension
     VkDeviceAddress address = reinterpret_cast<VkDeviceAddress>(dataGpu);
     vulkanDevice->dispatchTable.cmdPushConstants(
         cb->commandBuffer,
-        vulkanDevice->layout[vulkanDevice->currentPipeline[cb]->bindPoint],
+        vulkanDevice->layout[cb->currentPipeline->bindPoint],
         VK_SHADER_STAGE_COMPUTE_BIT,
         0,
         sizeof(VkDeviceAddress),
@@ -2392,7 +2469,7 @@ void gpuDrawIndexedInstanced(GpuCommandBuffer cb, void* vertexDataGpu, void* pix
 
     vulkanDevice->dispatchTable.cmdPushConstants(
         cb->commandBuffer,
-        vulkanDevice->layout[vulkanDevice->currentPipeline[cb]->bindPoint],
+        vulkanDevice->layout[cb->currentPipeline->bindPoint],
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_FRAGMENT_BIT,
         0,
         sizeof(VkDeviceAddress) * 2,
@@ -2426,7 +2503,7 @@ void gpuDrawIndexedInstancedIndirect(GpuCommandBuffer cb, void* vertexDataGpu, v
 
     vulkanDevice->dispatchTable.cmdPushConstants(
         cb->commandBuffer,
-        vulkanDevice->layout[vulkanDevice->currentPipeline[cb]->bindPoint],
+        vulkanDevice->layout[cb->currentPipeline->bindPoint],
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_FRAGMENT_BIT,
         0,
         sizeof(VkDeviceAddress) * 2,
@@ -2469,7 +2546,7 @@ void gpuDrawIndexedInstancedIndirectMulti(
 
     vulkanDevice->dispatchTable.cmdPushConstants(
         cb->commandBuffer,
-        vulkanDevice->layout[vulkanDevice->currentPipeline[cb]->bindPoint],
+        vulkanDevice->layout[cb->currentPipeline->bindPoint],
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_FRAGMENT_BIT,
         0,
         sizeof(VkDeviceAddress) * 3,
@@ -2509,7 +2586,7 @@ void gpuDrawMeshlets(GpuCommandBuffer cb, void* meshletDataGpu, void* pixelDataG
 
     vulkanDevice->dispatchTable.cmdPushConstants(
         cb->commandBuffer,
-        vulkanDevice->layout[vulkanDevice->currentPipeline[cb]->bindPoint],
+        vulkanDevice->layout[cb->currentPipeline->bindPoint],
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_FRAGMENT_BIT,
         0,
         sizeof(VkDeviceAddress) * 2,
@@ -2532,7 +2609,7 @@ void gpuDrawMeshletsIndirect(GpuCommandBuffer cb, void* meshletDataGpu, void* pi
 
     vulkanDevice->dispatchTable.cmdPushConstants(
         cb->commandBuffer,
-        vulkanDevice->layout[vulkanDevice->currentPipeline[cb]->bindPoint],
+        vulkanDevice->layout[cb->currentPipeline->bindPoint],
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_FRAGMENT_BIT,
         0,
         sizeof(VkDeviceAddress) * 2,
@@ -2721,6 +2798,11 @@ GpuSwapchain gpuCreateSwapchain(GpuDevice device, GpuSurface surface, uint32_t i
     swapchain->surface = surface->surface;
     swapchain->presentQueue = vulkanDevice->device.get_queue(vkb::QueueType::present).value();
     swapchain->device = device;
+
+    VkFenceCreateInfo fenceInfo = {};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    vulkanDevice->dispatchTable.createFence(&fenceInfo, nullptr, &swapchain->acquireFence);
+
     buildSwapchainResources(swapchain);
     return swapchain;
 }
@@ -2734,6 +2816,7 @@ void gpuDestroySwapchain(GpuSwapchain swapchain)
     vulkanDevice->dispatchTable.deviceWaitIdle();
     destroySwapchainResources(swapchain);
     vulkanDevice->dispatchTable.destroySwapchainKHR(swapchain->swapchain, nullptr);
+    vulkanDevice->dispatchTable.destroyFence(swapchain->acquireFence, nullptr);
     delete swapchain;
 }
 
@@ -2754,13 +2837,13 @@ GpuTexture gpuSwapchainImage(GpuSwapchain swapchain)
     // image; the recreate then happens after the present.
     for (int attempt = 0; attempt < 4; attempt++)
     {
-        vulkanDevice->dispatchTable.resetFences(1, &vulkanDevice->acquireFence);
+        vulkanDevice->dispatchTable.resetFences(1, &swapchain->acquireFence);
 
         VkResult result = vulkanDevice->dispatchTable.acquireNextImageKHR(
             swapchain->swapchain,
             UINT64_MAX,
             VK_NULL_HANDLE,
-            vulkanDevice->acquireFence,
+            swapchain->acquireFence,
             &swapchain->imageIndex);
 
         if (result == VK_ERROR_OUT_OF_DATE_KHR)
@@ -2774,7 +2857,7 @@ GpuTexture gpuSwapchainImage(GpuSwapchain swapchain)
             abort();
         }
 
-        vulkanDevice->dispatchTable.waitForFences(1, &vulkanDevice->acquireFence, VK_TRUE, UINT64_MAX);
+        vulkanDevice->dispatchTable.waitForFences(1, &swapchain->acquireFence, VK_TRUE, UINT64_MAX);
 
         return swapchain->images[swapchain->imageIndex];
     }
@@ -2786,6 +2869,11 @@ GpuTexture gpuSwapchainImage(GpuSwapchain swapchain)
 void gpuPresent(GpuSwapchain swapchain, GpuSemaphore sema, uint64_t value)
 {
     VulkanDevice* vulkanDevice = swapchain->device->vulkanDevice;
+
+    // The transition below submits on the graphics queue and presents on the
+    // present queue; both are externally synchronized, and the transition
+    // command buffer comes from the device-level pool — one lock covers all.
+    std::lock_guard lock(vulkanDevice->submitMutex);
 
     // The presentation engine requires the image in PRESENT_SRC. Record that
     // transition into this image's reusable command buffer; the prior present of

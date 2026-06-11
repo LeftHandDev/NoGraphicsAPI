@@ -1,4 +1,56 @@
-# Multithreading audit
+# Multithreading
+
+The first half of this document is the audit that drove the work; the
+findings below it are now **implemented** on this branch. Status of each:
+
+| Finding | Fix |
+| --- | --- |
+| §1 single `VkCommandPool` | Each `GpuCommandBuffer` owns a transient pool, created in `gpuStartCommandRecording` and destroyed when its submission retires. Recording takes no locks. The device-level pool remains for swapchain present transitions only. |
+| §2 `allocations` vector | `std::shared_mutex`: shared lock for `findAllocation`, exclusive for create/free. |
+| §3 `currentPipeline` map | Moved into `GpuCommandBuffer_T`. |
+| §4 queue submission/retirement | `submitMutex` serializes `vkQueueSubmit`, the present transition + present, and the retirement map (now pools, not buffers). `gpuWaitSemaphore` collects retired pools under the lock and destroys them outside it. |
+| §5 lazy init | Everything is created eagerly in `gpuCreateDevice` (`initDeviceResources`); the descriptor-view counters are atomics. |
+| §6 static-sampler dedup | `samplerMutex` around slot lookup/creation. |
+| §7 `acquireFence` | Moved into the swapchain. Instance/device lifecycle and per-swapchain use are documented as externally synchronized. |
+
+The contract (also in `NoGraphicsAPI_Impl.h`): creation/destruction and queue
+operations are thread-safe; recording is parallel across command buffers; a
+single command buffer, each swapchain, and instance/device lifecycle are
+externally synchronized.
+
+**Verification** — `samples/multithreading` (headless, self-checking):
+8 workers, each with its own allocator, queue, semaphore and concurrently
+created pipeline, recording/submitting/verifying in a loop. 30 consecutive
+runs clean, 15 of them under `VK_LAYER_KHRONOS_validation` with
+`thread_safety` checking enabled — zero validation messages. The lavapipe
+golden tests cover the single-threaded paths (including the eagerly-created
+patching machinery) unchanged.
+
+## Known limits
+
+- **Descriptor patching devices** (descriptor size ≠ 32, e.g. lavapipe): the
+  patch *destination* heaps are device-global, so two patching submissions
+  executing concurrently race on the GPU. Recording them is safe; their
+  execution must not overlap. Fix would be per-submission patch buffers —
+  deferred until a patching device matters for multithreaded use.
+- **Recording scalability on RADV** is valid but uneven: the API adds no
+  locks, yet 8-thread recording of dispatch+barrier streams measures anywhere
+  from 0.8× to 1.9× of single-threaded throughput run-to-run. strace shows a
+  contended futex roughly once per recorded command inside the
+  driver/loader stack (~15k contended futexes at 8 threads vs ~200
+  single-threaded; allocator tuning has no effect; one genuine NGAPI
+  contributor — a heap-allocated vector per `gpuBarrier` — was found and
+  fixed). Pinning the rest needs `perf`, which this machine currently blocks
+  (`kernel.perf_event_paranoid=4`).
+- One unexplained phase-1 failure was observed once under validation timing
+  (a CPU re-read of an input buffer returned a value never written, while
+  the GPU output was correct). 30 subsequent runs are clean; the sample's
+  verification now distinguishes input trampling from output errors so a
+  recurrence will be classified precisely.
+
+---
+
+# Original audit (pre-implementation)
 
 State of CPU-side thread safety in the NGAPI Vulkan implementation, as of the
 fork of `multithreading_support` (post static-samplers). Every public entry
