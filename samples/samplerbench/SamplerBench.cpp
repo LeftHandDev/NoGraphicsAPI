@@ -1,12 +1,11 @@
-// Headless hardware-vs-software sampler benchmark.
+// Headless sampler-declaration benchmark (scratch regression tool).
 //
-// Runs the identical tap loop (SamplerBench.slang) through the hardware
-// sampler (samplerHeap[0]) and the software Sampler library, on the same
-// device, and reports per-dispatch times and sample throughput. Two regimes:
-//   kernelRadius 0   -> 1 tap/pixel: launch/bandwidth bound, parity expected
-//   kernelRadius 16  -> 1089 taps/pixel: filter-rate bound, hardware's best case
-// Also cross-checks the two outputs (expect <= a few LSBs: hardware bilinear
-// uses reduced-precision subtexel weights, the software path filters in fp32).
+// Runs the identical tap loop (SamplerBench.slang) through the raw hardware
+// default sampler, a STATIC_SAMPLER (spec-constant specialization) and an
+// INLINE_SAMPLER (patched literal) and reports per-dispatch times — all three
+// must be equal. Cross-checks: static and inline with identical state must
+// dedup to the same sampler (byte-identical output), and a NEAREST/CLAMP
+// static sampler must match a library-free Load-based reference exactly.
 //
 // Run from the build/bin directory (loads shaders/samplerbench/*.spv).
 
@@ -107,10 +106,12 @@ int main()
     LinearAllocator allocator(device);
     auto queue = gpuCreateQueue(device);
 
-    auto hwIR = loadIR("shaders/samplerbench/BenchHW.spv");
-    auto swIR = loadIR("shaders/samplerbench/BenchSW.spv");
-    auto hwPipeline = gpuCreateComputePipeline(device, ByteSpan(hwIR.data(), hwIR.size()));
-    auto swPipeline = gpuCreateComputePipeline(device, ByteSpan(swIR.data(), swIR.size()));
+    auto benchIR = loadIR("shaders/samplerbench/Bench.spv");
+    auto hwPipeline = gpuCreateComputePipeline(device, ByteSpan(benchIR.data(), benchIR.size()), "benchHardware");
+    auto staticPipeline = gpuCreateComputePipeline(device, ByteSpan(benchIR.data(), benchIR.size()), "benchStatic");
+    auto inlinePipeline = gpuCreateComputePipeline(device, ByteSpan(benchIR.data(), benchIR.size()), "benchInline");
+    auto staticNearestPipeline = gpuCreateComputePipeline(device, ByteSpan(benchIR.data(), benchIR.size()), "benchStaticNearest");
+    auto manualNearestPipeline = gpuCreateComputePipeline(device, ByteSpan(benchIR.data(), benchIR.size()), "benchManualNearest");
 
     const uint32_t width = 1024, height = 1024;
     const size_t textureBytes = static_cast<size_t>(width) * height * 4;
@@ -163,20 +164,26 @@ int main()
     {
         BatchTimer timer(device, queue);
 
-        // Correctness cross-check first: one dispatch per path at radius 2,
-        // hardware vs software readback. Reduced-precision hardware weights mean
-        // a few LSBs of difference; anything large is a real bug.
-        data.cpu->kernelRadius = 2;
-        timer.runBatch(hwPipeline, textureHeap.gpu, data.gpu, grid, 1);
-        auto hwImage = readbackRGBA8(device, queue, dstTexture, textureBytes);
-        timer.runBatch(swPipeline, textureHeap.gpu, data.gpu, grid, 1);
-        auto swImage = readbackRGBA8(device, queue, dstTexture, textureBytes);
-        int maxDiff = 0;
-        for (size_t i = 0; i < textureBytes; i++)
-            maxDiff = std::max(maxDiff, std::abs(int(hwImage[i]) - int(swImage[i])));
-        std::printf("hardware vs software output: maxDiff=%d/255 %s\n\n", maxDiff, maxDiff <= 8 ? "(ok)" : "(SUSPICIOUS)");
+        auto compare = [&](GpuPipeline a, GpuPipeline b, const char* what, int allowed)
+        {
+            data.cpu->kernelRadius = 2;
+            timer.runBatch(a, textureHeap.gpu, data.gpu, grid, 1);
+            auto imageA = readbackRGBA8(device, queue, dstTexture, textureBytes);
+            timer.runBatch(b, textureHeap.gpu, data.gpu, grid, 1);
+            auto imageB = readbackRGBA8(device, queue, dstTexture, textureBytes);
+            int maxDiff = 0;
+            for (size_t i = 0; i < textureBytes; i++)
+                maxDiff = std::max(maxDiff, std::abs(int(imageA[i]) - int(imageB[i])));
+            std::printf("%-34s maxDiff=%d/255 %s\n", what, maxDiff, maxDiff <= allowed ? "(ok)" : "(BROKEN)");
+            return maxDiff <= allowed;
+        };
 
-        std::printf("%-28s %12s %12s %14s\n", "config", "hw ms", "sw ms", "sw/hw");
+        bool ok = true;
+        ok &= compare(staticPipeline, inlinePipeline, "static vs inline (same state):", 0);
+        ok &= compare(staticNearestPipeline, manualNearestPipeline, "static NEAREST vs manual Load:", 0);
+        std::printf("\n");
+
+        std::printf("%-28s %12s %15s %15s %12s %12s\n", "config", "hw ms", "static ms", "inline ms", "static/hw", "inline/hw");
         for (int radius : { 0, 4, 16 })
         {
             data.cpu->kernelRadius = radius;
@@ -186,24 +193,31 @@ int main()
             const int repeats = 3;
 
             double hwMs = timer.time(hwPipeline, textureHeap.gpu, data.gpu, grid, dispatches, repeats);
-            double swMs = timer.time(swPipeline, textureHeap.gpu, data.gpu, grid, dispatches, repeats);
+            double staticMs = timer.time(staticPipeline, textureHeap.gpu, data.gpu, grid, dispatches, repeats);
+            double inlineMs = timer.time(inlinePipeline, textureHeap.gpu, data.gpu, grid, dispatches, repeats);
 
-            const double gsamples = double(width) * height * taps / 1.0e9;
             char label[64];
             std::snprintf(label, sizeof(label), "r=%-2d (%4d taps/pixel)", radius, taps);
-            std::printf("%-28s %9.3f ms %9.3f ms %10.2fx   (hw %.1f, sw %.1f Gsamples/s)\n",
-                        label, hwMs, swMs, swMs / hwMs,
-                        gsamples / (hwMs / 1000.0), gsamples / (swMs / 1000.0));
+            std::printf("%-28s %9.3f ms %12.3f ms %12.3f ms %11.2fx %11.2fx\n",
+                        label, hwMs, staticMs, inlineMs, staticMs / hwMs, inlineMs / hwMs);
+        }
+
+        if (!ok)
+        {
+            std::printf("\nCROSS-CHECK FAILURE\n");
         }
     } // timer scope
 
-    allocator.free();
+    allocator.reset();
     gpuDestroyTexture(srcTexture);
     gpuDestroyTexture(dstTexture);
-    gpuFreePipeline(hwPipeline);
-    gpuFreePipeline(swPipeline);
     gpuFree(device, srcPtr);
     gpuFree(device, dstPtr);
+    gpuFreePipeline(hwPipeline);
+    gpuFreePipeline(staticPipeline);
+    gpuFreePipeline(inlinePipeline);
+    gpuFreePipeline(staticNearestPipeline);
+    gpuFreePipeline(manualNearestPipeline);
     gpuDestroyQueue(queue);
     gpuDestroyDevice(device);
     gpuDestroyInstance();

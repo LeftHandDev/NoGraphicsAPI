@@ -11,15 +11,9 @@
     Texture2D<float4> srcTexture = textureHeap[data->srcTexture];
     RWTexture2D<float4> dstTexture = rwTextureHeap[data->dstTexture];
 
-    // A sampler is plain data plus shader code (see Sampler.h), so it is
-    // declared right here in GPU code — no API object, no descriptor. It could
-    // equally live in ComputeData and be filled in on the CPU; it's just a
-    // struct. `= {}` applies the defaults, then set the fields you care about.
-    Sampler sampler = {};
-    sampler.minFilter = LINEAR;
-    sampler.magFilter = LINEAR;
-    sampler.addressU = CLAMP;
-    sampler.addressV = CLAMP;
+    // The sampler is declared inline, right where it is used — no API object,
+    // no descriptor management; it still runs on a real hardware sampler.
+    HwSampler sampler = INLINE_SAMPLER(LINEAR, LINEAR, NEAREST, CLAMP, CLAMP, CLAMP, 1, TRANSPARENT_BLACK, COMPARE_NONE);
 
     float4 color = float4(0.0, 0.0, 0.0, 0.0);
     const int kernelRadius = 16;

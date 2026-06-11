@@ -18,9 +18,6 @@ Texture2D<float4> textureHeap[];
 [[vk::binding(0, 1)]]
 RWTexture2D<float4> rwTextureHeap[];
 
-[[vk::binding(0, 2)]]
-SamplerState samplerHeap[];
-
 #endif
 
 // Software samplers: plain-data sampler state with shader-code filtering.

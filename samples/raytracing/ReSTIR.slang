@@ -1,5 +1,7 @@
 #include "Raytracing.h"
 
+STATIC_SAMPLER(linearWrap, LINEAR, LINEAR, NEAREST, WRAP, WRAP, WRAP, 1, TRANSPARENT_BLACK, COMPARE_NONE, 0.0, 0.0, LOD_UNBOUNDED)
+
 [numthreads(8, 8, 1)] void RIS(uint3 threadId : SV_DispatchThreadID, RaytracingData* data)
 {
     RWTexture2D<float4> outputTexture = rwTextureHeap[data->dstTexture];
@@ -56,8 +58,7 @@
         float2 hitUV = uv0 * (1.0 - barycentrics.x - barycentrics.y) + uv1 * barycentrics.x + uv2 * barycentrics.y;
 
         Texture2D<float4> tex = textureHeap[NonUniformResourceIndex(primitive.texture)];
-        SamplerState sampler = samplerHeap[0];
-        float3 albedo = tex.SampleLevel(sampler, hitUV, 0).xyz;
+        float3 albedo = linearWrap().SampleLevel(tex, hitUV, 0).xyz;
 
         float3 normal0 = primitive.normals[index0];
         float3 normal1 = primitive.normals[index1];
