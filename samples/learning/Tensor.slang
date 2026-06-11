@@ -1,7 +1,6 @@
 #include "Common.h"
 
-[numthreads(64, 1, 1)]
-void _add(uint t: SV_DispatchThreadID, TensorData *data)
+[numthreads(64, 1, 1)] void _add(uint t : SV_DispatchThreadID, TensorData* data)
 {
     if (t >= data->n)
     {
@@ -10,8 +9,7 @@ void _add(uint t: SV_DispatchThreadID, TensorData *data)
     data->z[t] = data->x[t] + data->y[t];
 }
 
-[numthreads(64, 1, 1)]
-void _sub(uint t: SV_DispatchThreadID, TensorData *data)
+    [numthreads(64, 1, 1)] void _sub(uint t : SV_DispatchThreadID, TensorData* data)
 {
     if (t >= data->n)
     {
@@ -20,8 +18,7 @@ void _sub(uint t: SV_DispatchThreadID, TensorData *data)
     data->z[t] = data->x[t] - data->y[t];
 }
 
-[numthreads(64, 1, 1)]
-void _mul(uint t: SV_DispatchThreadID, TensorData *data)
+[numthreads(64, 1, 1)] void _mul(uint t : SV_DispatchThreadID, TensorData* data)
 {
     if (t >= data->n)
     {
@@ -30,8 +27,7 @@ void _mul(uint t: SV_DispatchThreadID, TensorData *data)
     data->z[t] = data->x[t] * data->y[t];
 }
 
-[numthreads(64, 1, 1)]
-void _div(uint t: SV_DispatchThreadID, TensorData *data)
+    [numthreads(64, 1, 1)] void _div(uint t : SV_DispatchThreadID, TensorData* data)
 {
     if (t >= data->n)
     {
@@ -40,8 +36,7 @@ void _div(uint t: SV_DispatchThreadID, TensorData *data)
     data->z[t] = data->x[t] / data->y[t];
 }
 
-[numthreads(1, 1, 1)]
-void _dot(uint t: SV_DispatchThreadID, TensorData *data)
+[numthreads(1, 1, 1)] void _dot(uint t : SV_DispatchThreadID, TensorData* data)
 {
     if (t >= data->n)
     {
@@ -56,8 +51,7 @@ void _dot(uint t: SV_DispatchThreadID, TensorData *data)
     data->z[0] = result;
 }
 
-[numthreads(1, 1, 1)]
-void _mT(uint t: SV_DispatchThreadID, TensorTransposeData *data)
+    [numthreads(1, 1, 1)] void _mT(uint t : SV_DispatchThreadID, TensorTransposeData* data)
 {
     if (t >= data->n)
     {
@@ -73,8 +67,7 @@ void _mT(uint t: SV_DispatchThreadID, TensorTransposeData *data)
     }
 }
 
-[numthreads(64, 1, 1)]
-void _matmul(uint t: SV_DispatchThreadID, TensorMatMulData *data)
+[numthreads(64, 1, 1)] void _matmul(uint t : SV_DispatchThreadID, TensorMatMulData* data)
 {
     if (t >= data->n)
     {
@@ -93,8 +86,7 @@ void _matmul(uint t: SV_DispatchThreadID, TensorMatMulData *data)
     data->z[t] = d;
 }
 
-[numthreads(64, 1, 1)]
-void _pow(uint t: SV_DispatchThreadID, TensorData *data)
+    [numthreads(64, 1, 1)] void _pow(uint t : SV_DispatchThreadID, TensorData* data)
 {
     if (t >= data->n)
     {
@@ -103,8 +95,7 @@ void _pow(uint t: SV_DispatchThreadID, TensorData *data)
     data->z[t] = pow(data->x[t], data->y[t]);
 }
 
-[numthreads(64, 1, 1)]
-void _tanh(uint t: SV_DispatchThreadID, TensorData *data)
+[numthreads(64, 1, 1)] void _tanh(uint t : SV_DispatchThreadID, TensorData* data)
 {
     if (t >= data->n)
     {

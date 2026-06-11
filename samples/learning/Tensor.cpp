@@ -1,6 +1,7 @@
 #include "Common.h"
 #include "Tensor.h"
 #include "Utilities.h"
+#include <cstring>
 #include <map>
 #include <algorithm>
 #include <random>
@@ -165,7 +166,7 @@ public:
         {
             semaphore = gpuCreateSemaphore(device, 0);
         }
-        gpuSubmit(queue, Span(&cmd, 1), semaphore, frame);
+        gpuSubmit(queue, Span<GpuCommandBuffer>(&cmd, 1), semaphore, frame);
         cmd = nullptr;
         gpuWaitSemaphore(semaphore, frame++);
         for (auto& allocation : pending_free)
