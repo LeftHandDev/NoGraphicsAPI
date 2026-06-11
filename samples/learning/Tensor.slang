@@ -112,3 +112,13 @@ void _tanh(uint t: SV_DispatchThreadID, TensorData *data)
     }
     data->z[t] = tanh(data->x[t]);
 }
+
+[numthreads(64, 1, 1)]
+void _cosh(uint t: SV_DispatchThreadID, TensorData *data)
+{
+    if (t >= data->n)
+    {
+        return;
+    }
+    data->z[t] = cosh(data->x[t]);
+}

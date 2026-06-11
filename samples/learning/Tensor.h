@@ -6,6 +6,8 @@
 #include <optional>
 #include <ostream>
 #include <memory>
+#include <functional>
+#include <set>
 
 using Shape = std::vector<unsigned int>;
 
@@ -19,8 +21,11 @@ class Allocation;
 class Tensor
 {
 public:
+    Tensor() = default;
     Tensor(Tensor&&) noexcept;
     Tensor& operator=(Tensor&&) noexcept;
+    Tensor(const Tensor&) = default;
+    Tensor& operator=(const Tensor&) = default;
     ~Tensor();
 
     operator std::string() const;
@@ -28,15 +33,24 @@ public:
     std::vector<float> cpu();
 
     Shape shape() const;
+    Tensor grad() const;
     Tensor reshape(Shape) const;
+    Tensor detach() const;
 
     void copy(const Tensor&) const;
     void backward();
+
+    Tensor operator-() const; // element-wise negative
 
     Tensor operator+(const Tensor&) const; // element-wise addition
     Tensor operator-(const Tensor&) const; // element-wise subtraction
     Tensor operator*(const Tensor&) const; // element-wise multiplication
     Tensor operator/(const Tensor&) const; // element-wise division
+
+    Tensor operator+(float) const; // scalar addition
+    Tensor operator-(float) const; // scalar subtraction
+    Tensor operator*(float) const; // scalar multiplication
+    Tensor operator/(float) const; // scalar division
 
     Tensor operator[](unsigned int) const; // takes a slice of a matrix
 
@@ -45,17 +59,52 @@ public:
     Tensor matmul(const Tensor&) const; // 2D matrix multiplication, +3D batched matrix multiplcation
 
     Tensor pow(const Tensor&) const;
+    Tensor pow(float) const;
+
+    Tensor sqrt() const;
+    Tensor rcp() const;
     Tensor exp() const;
+    Tensor cosh() const;
     Tensor tanh() const;
+    Tensor sech() const;
+    Tensor gelu() const;
+
+    bool operator<(const Tensor& other) const
+    {
+        return _self < other._self;
+    } // identity ordering for graph sets
 
 private:
-    const float e = 2.718281828459045;
+    const float e = 2.718281828459045f;
+    const float pi = 3.1415926535f;
     Shape _shape;
     friend class Device_impl;
-    explicit Tensor(Device_impl*, std::vector<float>, Shape = {}, bool slice = false);
-    explicit Tensor(Device_impl*, Allocation<float>, Shape = {}, bool slice = false);
-    std::unique_ptr<Tensor_impl> _tensor;
+    explicit Tensor(Device_impl*, std::vector<float>, std::vector<Tensor> prev, Shape = {}, bool slice = false);
+    explicit Tensor(Device_impl*, Allocation<float>, std::vector<Tensor> prev, Shape = {}, bool slice = false);
+    std::shared_ptr<Tensor_impl> _self;
+    static void build(Tensor, std::set<Tensor>&, std::vector<Tensor>&);
+    void init_grad() const;
 };
+
+inline Tensor operator+(float x, Tensor t)
+{
+    return t + x;
+}
+
+inline Tensor operator-(float x, Tensor t)
+{
+    return -t + x;
+}
+
+inline Tensor operator*(float x, Tensor t)
+{
+    return t * x;
+}
+
+inline Tensor operator/(float x, Tensor t)
+{
+    return x * t.rcp();
+}
 
 inline std::ostream& operator<<(std::ostream& os, const Tensor& t)
 {
@@ -90,6 +139,7 @@ public:
     {
     }
     virtual Tensor forward(const Tensor& in) = 0;
+    virtual void train(float lr) = 0;
 };
 
 class Layer : public Module
@@ -107,6 +157,11 @@ public:
             return (in.reshape({ 1, in.shape().front() }).matmul(_weights) + _biases).tanh();
         }
         return (in.matmul(_weights) + _biases).tanh();
+    }
+
+    virtual void train(float lr) override
+    {
+        _weights = (_weights - _weights.grad() * lr).detach();
     }
 
 private:
@@ -133,6 +188,14 @@ public:
             flow = _layers[i].forward(flow);
         }
         return flow;
+    }
+
+    virtual void train(float lr) override
+    {
+        for (auto& layer : _layers)
+        {
+            layer.train(lr);
+        }
     }
 
 private:

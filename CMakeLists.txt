@@ -164,7 +164,7 @@ compile_shader(SOURCE samples/samplerbench/SamplerBench.slang STAGE compute OUTP
 # compile them all into a single Tensor.spv (Device_impl builds a pipeline per
 # entry point from that one module).
 compile_shader(SOURCE samples/learning/Tensor.slang STAGE compute OUTPUT learning/Tensor.spv
-    ENTRY _add _sub _mul _div _dot _mT _matmul _pow _tanh
+    ENTRY _add _sub _mul _div _dot _mT _matmul _pow _cosh _tanh
     EXTRA_DEPENDS ${COMMON_SHADER_DEPS} "${CMAKE_CURRENT_SOURCE_DIR}/samples/learning/Common.h")
 
 add_custom_target(shaders ALL DEPENDS ${NGAPI_SHADER_OUTPUTS})
@@ -206,7 +206,7 @@ target_link_libraries(multiplegpus PRIVATE ngapi::ngapi)
 # Headless sample that runs compute shaders (a tiny tensor/MLP library): no
 # window, but it loads the compiled Tensor.spv at runtime.
 add_executable(learning samples/learning/Learning.cpp samples/learning/Tensor.cpp)
-target_link_libraries(learning PRIVATE ngapi::ngapi ngapi-samples-common glm::glm)
+target_link_libraries(learning PRIVATE ngapi::ngapi ngapi-samples-common stb)
 add_dependencies(learning shaders)
 endif() # NGA_BUILD_SAMPLES
 

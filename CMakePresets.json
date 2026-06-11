@@ -34,8 +34,23 @@
         }
     ],
     "buildPresets": [
-        { "name": "linux", "configurePreset": "linux" },
-        { "name": "linux-sdl3", "configurePreset": "linux-sdl3" },
-        { "name": "vs2022-x64-release", "configurePreset": "vs2022-x64", "configuration": "Release" }
+        {
+            "name": "linux",
+            "configurePreset": "linux"
+        },
+        {
+            "name": "linux-sdl3",
+            "configurePreset": "linux-sdl3"
+        },
+        {
+            "name": "vs2022-x64-debug",
+            "configurePreset": "vs2022-x64",
+            "configuration": "Debug"
+        },
+        {
+            "name": "vs2022-x64-release",
+            "configurePreset": "vs2022-x64",
+            "configuration": "Release"
+        }
     ]
 }
