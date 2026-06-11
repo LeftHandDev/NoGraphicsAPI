@@ -239,10 +239,59 @@ PixelOut main(PixelIn pixel, VertexData* _, PixelData* data)
 }
 ```
 
-Samplers are not API objects and there is no sampler API: `STATIC_SAMPLER`
-declares one next to the shader code — min/mag/mip filters, addressing and
-anisotropy all in the declaration — and it runs on a real hardware sampler
-created by the implementation at pipeline creation. See
+## Samplers
+
+Samplers are not API objects and there is no sampler API: a sampler is
+declared next to the shader code that uses it, with the complete definition in
+the declaration, and runs on a real hardware sampler the implementation
+creates (and deduplicates) at pipeline creation. Two forms:
+
+**Named, at global scope — the full state, every field required:**
+
+```cpp
+//             name         min     mag     mip     U     V     W     aniso  border             compare       bias minLod maxLod
+STATIC_SAMPLER(aniso16Wrap, LINEAR, LINEAR, LINEAR, WRAP, WRAP, WRAP, 16,    TRANSPARENT_BLACK, COMPARE_NONE, 0.0, 0.0,   LOD_UNBOUNDED)
+
+float4 color = aniso16Wrap().Sample(textureHeap[t], uv);          // implicit lod (pixel shaders)
+float4 level = aniso16Wrap().SampleLevel(textureHeap[t], uv, 2);  // explicit lod
+float shadow = aniso16Wrap().SampleCmp(textureHeap[s], uv, ref);  // needs a COMPARE_* op
+```
+
+**Inline, anywhere in shader code** (same fields minus the three lod values,
+which stay at their defaults — bias 0, unclamped):
+
+```cpp
+HwSampler sampler = INLINE_SAMPLER(LINEAR, LINEAR, NEAREST, CLAMP, CLAMP, CLAMP, 1, TRANSPARENT_BLACK, COMPARE_NONE);
+float4 color = sampler.SampleLevel(textureHeap[t], uv, 0);
+```
+
+The fields, in order:
+
+- **minFilter / magFilter** — `NEAREST` or `LINEAR`; how texels blend when the
+  texture is minified (smaller on screen) or magnified.
+- **mipFilter** — `NEAREST` snaps to the closest mip level, `LINEAR`
+  interpolates between two (trilinear).
+- **addressU / addressV / addressW** — what happens outside [0,1] per axis:
+  `WRAP` repeats, `CLAMP` extends the edge texel, `MIRROR` reflects,
+  `BORDER` returns the border color, `MIRROR_CLAMP` reflects once then clamps.
+- **maxAnisotropy** — 1 disables; up to 16 taps along the major axis for
+  oblique views. Only applies through `Sample()`/`SampleCmp()` (implicit
+  derivatives), not the explicit-lod variants.
+- **borderColor** — `TRANSPARENT_BLACK`, `OPAQUE_BLACK` or `OPAQUE_WHITE`,
+  used by `BORDER` addressing.
+- **compare** — `COMPARE_NONE` for ordinary sampling, or a `COMPARE_*` op
+  (`LESS`, `GREATER_EQUAL`, ...) to make a comparison sampler for the
+  `SampleCmp*` methods (shadow maps).
+- **lodBias** — added to the computed mip level; ±8 in 1/16 steps.
+- **minLod / maxLod** — clamp the mip range; `LOD_UNBOUNDED` leaves the top
+  end open. 1/16 steps, 0–15.9375.
+
+How it works underneath: the declaration packs the state into a value the
+implementation finds by scanning the shader's SPIR-V at pipeline creation —
+a specialization constant's default for `STATIC_SAMPLER`, a tagged literal
+for `INLINE_SAMPLER` — then creates the `VkSampler`, and rewires the
+declaration to its heap slot. No sidecar metadata, no new API calls, and the
+slot folds to a literal in the compiled pipeline. See
 [`ngapi/include/Sampler.h`](ngapi/include/Sampler.h).
 ## Raytracing
 

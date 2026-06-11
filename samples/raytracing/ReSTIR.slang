@@ -1,6 +1,6 @@
 #include "Raytracing.h"
 
-STATIC_SAMPLER(linearWrap, LINEAR, LINEAR, NEAREST, WRAP, WRAP, 1)
+STATIC_SAMPLER(linearWrap, LINEAR, LINEAR, NEAREST, WRAP, WRAP, WRAP, 1, TRANSPARENT_BLACK, COMPARE_NONE, 0.0, 0.0, LOD_UNBOUNDED)
 
 [numthreads(8, 8, 1)] void RIS(uint3 threadId : SV_DispatchThreadID, RaytracingData* data)
 {

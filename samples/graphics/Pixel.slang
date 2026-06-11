@@ -3,7 +3,7 @@
 // The full sampler definition lives in the declaration: trilinear-ready
 // filtering, wrap addressing and 16x anisotropy. Sampled below with
 // Sample() (implicit derivatives) so the anisotropic footprint applies.
-STATIC_SAMPLER(aniso16Wrap, LINEAR, LINEAR, LINEAR, WRAP, WRAP, 16)
+STATIC_SAMPLER(aniso16Wrap, LINEAR, LINEAR, LINEAR, WRAP, WRAP, WRAP, 16, TRANSPARENT_BLACK, COMPARE_NONE, 0.0, 0.0, LOD_UNBOUNDED)
 
 struct PixelIn
 {

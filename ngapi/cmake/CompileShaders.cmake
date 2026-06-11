@@ -61,6 +61,7 @@ function(compile_shader)
         COMMAND "${SLANGC}" "${S_SOURCE}"
                 -target spirv ${STAGE_ENTRY_ARGS}
                 -I "${NGAPI_SHADER_INCLUDE_DIR}"
+                -warnings-disable 39001 # Sampler.h aliases the sampler heap binding on purpose
                 -o "${OUT}"
         DEPENDS "${S_SOURCE}" ${S_EXTRA_DEPENDS}
         COMMENT "Compiling shader ${S_OUTPUT}"
