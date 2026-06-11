@@ -1,5 +1,11 @@
 #include "Compute.h"
 
+// The blur's sampler state is fixed, so declare it next to the shader code as
+// a static sampler — it runs on a real hardware sampler at full rate. For
+// sampler state only known at runtime, use the plain-data Sampler instead
+// (see Sampler.h); it is the same declaration style with shader-code filtering.
+STATIC_SAMPLER(linearClamp, LINEAR, LINEAR, NEAREST, CLAMP, CLAMP)
+
 [numthreads(16, 16, 1)] void main(uint3 threadId : SV_DispatchThreadID, ComputeData* data)
 {
     int2 imgSize = int2(data->imageSize.x, data->imageSize.y);
@@ -10,16 +16,7 @@
 
     Texture2D<float4> srcTexture = textureHeap[data->srcTexture];
     RWTexture2D<float4> dstTexture = rwTextureHeap[data->dstTexture];
-
-    // A sampler is plain data plus shader code (see Sampler.h), so it is
-    // declared right here in GPU code — no API object, no descriptor. It could
-    // equally live in ComputeData and be filled in on the CPU; it's just a
-    // struct. `= {}` applies the defaults, then set the fields you care about.
-    Sampler sampler = {};
-    sampler.minFilter = LINEAR;
-    sampler.magFilter = LINEAR;
-    sampler.addressU = CLAMP;
-    sampler.addressV = CLAMP;
+    HwSampler sampler = linearClamp();
 
     float4 color = float4(0.0, 0.0, 0.0, 0.0);
     const int kernelRadius = 16;
