@@ -207,7 +207,7 @@ target_link_libraries(multiplegpus PRIVATE ngapi::ngapi)
 # window, but it loads the compiled Tensor.spv at runtime.
 add_executable(learning samples/learning/Learning.cpp samples/learning/Tensor.cpp)
 target_link_libraries(learning PRIVATE ngapi::ngapi ngapi-samples-common stb)
-add_dependencies(learning shaders)
+add_dependencies(learning shaders copy_assets)
 endif() # NGA_BUILD_SAMPLES
 
 # ---------------------------------------------------------------------------

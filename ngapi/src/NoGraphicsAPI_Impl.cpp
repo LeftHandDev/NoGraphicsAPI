@@ -1012,6 +1012,7 @@ void* gpuMallocHidden(VulkanDevice* vulkanDevice, size_t bytes, size_t align, ME
     switch (memory)
     {
     case MEMORY_DEFAULT: // DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT
+    case MEMORY_DESCRIPTOR:
     {
         auto usage =
             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
@@ -1030,7 +1031,7 @@ void* gpuMallocHidden(VulkanDevice* vulkanDevice, size_t bytes, size_t align, ME
         {
             usage |= VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT;
         }
-        else
+        else if (memory == MEMORY_DESCRIPTOR)
         {
             usage |= VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
         }
@@ -1807,14 +1808,14 @@ void gpuSetActiveTextureHeapPtr(GpuCommandBuffer cb, void* ptrGpu)
         {
             vulkanDevice->patchedDescriptorDataCpu =
                 gpuMallocHidden(vulkanDevice, vulkanDevice->descriptorBufferProperties.sampledImageDescriptorSize * vulkanDevice->descriptorCount,
-                                vulkanDevice->descriptorBufferProperties.descriptorBufferOffsetAlignment, MEMORY_DEFAULT);
+                                vulkanDevice->descriptorBufferProperties.descriptorBufferOffsetAlignment, MEMORY_DESCRIPTOR);
         }
 
         if (vulkanDevice->rwPatchedDescriptorDataCpu == nullptr)
         {
             vulkanDevice->rwPatchedDescriptorDataCpu =
                 gpuMallocHidden(vulkanDevice, vulkanDevice->descriptorBufferProperties.storageImageDescriptorSize * vulkanDevice->descriptorCount,
-                                vulkanDevice->descriptorBufferProperties.descriptorBufferOffsetAlignment, MEMORY_DEFAULT);
+                                vulkanDevice->descriptorBufferProperties.descriptorBufferOffsetAlignment, MEMORY_DESCRIPTOR);
         }
 
         auto patchedDescriptorDataGpu = gpuHostToDevicePointer(device, vulkanDevice->patchedDescriptorDataCpu);

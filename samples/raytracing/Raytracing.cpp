@@ -42,6 +42,7 @@ int main()
     auto surface = ngapi::createSurface(window);
 
     LinearAllocator allocator(device);
+    LinearAllocator<MEMORY_DESCRIPTOR> descriptorAllocator(device);
 
     int width, height, channels;
     stbi_uc* inputImage = stbi_load("assets/Default.png", &width, &height, &channels, 4);
@@ -148,7 +149,7 @@ int main()
         INDEX_MV_SAMPLED = 8,
     };
 
-    auto textureHeap = allocator.allocate<GpuTextureDescriptor>(1024);
+    auto textureHeap = descriptorAllocator.allocate<GpuTextureDescriptor>(1024);
     textureHeap.cpu[INDEX_CUBE] = gpuTextureViewDescriptor(texture, GpuViewDesc{ .format = FORMAT_RGBA8_UNORM });
     textureHeap.cpu[INDEX_CURRENT_FRAME] = gpuRWTextureViewDescriptor(outputTexture, GpuViewDesc{ .format = FORMAT_RGBA32_FLOAT });
     textureHeap.cpu[INDEX_ALBEDO] = gpuRWTextureViewDescriptor(albedoTexture, GpuViewDesc{ .format = FORMAT_RGBA16_FLOAT });

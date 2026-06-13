@@ -639,6 +639,7 @@ public:
 
 private:
     LinearAllocator<MEMORY_DEFAULT>* allocator = nullptr;
+    LinearAllocator<MEMORY_DESCRIPTOR>* descriptorAllocator = nullptr;
 
     GpuDevice device;
     GpuPipeline pipeline;
