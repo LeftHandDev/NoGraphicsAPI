@@ -7,7 +7,7 @@ void _add(uint t: SV_DispatchThreadID, TensorData *data)
     {
         return;
     }
-    data->z[t] = data->x[t] + data->y[t];
+    data->z[t] = data->x[t] + data->y[t % data->m];
 }
 
 [numthreads(64, 1, 1)]
@@ -17,7 +17,7 @@ void _sub(uint t: SV_DispatchThreadID, TensorData *data)
     {
         return;
     }
-    data->z[t] = data->x[t] - data->y[t];
+    data->z[t] = data->x[t] - data->y[t % data->m];
 }
 
 [numthreads(64, 1, 1)]
@@ -27,7 +27,7 @@ void _mul(uint t: SV_DispatchThreadID, TensorData *data)
     {
         return;
     }
-    data->z[t] = data->x[t] * data->y[t];
+    data->z[t] = data->x[t] * data->y[t % data->m];
 }
 
 [numthreads(64, 1, 1)]
@@ -37,7 +37,7 @@ void _div(uint t: SV_DispatchThreadID, TensorData *data)
     {
         return;
     }
-    data->z[t] = data->x[t] / data->y[t];
+    data->z[t] = data->x[t] / data->y[t % data->m];
 }
 
 [numthreads(1, 1, 1)]
@@ -56,7 +56,7 @@ void _dot(uint t: SV_DispatchThreadID, TensorData *data)
     data->z[0] = result;
 }
 
-[numthreads(1, 1, 1)]
+[numthreads(64, 1, 1)]
 void _mT(uint t: SV_DispatchThreadID, TensorTransposeData *data)
 {
     if (t >= data->n)
@@ -64,13 +64,10 @@ void _mT(uint t: SV_DispatchThreadID, TensorTransposeData *data)
         return;
     }
 
-    for (int i = 0; i < data->r; i++)
-    {
-        for (int j = 0; j < data->c; j++)
-        {
-            data->y[j * data->r + i] = data->x[i * data->c + j];
-        }
-    }
+    uint64_t r = t / data->c;
+    uint64_t c = t % data->c;
+
+    data->y[c * data->r + r] = data->x[r * data->c + c];
 }
 
 [numthreads(64, 1, 1)]
@@ -99,8 +96,8 @@ void _pow(uint t: SV_DispatchThreadID, TensorData *data)
     if (t >= data->n)
     {
         return;
-    }
-    data->z[t] = pow(data->x[t], data->y[t]);
+    }    
+    data->z[t] = pow(data->x[t], data->y[t % data->m]);
 }
 
 [numthreads(64, 1, 1)]
@@ -121,4 +118,24 @@ void _cosh(uint t: SV_DispatchThreadID, TensorData *data)
         return;
     }
     data->z[t] = cosh(data->x[t]);
+}
+
+[numthreads(64, 1, 1)]
+void _relu(uint t: SV_DispatchThreadID, TensorData *data)
+{
+    if (t >= data->n)
+    {
+        return;
+    }
+    data->z[t] = max(data->x[t], 0.0);
+}
+
+[numthreads(64, 1, 1)]
+void _relu_backward(uint t: SV_DispatchThreadID, TensorData *data)
+{
+    if (t >= data->n)
+    {
+        return;
+    }
+    data->z[t] = data->x[t] > 0.0 ? data->y[t] : 0.0;
 }

@@ -32,11 +32,13 @@ public:
 
     std::vector<float> cpu();
 
+    bool null() const;
     Shape shape() const;
     Tensor grad() const;
     Tensor reshape(Shape) const;
     Tensor detach() const;
 
+    Tensor repeat(const Tensor&, Shape) const;
     void copy(const Tensor&) const;
     void backward();
 
@@ -61,29 +63,36 @@ public:
     Tensor pow(const Tensor&) const;
     Tensor pow(float) const;
 
+    Tensor sum() const;
     Tensor sqrt() const;
     Tensor rcp() const;
     Tensor exp() const;
     Tensor cosh() const;
     Tensor tanh() const;
     Tensor sech() const;
+    Tensor relu() const;
     Tensor gelu() const;
+
+    bool operator==(const Tensor& other) const
+    {
+        return _self < other._self;
+    }
 
     bool operator<(const Tensor& other) const
     {
         return _self < other._self;
-    } // identity ordering for graph sets
+    }
 
 private:
     const float e = 2.718281828459045f;
     const float pi = 3.1415926535f;
+    const Shape unit = { 1 };
     Shape _shape;
     friend class Device_impl;
     explicit Tensor(Device_impl*, std::vector<float>, std::vector<Tensor> prev, Shape = {}, bool slice = false);
     explicit Tensor(Device_impl*, Allocation<float>, std::vector<Tensor> prev, Shape = {}, bool slice = false);
     std::shared_ptr<Tensor_impl> _self;
     static void build(Tensor, std::set<Tensor>&, std::vector<Tensor>&);
-    void init_grad() const;
 };
 
 inline Tensor operator+(float x, Tensor t)
@@ -115,11 +124,13 @@ class Device
 {
 public:
     virtual ~Device() = default;
+    virtual void submit() = 0;
     virtual Tensor tensor(std::vector<float>, Shape = {}) = 0;
     virtual Tensor rand(Shape) = 0;
     virtual Tensor zeros(Shape) = 0;
     virtual Tensor ones(Shape) = 0;
-    virtual Tensor repeat(float, Shape = {}) = 0;
+    virtual Tensor repeat(float, Shape) = 0;
+    virtual Tensor repeat(const Tensor&, Shape) = 0;
 };
 
 class Instance
@@ -146,22 +157,28 @@ class Layer : public Module
 {
 public:
     Layer(Device* device, unsigned int in, unsigned int out)
-        : _weights(device->rand({ in, out })), _biases(device->zeros({ 1, out }))
+        : _weights(device->rand({ in, out }) * sqrt(1.f / in)), _biases(device->zeros({ 1, out }))
     {
     }
 
     virtual Tensor forward(const Tensor& in) override
     {
+        if (in.shape().size() > 2)
+        {
+            throw std::runtime_error("Unable to forward tensor with more than 2 dimensions");
+        }
+
         if (in.shape().size() == 1)
         {
-            return (in.reshape({ 1, in.shape().front() }).matmul(_weights) + _biases).tanh();
+            return in.reshape({ 1, in.shape().front() }).matmul(_weights) + _biases;
         }
-        return (in.matmul(_weights) + _biases).tanh();
+        return in.matmul(_weights) + _biases;
     }
 
     virtual void train(float lr) override
     {
         _weights = (_weights - _weights.grad() * lr).detach();
+        _biases = (_biases - _biases.grad() * lr).detach();
     }
 
 private:
@@ -182,12 +199,12 @@ public:
 
     virtual Tensor forward(const Tensor& in) override
     {
-        Tensor flow = _layers.front().forward(in);
+        Tensor out = _layers.front().forward(in);
         for (size_t i = 1; i < _layers.size(); i++)
         {
-            flow = _layers[i].forward(flow);
+            out = _layers[i].forward(out.relu());
         }
-        return flow;
+        return out;
     }
 
     virtual void train(float lr) override

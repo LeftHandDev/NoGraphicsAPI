@@ -6,6 +6,7 @@
 #include <fstream>
 #include <string>
 #include <sstream>
+#include <map>
 
 #include <glm/glm.hpp>
 
@@ -14,12 +15,352 @@
 template <typename T>
 struct Allocation
 {
-    T* cpu;
-    T* gpu;
+    T* cpu = nullptr;
+    T* gpu = nullptr;
+
+    // byte size
+    size_t size = 0;
 
     void free(GpuDevice device)
     {
         gpuFree(device, cpu);
+    }
+};
+
+inline size_t align(size_t x, size_t a)
+{
+    return (x + (a - 1)) & ~(a - 1);
+}
+
+template <MEMORY memory>
+class GpuMallocator
+{
+public:
+    GpuMallocator(GpuDevice dev)
+        : device(dev)
+    {
+    }
+
+    ~GpuMallocator()
+    {
+        for (auto allocation : allocations)
+        {
+            gpuFree(device, allocation.gpu);
+        }
+    }
+
+    template <typename T>
+    Allocation<T> allocate(size_t n)
+    {
+        Allocation<char> alloc;
+        n = sizeof(T) * n;
+        if (memory == MEMORY_GPU)
+        {
+            alloc.gpu = reinterpret_cast<char*>(gpuMalloc(device, n, memory));
+        }
+        else
+        {
+            alloc.cpu = reinterpret_cast<char*>(gpuMalloc(device, n, memory));
+            alloc.gpu = reinterpret_cast<char*>(gpuHostToDevicePointer(device, alloc.cpu));
+        }
+        alloc.size = n;
+        allocations.push_back(alloc);
+
+        Allocation<T> ret;
+        ret.cpu = reinterpret_cast<T*>(alloc.cpu);
+        ret.gpu = reinterpret_cast<T*>(alloc.gpu);
+        ret.size = n;
+        return ret;
+    }
+
+    template <typename T>
+    void free(Allocation<T> alloc)
+    {
+        char* ptr = reinterpret_cast<char*>(alloc.gpu);
+        for (auto iter = allocations.begin(); iter != allocations.end(); iter++)
+        {
+            if (iter->gpu == ptr)
+            {
+                gpuFree(device, alloc.gpu);
+                allocations.erase(iter);
+                return;
+            }
+        }
+    }
+
+    template <typename T>
+    bool owns(Allocation<T> alloc)
+    {
+        char* ptr = reinterpret_cast<char*>(alloc.gpu);
+        for (auto iter = allocations.begin(); iter != allocations.end(); iter++)
+        {
+            if (iter->gpu == ptr)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void reset()
+    {
+        for (auto allocation : allocations)
+        {
+            gpuFree(device, allocation.gpu);
+        }
+        allocations.clear();
+    }
+
+private:
+    std::vector<Allocation<char>> allocations;
+    GpuDevice device;
+};
+
+template <size_t size, MEMORY memory>
+class StackAllocator
+{
+public:
+    StackAllocator(GpuDevice dev)
+        : device(dev)
+    {
+        if (memory == MEMORY_GPU)
+        {
+            gpu = reinterpret_cast<char*>(gpuMalloc(device, size, memory));
+        }
+        else
+        {
+            cpu = reinterpret_cast<char*>(gpuMalloc(device, size, memory));
+            gpu = reinterpret_cast<char*>(gpuHostToDevicePointer(device, cpu));
+        }
+    }
+
+    ~StackAllocator()
+    {
+        gpuFree(device, gpu);
+    }
+
+    template <typename T>
+    Allocation<T> allocate(size_t n)
+    {
+        Allocation<T> alloc = {};
+        n = n * sizeof(T);
+        if (n + offset > size)
+        {
+            return alloc;
+        }
+
+        if (memory == MEMORY_GPU)
+        {
+            alloc.gpu = reinterpret_cast<T*>(gpu + offset);
+        }
+        else
+        {
+            alloc.cpu = reinterpret_cast<T*>(cpu + offset);
+            alloc.gpu = reinterpret_cast<T*>(gpu + offset);
+        }
+
+        alloc.size = size;
+        offset = align(offset + n, GPU_DEFAULT_ALIGNMENT);
+        return alloc;
+    }
+
+    template <typename T>
+    void free(Allocation<T> alloc)
+    {
+        char* ptr = reinterpret_cast<char*>(alloc.gpu);
+        size_t off = ptr - gpu;
+        off = align(offset + alloc.size, GPU_DEFAULT_ALIGNMENT);
+        if (off == offset)
+        {
+            offset = ptr - gpu;
+        }
+    }
+
+    template <typename T>
+    bool owns(Allocation<T> alloc)
+    {
+        char* ptr = reinterpret_cast<char*>(alloc.gpu);
+        return ptr >= gpu && ptr < (gpu + size);
+    }
+
+    void reset()
+    {
+        offset = 0;
+    }
+
+private:
+    char* cpu = nullptr;
+    char* gpu = nullptr;
+    size_t offset = 0;
+    GpuDevice device;
+};
+
+template <size_t size, MEMORY memory>
+class FreeListAllocator
+{
+public:
+    FreeListAllocator(GpuDevice dev)
+        : device(dev)
+    {
+        if (memory == MEMORY_GPU)
+        {
+            gpu = reinterpret_cast<char*>(gpuMalloc(device, size, memory));
+        }
+        else
+        {
+            cpu = reinterpret_cast<char*>(gpuMalloc(device, size, memory));
+            gpu = reinterpret_cast<char*>(gpuHostToDevicePointer(device, cpu));
+        }
+
+        freeList.emplace(0, size);
+    }
+
+    ~FreeListAllocator()
+    {
+        gpuFree(device, cpu ? cpu : gpu);
+    }
+
+    template <typename T>
+    Allocation<T> allocate(size_t n)
+    {
+        size_t bytes = align(n * sizeof(T), GPU_DEFAULT_ALIGNMENT);
+        if (bytes == 0)
+        {
+            bytes = GPU_DEFAULT_ALIGNMENT;
+        }
+
+        // first-fit: offsets and block sizes stay aligned because bytes is aligned
+        for (auto iter = freeList.begin(); iter != freeList.end(); ++iter)
+        {
+            size_t rangeOffset = iter->first;
+            size_t rangeSize = iter->second;
+            if (rangeSize >= bytes)
+            {
+                freeList.erase(iter);
+                if (rangeSize > bytes)
+                {
+                    freeList.emplace(rangeOffset + bytes, rangeSize - bytes);
+                }
+
+                Allocation<T> alloc = {};
+                alloc.cpu = cpu ? reinterpret_cast<T*>(cpu + rangeOffset) : nullptr;
+                alloc.gpu = reinterpret_cast<T*>(gpu + rangeOffset);
+                alloc.size = bytes;
+                return alloc;
+            }
+        }
+
+        return {};
+    }
+
+    template <typename T>
+    void free(Allocation<T> alloc)
+    {
+        if (!alloc.gpu)
+        {
+            return;
+        }
+
+        size_t offset = reinterpret_cast<char*>(alloc.gpu) - gpu;
+        size_t bytes = alloc.size;
+
+        auto next = freeList.lower_bound(offset);
+
+        // coalesce with the previous free block
+        if (next != freeList.begin())
+        {
+            auto prev = std::prev(next);
+            if (prev->first + prev->second == offset)
+            {
+                offset = prev->first;
+                bytes += prev->second;
+                freeList.erase(prev);
+            }
+        }
+
+        // coalesce with the next free block
+        if (next != freeList.end() && offset + bytes == next->first)
+        {
+            bytes += next->second;
+            freeList.erase(next);
+        }
+
+        freeList.emplace(offset, bytes);
+    }
+
+    template <typename T>
+    bool owns(Allocation<T> alloc)
+    {
+        char* ptr = reinterpret_cast<char*>(alloc.gpu);
+        return ptr >= gpu && ptr < (gpu + size);
+    }
+
+    void reset()
+    {
+        freeList.clear();
+        freeList.emplace(0, size);
+    }
+
+private:
+    char* cpu = nullptr;
+    char* gpu = nullptr;
+    GpuDevice device;
+
+    // offset -> size, non-overlapping free ranges sorted by offset
+    std::map<size_t, size_t> freeList;
+};
+
+// CppCon 2015: Andrei Alexandrescu
+// std::allocator Is to Allocation what std::vector Is to Vexation
+// https://www.youtube.com/watch?v=LIb3L4vKZ7U
+template <class Primary, class Fallback>
+class FallbackAllocator : private Primary, private Fallback
+{
+public:
+    FallbackAllocator(GpuDevice device)
+        : Primary(device), Fallback(device)
+    {
+    }
+
+    template <typename T>
+    Allocation<T> allocate(size_t n)
+    {
+        Allocation<T> alloc = Primary::template allocate<T>(n);
+        if (!alloc.gpu)
+        {
+            alloc = Fallback::template allocate<T>(n);
+        }
+        return alloc;
+    }
+
+    template <typename T>
+    void free(Allocation<T> alloc)
+    {
+        Primary::template owns<T>(alloc) ? Primary::template free<T>(alloc) : Fallback::template free<T>(alloc);
+    }
+
+    template <typename T>
+    bool primary_owns(Allocation<T> alloc)
+    {
+        return Primary::template owns<T>(alloc);
+    }
+
+    template <typename T>
+    bool fallback_owns(Allocation<T> alloc)
+    {
+        return Fallback::template owns<T>(alloc);
+    }
+
+    template <typename T>
+    bool owns(Allocation<T> alloc)
+    {
+        return Primary::template owns<T>(alloc) || Fallback::template owns<T>(alloc);
+    }
+
+    void reset()
+    {
+        Primary::template reset();
+        Fallback::template reset();
     }
 };
 
@@ -57,30 +398,39 @@ public:
             allocatePage(pageSize);
         }
 
-        Page& current = pages.back();
-        size_t alignedOffset = (current.used + (align - 1)) & ~(align - 1);
+        size_t alignedOffset = 0;
+        Page* page = nullptr;
+        for (size_t i = 0; i < pages.size(); i++)
+        {
+            alignedOffset = (pages[i].used + (align - 1)) & ~(align - 1);
+            if (alignedOffset + totalBytes < pages[i].size)
+            {
+                page = &pages[i];
+                break;
+            }
+        }
 
-        if (alignedOffset + totalBytes > current.size)
+        if (page == nullptr)
         {
             allocatePage(pageSize);
+            page = &pages[pages.size() - 1];
             alignedOffset = 0;
         }
 
-        Page& page = pages.back();
-        page.used = alignedOffset + totalBytes;
-        page.allocations++;
+        page->used = alignedOffset + totalBytes;
+        page->allocations++;
 
         if (isGpuOnly())
         {
             return {
                 .cpu = nullptr,
-                .gpu = reinterpret_cast<T*>(static_cast<uint8_t*>(page.basePtr) + alignedOffset)
+                .gpu = reinterpret_cast<T*>(static_cast<uint8_t*>(page->basePtr) + alignedOffset)
             };
         }
 
         return {
-            .cpu = reinterpret_cast<T*>(static_cast<uint8_t*>(page.basePtr) + alignedOffset),
-            .gpu = reinterpret_cast<T*>(static_cast<uint8_t*>(page.baseGpuPtr) + alignedOffset)
+            .cpu = reinterpret_cast<T*>(static_cast<uint8_t*>(page->basePtr) + alignedOffset),
+            .gpu = reinterpret_cast<T*>(static_cast<uint8_t*>(page->baseGpuPtr) + alignedOffset)
         };
     }
 

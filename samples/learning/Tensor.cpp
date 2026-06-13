@@ -6,8 +6,11 @@
 #include <random>
 #include <iostream>
 #include <set>
+#include <chrono>
 
+const uint64_t FRAMES_IN_FLIGHT = 2;
 std::vector<Device*> devices;
+std::map<STAGE, std::set<Tensor>> tensors_pending_writes;
 
 std::string to_string(Shape shape)
 {
@@ -36,6 +39,48 @@ uint64_t flatten(Shape shape)
     return size;
 }
 
+Shape append(Shape base, Shape ext)
+{
+    base.insert(base.end(), ext.begin(), ext.end());
+    return base;
+}
+
+void broadcast(Tensor tensor, const Tensor& rec, const Tensor& send, std ::function<Tensor(const Tensor& a, const Tensor& b)> op)
+{
+    if (rec.shape().empty())
+    {
+        auto error = "Unable to broadcast to empty tensor";
+        throw std::runtime_error(error);
+    }
+
+    if (rec.shape() != send.shape())
+    {
+        for (size_t i = 0; i < rec.shape().front(); i++)
+        {
+            broadcast(tensor[i], rec[i], send, op);
+        }
+    }
+    else
+    {
+        return tensor.copy(op(rec, send));
+    }
+}
+
+using TensorAllocator =
+    FallbackAllocator<
+        FreeListAllocator<1024 * 1024 * 1024, MEMORY_DEFAULT>,
+        GpuMallocator<MEMORY_DEFAULT>>;
+
+using StructAllocator =
+    FallbackAllocator<
+        StackAllocator<64 * 1024 * 1024, MEMORY_DEFAULT>,
+        GpuMallocator<MEMORY_DEFAULT>>;
+
+using ReadbackAllocator =
+    FallbackAllocator<
+        StackAllocator<64 * 1024 * 1024, MEMORY_READBACK>,
+        GpuMallocator<MEMORY_DEFAULT>>;
+
 class Device_impl : public Device
 {
 public:
@@ -43,7 +88,14 @@ public:
     {
         device = gpuCreateDevice(index);
         queue = gpuCreateQueue(device);
-        allocator = new LinearAllocator<MEMORY_DEFAULT>(device);
+
+        tensor_allocator = new TensorAllocator(device);
+
+        for (size_t i = 0; i < FRAMES_IN_FLIGHT; i++)
+        {
+            struct_allocator[i] = new StructAllocator(device);
+            readback_allocator[i] = new ReadbackAllocator(device);
+        }
 
         auto tensorIR = loadIR("shaders/learning/Tensor.spv");
         pipelines["add"] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_add");
@@ -56,14 +108,19 @@ public:
         pipelines["pow"] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_pow");
         pipelines["cosh"] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_cosh");
         pipelines["tanh"] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_tanh");
+        pipelines["relu"] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_relu");
+        pipelines["relu_backward"] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_relu_backward");
     }
 
     ~Device_impl()
     {
         submit();
-        delete readback_ring;
-        delete struct_allocator;
-        delete allocator;
+        delete tensor_allocator;
+        for (size_t i = 0; i < FRAMES_IN_FLIGHT; i++)
+        {
+            delete struct_allocator[i];
+            delete readback_allocator[i];
+        }
 
         if (semaphore)
         {
@@ -117,39 +174,95 @@ public:
         return Tensor(this, data, {}, shape);
     }
 
-    virtual Tensor repeat(float x, Shape shape = {}) override
+    virtual Tensor repeat(float x, Shape shape) override
     {
         std::vector<float> data(flatten(shape), x);
         return Tensor(this, data, {}, shape);
     }
 
-    Allocation<float> readback(size_t size)
+    virtual Tensor repeat(const Tensor& tensor, Shape shape) override
     {
-        size_t byte_size = size * sizeof(float);
-        if (readback_ring == nullptr || byte_size > readback_ring->size())
+        auto out = zeros(append(tensor._shape, shape));
+        repeat(out, tensor);
+        return out;
+    }
+
+    void repeat(Tensor dst, const Tensor& src)
+    {
+        if (dst._shape.empty())
         {
-            delete readback_ring;
-            readback_ring = new RingBuffer<MEMORY_READBACK>(device, byte_size);
+            auto error = "Unable to repeat copy to empty tensor";
+            throw std::runtime_error(error);
         }
 
-        return readback_ring->allocate<float>(size);
+        if (dst._shape != src._shape)
+        {
+            for (size_t i = 0; i < dst._shape.front(); i++)
+            {
+                repeat(dst[i], src);
+            }
+        }
+        else
+        {
+            dst.copy(src);
+        }
+    }
+
+    uint64_t ring() const
+    {
+        return frame % FRAMES_IN_FLIGHT;
+    }
+
+    Allocation<float> readback(size_t size)
+    {
+        return readback_allocator[ring()]->allocate<float>(size * sizeof(float));
+    }
+
+    Allocation<float> floats(size_t size)
+    {
+        return tensor_allocator->allocate<float>(size);
     }
 
     template <typename T>
-    Allocation<T> tensor_data()
+    Allocation<T> struct_data()
     {
-        if (struct_allocator == nullptr)
-        {
-            delete struct_allocator;
-            struct_allocator = new RingBuffer<MEMORY_DEFAULT>(device);
-        }
+        auto alloc = struct_allocator[ring()]->allocate<T>(1);
 
-        if (struct_allocator->wrap<T>(1))
+        // submit command buffer if we run out of struct memory on the stack
+        if (struct_allocator[ring()]->fallback_owns<T>(alloc))
         {
+            struct_allocator[ring()]->free<T>(alloc);
             submit();
+            alloc = struct_allocator[ring()]->allocate<T>(1);
         }
 
-        return struct_allocator->allocate<T>(1);
+        return alloc;
+    }
+
+    void barrier(STAGE after, Tensor a, Tensor b)
+    {
+        for (auto iter = tensors_pending_writes.begin(); iter != tensors_pending_writes.end(); iter++)
+        {
+            auto stage = iter->first;
+            if (tensors_pending_writes[stage].count(a) != 0 || tensors_pending_writes[stage].count(b) != 0)
+            {
+                gpuBarrier(cmd, stage, after);
+                tensors_pending_writes[stage].clear();
+            }
+        }
+    }
+
+    void barrier(STAGE after, Tensor a)
+    {
+        for (auto iter = tensors_pending_writes.begin(); iter != tensors_pending_writes.end(); iter++)
+        {
+            auto stage = iter->first;
+            if (tensors_pending_writes[stage].count(a) != 0)
+            {
+                gpuBarrier(cmd, stage, after);
+                tensors_pending_writes[stage].clear();
+            }
+        }
     }
 
     GpuCommandBuffer record()
@@ -161,7 +274,7 @@ public:
         return cmd;
     }
 
-    void submit()
+    virtual void submit() override
     {
         if (!cmd)
         {
@@ -172,19 +285,45 @@ public:
         {
             semaphore = gpuCreateSemaphore(device, 0);
         }
-        gpuSubmit(queue, Span(&cmd, 1), semaphore, frame);
+
+        gpuSubmit(queue, Span(&cmd, 1), semaphore, frame++);
         cmd = nullptr;
-        gpuWaitSemaphore(semaphore, frame++);
-        for (auto& allocation : pending_free)
+
+        if (frame > FRAMES_IN_FLIGHT)
         {
-            allocator->free(allocation.cpu);
+            uint64_t wait = frame - FRAMES_IN_FLIGHT;
+            // auto stamp = std::chrono::high_resolution_clock::now();
+            gpuWaitSemaphore(semaphore, wait);
+            // auto delta = std::chrono::high_resolution_clock::now() - stamp;
+            // std::cout << "\rWait: " << std::chrono::duration_cast<std::chrono::milliseconds>(delta).count() << "\t" << std::flush;
+
+            for (auto it = pending_free.begin();
+                 it != pending_free.end() && it->first <= wait;)
+            {
+                for (auto& allocation : it->second)
+                {
+                    tensor_allocator->free(allocation);
+                }
+                it = pending_free.erase(it);
+            }
+
+            wait = wait % FRAMES_IN_FLIGHT;
+            readback_allocator[wait]->reset();
+            struct_allocator[wait]->reset();
         }
-        pending_free.clear();
+    }
+
+    void flush()
+    {
+        if (semaphore)
+        {
+            gpuWaitSemaphore(semaphore, frame - 1);
+        }
     }
 
     void free(Allocation<float> allocation)
     {
-        pending_free.push_back(allocation);
+        pending_free[frame].push_back(allocation);
     }
 
     GpuDevice device = nullptr;
@@ -192,10 +331,10 @@ public:
     GpuCommandBuffer cmd = nullptr;
     GpuSemaphore semaphore = nullptr;
     uint64_t frame = 1;
-    LinearAllocator<MEMORY_DEFAULT>* allocator = nullptr;
-    RingBuffer<MEMORY_DEFAULT>* struct_allocator = nullptr;
-    RingBuffer<MEMORY_READBACK>* readback_ring = nullptr;
-    std::vector<Allocation<float>> pending_free;
+    TensorAllocator* tensor_allocator = {};
+    StructAllocator* struct_allocator[FRAMES_IN_FLIGHT] = {};
+    ReadbackAllocator* readback_allocator[FRAMES_IN_FLIGHT] = {};
+    std::map<uint64_t, std::vector<Allocation<float>>> pending_free;
     std::map<std::string, GpuPipeline> pipelines;
 };
 
@@ -224,6 +363,7 @@ Instance::Instance()
 
 Instance::~Instance()
 {
+    tensors_pending_writes.clear();
     for (auto device : devices)
     {
         delete device;
@@ -271,7 +411,7 @@ Tensor::Tensor(Device_impl* device, std::vector<float> data, std::vector<Tensor>
 
     _self = std::make_shared<Tensor_impl>();
     _self->_device = device;
-    _self->_allocation = _self->_device->allocator->allocate<float>(data.size());
+    _self->_allocation = _self->_device->floats(data.size());
     _self->_slice = slice;
     _self->_prev = std::move(prev);
     memcpy(_self->_allocation.cpu, data.data(), data.size() * sizeof(float));
@@ -282,6 +422,11 @@ Tensor::Tensor(Device_impl* device, Allocation<float> allocation, std::vector<Te
 {
     _self = std::make_shared<Tensor_impl>(device, allocation, slice);
     _self->_prev = std::move(prev);
+}
+
+bool Tensor::null() const
+{
+    return _shape.empty();
 }
 
 Shape Tensor::shape() const
@@ -331,6 +476,7 @@ Tensor::operator std::string() const
     gpuBarrier(cmd, STAGE_TRANSFER, STAGE_TRANSFER);
     gpuMemCpy(cmd, readback.gpu, _self->_allocation.gpu, byte_size);
     _self->_device->submit();
+    _self->_device->flush();
 
     return to_string(readback, _shape);
 }
@@ -345,6 +491,7 @@ std::vector<float> Tensor::cpu()
     gpuBarrier(cmd, STAGE_TRANSFER, STAGE_TRANSFER);
     gpuMemCpy(cmd, readback.gpu, _self->_allocation.gpu, byte_size);
     _self->_device->submit();
+    _self->_device->flush();
 
     std::vector<float> result(size, 0.f);
     memcpy(result.data(), readback.cpu, byte_size);
@@ -353,35 +500,68 @@ std::vector<float> Tensor::cpu()
 
 Tensor Tensor::operator+(const Tensor& other) const
 {
+    if (null())
+    {
+        return other;
+    }
+
+    if (other.null())
+    {
+        return *this;
+    }
+
+    uint broadcast = 1;
     if (_shape != other._shape)
     {
-        auto error = "cannot add tensor of shape " + to_string(other._shape) + " to tensor of shape " + to_string(_shape);
-        throw std::runtime_error(error);
+        if (_shape.back() == other._shape.back() || other._shape == unit)
+        {
+            if (_shape.size() < other._shape.size())
+            {
+                throw std::runtime_error("cannot broadcast tensor of shape " + to_string(other._shape) + " to tensor of shape " + to_string(_shape));
+            }
+            broadcast = flatten(_shape) / flatten(other._shape);
+        }
+        else
+        {
+            throw std::runtime_error("cannot add tensor of shape " + to_string(other._shape) + " to tensor of shape " + to_string(_shape));
+        }
     }
 
     auto size = flatten(_shape);
-    auto allocation = _self->_device->allocator->allocate<float>(size);
+    auto allocation = _self->_device->floats(size);
 
-    auto tensor_data = _self->_device->tensor_data<TensorData>();
+    auto tensor_data = _self->_device->struct_data<TensorData>();
     tensor_data.cpu->n = size;
+    tensor_data.cpu->m = flatten(other._shape);
     tensor_data.cpu->x = _self->_allocation.gpu;
     tensor_data.cpu->y = other._self->_allocation.gpu;
     tensor_data.cpu->z = allocation.gpu;
 
     auto cmd = _self->_device->record();
     gpuSetPipeline(cmd, _self->_device->pipelines["add"]);
+    _self->_device->barrier(STAGE_COMPUTE, *this, other);
     gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
-    gpuBarrier(cmd, STAGE_COMPUTE, STAGE_COMPUTE);
 
     auto out = Tensor(_self->_device, allocation, { *this, other }, _shape);
-    Tensor self = *this;
-    out._self->_backward = [self, other](const Tensor& grad)
-    {
-        self.init_grad();
-        other.init_grad();
 
-        self._self->grad = self._self->grad + grad;
-        other._self->grad = other._self->grad + grad;
+    tensors_pending_writes[STAGE_COMPUTE].insert(out);
+
+    Tensor self = *this;
+    out._self->_backward = [self, other, broadcast](const Tensor& grad)
+    {
+        self._self->grad = (self._self->grad + grad).detach();
+
+        if (broadcast > 1)
+        {
+            auto inner = static_cast<unsigned int>(flatten(other._shape));
+            auto rows = grad.reshape({ broadcast, inner });
+            auto reduced = self._self->_device->ones({ 1, broadcast }).matmul(rows);
+            other._self->grad = (other._self->grad + reduced.reshape(other._shape)).detach();
+        }
+        else
+        {
+            other._self->grad = (other._self->grad + grad).detach();
+        }
     };
     return out;
 }
@@ -393,117 +573,196 @@ Tensor Tensor::operator-() const
 
 Tensor Tensor::operator-(const Tensor& other) const
 {
+    if (null())
+    {
+        return -other;
+    }
+
+    if (other.null())
+    {
+        return *this;
+    }
+
+    uint broadcast = 1;
     if (_shape != other._shape)
     {
-        auto error = "cannot subtract tensor of shape " + to_string(other._shape) + " with tensor of shape " + to_string(_shape);
-        throw std::runtime_error(error);
+        if (_shape.back() == other._shape.back() || other._shape == unit)
+        {
+            if (_shape.size() < other._shape.size())
+            {
+                throw std::runtime_error("cannot broadcast tensor of shape " + to_string(other._shape) + " to tensor of shape " + to_string(_shape));
+            }
+            broadcast = flatten(_shape) / flatten(other._shape);
+        }
+        else
+        {
+            throw std::runtime_error("cannot subtract tensor of shape " + to_string(other._shape) + " with tensor of shape " + to_string(_shape));
+        }
     }
 
     auto size = flatten(_shape);
-    auto allocation = _self->_device->allocator->allocate<float>(size);
+    auto allocation = _self->_device->floats(size);
 
-    auto tensor_data = _self->_device->tensor_data<TensorData>();
+    auto tensor_data = _self->_device->struct_data<TensorData>();
     tensor_data.cpu->n = size;
+    tensor_data.cpu->m = flatten(other._shape);
     tensor_data.cpu->x = _self->_allocation.gpu;
     tensor_data.cpu->y = other._self->_allocation.gpu;
     tensor_data.cpu->z = allocation.gpu;
 
     auto cmd = _self->_device->record();
     gpuSetPipeline(cmd, _self->_device->pipelines["sub"]);
+    _self->_device->barrier(STAGE_COMPUTE, *this, other);
     gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
-    gpuBarrier(cmd, STAGE_COMPUTE, STAGE_COMPUTE);
 
     auto out = Tensor(_self->_device, allocation, { *this, other }, _shape);
-    Tensor self = *this;
-    out._self->_backward = [self, other](const Tensor& grad)
-    {
-        self.init_grad();
-        other.init_grad();
 
-        self._self->grad = self._self->grad + grad;
-        other._self->grad = other._self->grad - grad;
+    tensors_pending_writes[STAGE_COMPUTE].insert(out);
+
+    Tensor self = *this;
+    out._self->_backward = [self, other, broadcast](const Tensor& grad)
+    {
+        self._self->grad = (self._self->grad + grad).detach();
+
+        if (broadcast > 1)
+        {
+            auto inner = static_cast<unsigned int>(flatten(other._shape));
+            auto rows = grad.reshape({ broadcast, inner });
+            auto reduced = self._self->_device->ones({ 1, broadcast }).matmul(rows);
+            other._self->grad = (other._self->grad - reduced.reshape(other._shape)).detach();
+        }
+        else
+        {
+            other._self->grad = (other._self->grad - grad).detach();
+        }
     };
     return out;
 }
 
 Tensor Tensor::operator*(const Tensor& other) const
 {
+    uint broadcast = 1;
     if (_shape != other._shape)
     {
-        auto error = "cannot multiply tensor of shape " + to_string(other._shape) + " with tensor of shape " + to_string(_shape);
-        throw std::runtime_error(error);
+        if (_shape.back() == other._shape.back() || other._shape == unit)
+        {
+            if (_shape.size() < other._shape.size())
+            {
+                throw std::runtime_error("cannot broadcast tensor of shape " + to_string(other._shape) + " to tensor of shape " + to_string(_shape));
+            }
+            broadcast = flatten(_shape) / flatten(other._shape);
+        }
+        else
+        {
+            throw std::runtime_error("cannot multiply tensor of shape " + to_string(other._shape) + " with tensor of shape " + to_string(_shape));
+        }
     }
 
     auto size = flatten(_shape);
-    auto allocation = _self->_device->allocator->allocate<float>(size);
+    auto allocation = _self->_device->floats(size);
 
-    auto tensor_data = _self->_device->tensor_data<TensorData>();
+    auto tensor_data = _self->_device->struct_data<TensorData>();
     tensor_data.cpu->n = size;
+    tensor_data.cpu->m = flatten(other._shape);
     tensor_data.cpu->x = _self->_allocation.gpu;
     tensor_data.cpu->y = other._self->_allocation.gpu;
     tensor_data.cpu->z = allocation.gpu;
 
     auto cmd = _self->_device->record();
     gpuSetPipeline(cmd, _self->_device->pipelines["mul"]);
+    _self->_device->barrier(STAGE_COMPUTE, *this, other);
     gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
-    gpuBarrier(cmd, STAGE_COMPUTE, STAGE_COMPUTE);
 
     auto out = Tensor(_self->_device, allocation, { *this, other }, _shape);
+
+    tensors_pending_writes[STAGE_COMPUTE].insert(out);
+
     Tensor self = *this;
     out._self->_backward = [self, other](const Tensor& grad)
     {
-        self.init_grad();
-        other.init_grad();
-
-        self._self->grad = self._self->grad + (other * grad);
-        other._self->grad = other._self->grad + (self * grad);
+        self._self->grad = (self._self->grad + (grad * other)).detach();
+        other._self->grad = (other._self->grad + (grad * self)).detach();
     };
     return out;
 }
 
 Tensor Tensor::operator/(const Tensor& other) const
 {
+    uint broadcast = 1;
     if (_shape != other._shape)
     {
-        auto error = "cannot divide tensor of shape " + to_string(other._shape) + " by tensor of shape " + to_string(_shape);
-        throw std::runtime_error(error);
+        if (_shape.back() == other._shape.back() || other._shape == unit)
+        {
+            if (_shape.size() < other._shape.size())
+            {
+                throw std::runtime_error("cannot broadcast tensor of shape " + to_string(other._shape) + " to tensor of shape " + to_string(_shape));
+            }
+            broadcast = flatten(_shape) / flatten(other._shape);
+        }
+        else
+        {
+            throw std::runtime_error("cannot divide tensor of shape " + to_string(other._shape) + " by tensor of shape " + to_string(_shape));
+        }
     }
 
     auto size = flatten(_shape);
-    auto allocation = _self->_device->allocator->allocate<float>(size);
+    auto allocation = _self->_device->floats(size);
 
-    auto tensor_data = _self->_device->tensor_data<TensorData>();
+    auto tensor_data = _self->_device->struct_data<TensorData>();
     tensor_data.cpu->n = size;
+    tensor_data.cpu->m = flatten(other._shape);
     tensor_data.cpu->x = _self->_allocation.gpu;
     tensor_data.cpu->y = other._self->_allocation.gpu;
     tensor_data.cpu->z = allocation.gpu;
 
     auto cmd = _self->_device->record();
     gpuSetPipeline(cmd, _self->_device->pipelines["div"]);
+    _self->_device->barrier(STAGE_COMPUTE, *this, other);
     gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
-    gpuBarrier(cmd, STAGE_COMPUTE, STAGE_COMPUTE);
 
-    return Tensor(_self->_device, allocation, { *this, other }, _shape);
+    auto out = Tensor(_self->_device, allocation, { *this, other }, _shape);
+
+    tensors_pending_writes[STAGE_COMPUTE].insert(out);
+
+    Tensor self = *this;
+    out._self->_backward = [self, other, broadcast](const Tensor& grad)
+    {
+        self._self->grad = (self._self->grad + (grad / other)).detach();
+
+        if (broadcast > 1)
+        {
+            auto inner = static_cast<unsigned int>(flatten(other._shape));
+            auto term = grad * (self / (other * other));
+            auto rows = term.reshape({ broadcast, inner });
+            auto reduced = self._self->_device->ones({ 1, broadcast }).matmul(rows);
+            other._self->grad = (other._self->grad - reduced.reshape(other._shape)).detach();
+        }
+        else
+        {
+            other._self->grad = (other._self->grad - grad * (self / (other * other))).detach();
+        }
+    };
+    return out;
 }
 
 Tensor Tensor::operator+(float x) const
 {
-    return *this + _self->_device->repeat(x, _shape);
+    return *this + _self->_device->tensor({ x });
 }
 
 Tensor Tensor::operator-(float x) const
 {
-    return *this - _self->_device->repeat(x, _shape);
+    return *this - _self->_device->tensor({ x });
 }
 
 Tensor Tensor::operator*(float x) const
 {
-    return *this * _self->_device->repeat(x, _shape);
+    return *this * _self->_device->tensor({ x });
 }
 
 Tensor Tensor::operator/(float x) const
 {
-    return *this / _self->_device->repeat(x, _shape);
+    return *this / _self->_device->tensor({ x });
 }
 
 Tensor Tensor::operator[](unsigned int i) const
@@ -524,6 +783,11 @@ Tensor Tensor::operator[](unsigned int i) const
     return Tensor(_self->_device, allocation, { *this }, res_shape, true);
 }
 
+Tensor Tensor::repeat(const Tensor& tensor, Shape shape) const
+{
+    return _self->_device->repeat(tensor, shape);
+}
+
 Tensor Tensor::mT() const
 {
     if (_shape.size() != 2)
@@ -535,9 +799,9 @@ Tensor Tensor::mT() const
     Shape res_shape = { _shape.back(), _shape.front() };
     auto size = flatten(res_shape);
 
-    auto allocation = _self->_device->allocator->allocate<float>(size);
+    auto allocation = _self->_device->floats(size);
 
-    auto tensor_data = _self->_device->tensor_data<TensorTransposeData>();
+    auto tensor_data = _self->_device->struct_data<TensorTransposeData>();
     tensor_data.cpu->n = size;
     tensor_data.cpu->r = _shape.front();
     tensor_data.cpu->c = _shape.back();
@@ -546,10 +810,14 @@ Tensor Tensor::mT() const
 
     auto cmd = _self->_device->record();
     gpuSetPipeline(cmd, _self->_device->pipelines["mT"]);
-    gpuDispatch(cmd, tensor_data.gpu, { 1, 1, 1 });
-    gpuBarrier(cmd, STAGE_COMPUTE, STAGE_COMPUTE);
+    _self->_device->barrier(STAGE_COMPUTE, *this);
+    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
 
-    return Tensor(_self->_device, allocation, { *this }, res_shape);
+    auto out = Tensor(_self->_device, allocation, { *this }, res_shape);
+
+    tensors_pending_writes[STAGE_COMPUTE].insert(out);
+
+    return out;
 }
 
 Tensor Tensor::dot(const Tensor& other) const
@@ -561,10 +829,10 @@ Tensor Tensor::dot(const Tensor& other) const
     }
 
     auto size = flatten(_shape);
-    auto allocation = _self->_device->allocator->allocate<float>(1);
+    auto allocation = _self->_device->floats(1);
     memset(allocation.cpu, 0, sizeof(float));
 
-    auto tensor_data = _self->_device->tensor_data<TensorData>();
+    auto tensor_data = _self->_device->struct_data<TensorData>();
     tensor_data.cpu->n = size;
     tensor_data.cpu->x = _self->_allocation.gpu;
     tensor_data.cpu->y = other._self->_allocation.gpu;
@@ -572,10 +840,20 @@ Tensor Tensor::dot(const Tensor& other) const
 
     auto cmd = _self->_device->record();
     gpuSetPipeline(cmd, _self->_device->pipelines["dot"]);
+    _self->_device->barrier(STAGE_COMPUTE, *this, other);
     gpuDispatch(cmd, tensor_data.gpu, { 1, 1, 1 });
-    gpuBarrier(cmd, STAGE_COMPUTE, STAGE_COMPUTE);
 
-    return Tensor(_self->_device, allocation, { *this, other }, { 1 });
+    auto out = Tensor(_self->_device, allocation, { *this, other }, { 1 });
+
+    tensors_pending_writes[STAGE_COMPUTE].insert(out);
+
+    Tensor self = *this;
+    out._self->_backward = [self, other](const Tensor& grad)
+    {
+        self._self->grad = (self._self->grad + other * grad).detach();
+        other._self->grad = (other._self->grad + self * grad).detach();
+    };
+    return out;
 }
 
 Tensor Tensor::matmul(const Tensor& other) const
@@ -596,9 +874,9 @@ Tensor Tensor::matmul(const Tensor& other) const
     Shape res_shape = { _shape.front(), other._shape.back() };
     auto size = flatten(res_shape);
 
-    auto allocation = _self->_device->allocator->allocate<float>(size);
+    auto allocation = _self->_device->floats(size);
 
-    auto tensor_data = _self->_device->tensor_data<TensorMatMulData>();
+    auto tensor_data = _self->_device->struct_data<TensorMatMulData>();
     tensor_data.cpu->n = size;
     tensor_data.cpu->a = _shape.front();
     tensor_data.cpu->b = _shape.back();
@@ -609,61 +887,81 @@ Tensor Tensor::matmul(const Tensor& other) const
 
     auto cmd = _self->_device->record();
     gpuSetPipeline(cmd, _self->_device->pipelines["matmul"]);
+    _self->_device->barrier(STAGE_COMPUTE, *this, other);
     gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
-    gpuBarrier(cmd, STAGE_COMPUTE, STAGE_COMPUTE);
 
     auto out = Tensor(_self->_device, allocation, { *this, other }, res_shape);
+
+    tensors_pending_writes[STAGE_COMPUTE].insert(out);
+
     Tensor self = *this;
     out._self->_backward = [self, other](const Tensor& grad)
     {
-        self.init_grad();
-        other.init_grad();
-
-        self._self->grad = self._self->grad + grad.matmul(other.mT());
-        other._self->grad = other._self->grad + self.mT().matmul(grad);
+        self._self->grad = (self._self->grad + grad.matmul(other.mT())).detach();
+        other._self->grad = (other._self->grad + self.mT().matmul(grad)).detach();
     };
     return out;
 }
 
 Tensor Tensor::pow(const Tensor& other) const
 {
+    uint broadcast = 1;
     if (_shape != other._shape)
     {
-        auto error = "cannot pow tensor of shape " + to_string(other._shape) + " to tensor of shape " + to_string(_shape);
-        throw std::runtime_error(error);
+        if (_shape.back() == other._shape.back() || other._shape == unit)
+        {
+            if (_shape.size() < other._shape.size())
+            {
+                throw std::runtime_error("cannot broadcast tensor of shape " + to_string(other._shape) + " to tensor of shape " + to_string(_shape));
+            }
+            broadcast = flatten(_shape) / flatten(other._shape);
+        }
+        else
+        {
+            throw std::runtime_error("cannot pow tensor of shape " + to_string(other._shape) + " to tensor of shape " + to_string(_shape));
+        }
     }
 
     auto size = flatten(_shape);
-    auto allocation = _self->_device->allocator->allocate<float>(size);
+    auto allocation = _self->_device->floats(size);
 
-    auto tensor_data = _self->_device->tensor_data<TensorData>();
+    auto tensor_data = _self->_device->struct_data<TensorData>();
     tensor_data.cpu->n = size;
+    tensor_data.cpu->m = flatten(other._shape);
     tensor_data.cpu->x = _self->_allocation.gpu;
     tensor_data.cpu->y = other._self->_allocation.gpu;
     tensor_data.cpu->z = allocation.gpu;
 
     auto cmd = _self->_device->record();
     gpuSetPipeline(cmd, _self->_device->pipelines["pow"]);
+    _self->_device->barrier(STAGE_COMPUTE, *this, other);
     gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
-    gpuBarrier(cmd, STAGE_COMPUTE, STAGE_COMPUTE);
 
-    return Tensor(_self->_device, allocation, { *this, other }, _shape);
+    auto out = Tensor(_self->_device, allocation, { *this, other }, _shape);
+
+    tensors_pending_writes[STAGE_COMPUTE].insert(out);
+
+    return out;
 }
 
 Tensor Tensor::pow(float x) const
 {
-    return pow(_self->_device->repeat({ x }, _shape));
+    return pow(_self->_device->tensor({ x }));
+}
+
+Tensor Tensor::sum() const
+{
+    return dot(_self->_device->ones(_shape));
 }
 
 Tensor Tensor::sqrt() const
 {
-    auto two = _self->_device->repeat({ 2.f }, _shape);
-    return pow(two.rcp());
+    return pow(0.5f);
 }
 
 Tensor Tensor::rcp() const
 {
-    return _self->_device->repeat(1, _shape) / *this;
+    return _self->_device->repeat({ 1.f }, _shape) / *this;
 }
 
 Tensor Tensor::exp() const
@@ -674,9 +972,9 @@ Tensor Tensor::exp() const
 Tensor Tensor::cosh() const
 {
     auto size = flatten(_shape);
-    auto allocation = _self->_device->allocator->allocate<float>(size);
+    auto allocation = _self->_device->floats(size);
 
-    auto tensor_data = _self->_device->tensor_data<TensorData>();
+    auto tensor_data = _self->_device->struct_data<TensorData>();
     tensor_data.cpu->n = size;
     tensor_data.cpu->x = _self->_allocation.gpu;
     tensor_data.cpu->y = nullptr;
@@ -684,18 +982,22 @@ Tensor Tensor::cosh() const
 
     auto cmd = _self->_device->record();
     gpuSetPipeline(cmd, _self->_device->pipelines["cosh"]);
+    _self->_device->barrier(STAGE_COMPUTE, *this);
     gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
-    gpuBarrier(cmd, STAGE_COMPUTE, STAGE_COMPUTE);
 
-    return Tensor(_self->_device, allocation, { *this }, _shape);
+    auto out = Tensor(_self->_device, allocation, { *this }, _shape);
+
+    tensors_pending_writes[STAGE_COMPUTE].insert(out);
+
+    return out;
 }
 
 Tensor Tensor::tanh() const
 {
     auto size = flatten(_shape);
-    auto allocation = _self->_device->allocator->allocate<float>(size);
+    auto allocation = _self->_device->floats(size);
 
-    auto tensor_data = _self->_device->tensor_data<TensorData>();
+    auto tensor_data = _self->_device->struct_data<TensorData>();
     tensor_data.cpu->n = size;
     tensor_data.cpu->x = _self->_allocation.gpu;
     tensor_data.cpu->y = nullptr;
@@ -703,17 +1005,17 @@ Tensor Tensor::tanh() const
 
     auto cmd = _self->_device->record();
     gpuSetPipeline(cmd, _self->_device->pipelines["tanh"]);
+    _self->_device->barrier(STAGE_COMPUTE, *this);
     gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
-    gpuBarrier(cmd, STAGE_COMPUTE, STAGE_COMPUTE);
 
     auto out = Tensor(_self->_device, allocation, { *this }, _shape);
+
+    tensors_pending_writes[STAGE_COMPUTE].insert(out);
+
     Tensor self = *this;
     out._self->_backward = [self](const Tensor& grad)
     {
-        self.init_grad();
-
-        auto two = self._self->_device->repeat(2.f, self._shape);
-        self._self->grad = self._self->grad + self.sech().pow(two) * grad;
+        self._self->grad = (self._self->grad + grad / self.cosh().pow(2.f)).detach();
     };
     return out;
 }
@@ -723,10 +1025,54 @@ Tensor Tensor::sech() const
     return cosh().rcp();
 }
 
+Tensor Tensor::relu() const
+{
+    auto size = flatten(_shape);
+    auto allocation = _self->_device->floats(size);
+
+    auto tensor_data = _self->_device->struct_data<TensorData>();
+    tensor_data.cpu->n = size;
+    tensor_data.cpu->x = _self->_allocation.gpu;
+    tensor_data.cpu->y = nullptr;
+    tensor_data.cpu->z = allocation.gpu;
+
+    auto cmd = _self->_device->record();
+    gpuSetPipeline(cmd, _self->_device->pipelines["relu"]);
+    _self->_device->barrier(STAGE_COMPUTE, *this);
+    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+
+    auto out = Tensor(_self->_device, allocation, { *this }, _shape);
+
+    tensors_pending_writes[STAGE_COMPUTE].insert(out);
+
+    Tensor self = *this;
+    out._self->_backward = [self](const Tensor& grad)
+    {
+        auto size = flatten(self.shape());
+        auto allocation = self._self->_device->floats(size);
+        auto tensor_data = self._self->_device->struct_data<TensorData>();
+        tensor_data.cpu->n = size;
+        tensor_data.cpu->x = self._self->_allocation.gpu;
+        tensor_data.cpu->y = grad._self->_allocation.gpu;
+        tensor_data.cpu->z = allocation.gpu;
+
+        auto cmd = self._self->_device->record();
+        gpuSetPipeline(cmd, self._self->_device->pipelines["relu_backward"]);
+        self._self->_device->barrier(STAGE_COMPUTE, self, grad);
+        gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+
+        auto term = Tensor(self._self->_device, allocation, {}, self.shape());
+
+        tensors_pending_writes[STAGE_COMPUTE].insert(term);
+
+        self._self->grad = (self._self->grad + term).detach();
+    };
+    return out;
+}
+
 Tensor Tensor::gelu() const
 {
-    auto sqrt_2_pi = (_self->_device->repeat({ 2.f }, _shape) / pi).sqrt();
-    return *this * 0.5f * (1.f + (sqrt_2_pi * (*this + pow(3.f) * 0.044715f)).tanh());
+    return *this * 0.5f * (1.f + (::sqrt(2.f / pi) * (*this + (*this * *this * *this) * 0.044715f)).tanh());
 }
 
 Tensor Tensor::reshape(Shape shape) const
@@ -739,26 +1085,34 @@ Tensor Tensor::reshape(Shape shape) const
 
     auto size = flatten(_shape);
     auto byte_size = size * sizeof(float);
-    auto allocation = _self->_device->allocator->allocate<float>(size);
+    auto allocation = _self->_device->floats(size);
 
     auto cmd = _self->_device->record();
+    _self->_device->barrier(STAGE_TRANSFER, *this);
     gpuMemCpy(cmd, allocation.gpu, _self->_allocation.gpu, byte_size);
-    gpuBarrier(cmd, STAGE_TRANSFER, STAGE_COMPUTE);
 
-    return Tensor(_self->_device, allocation, { *this }, shape);
+    auto out = Tensor(_self->_device, allocation, { *this }, shape);
+
+    tensors_pending_writes[STAGE_TRANSFER].insert(out);
+
+    return out;
 }
 
 Tensor Tensor::detach() const
 {
     auto size = flatten(_shape);
     auto byte_size = size * sizeof(float);
-    auto allocation = _self->_device->allocator->allocate<float>(size);
+    auto allocation = _self->_device->floats(size);
 
     auto cmd = _self->_device->record();
+    _self->_device->barrier(STAGE_TRANSFER, *this);
     gpuMemCpy(cmd, allocation.gpu, _self->_allocation.gpu, byte_size);
-    gpuBarrier(cmd, STAGE_TRANSFER, STAGE_COMPUTE);
 
-    return Tensor(_self->_device, allocation, {}, _shape);
+    auto out = Tensor(_self->_device, allocation, {}, _shape);
+
+    tensors_pending_writes[STAGE_TRANSFER].insert(out);
+
+    return out;
 }
 
 void Tensor::copy(const Tensor& other) const
@@ -773,8 +1127,10 @@ void Tensor::copy(const Tensor& other) const
     auto byte_size = size * sizeof(float);
 
     auto cmd = _self->_device->record();
+    _self->_device->barrier(STAGE_TRANSFER, other);
     gpuMemCpy(cmd, _self->_allocation.gpu, other._self->_allocation.gpu, byte_size);
-    gpuBarrier(cmd, STAGE_TRANSFER, STAGE_COMPUTE);
+
+    tensors_pending_writes[STAGE_TRANSFER].insert(*this);
 }
 
 void Tensor::build(Tensor tensor, std::set<Tensor>& visited, std::vector<Tensor>& graph)
@@ -787,14 +1143,6 @@ void Tensor::build(Tensor tensor, std::set<Tensor>& visited, std::vector<Tensor>
             build(prev, visited, graph);
         }
         graph.push_back(tensor);
-    }
-}
-
-void Tensor::init_grad() const
-{
-    if (_self->grad._shape.empty())
-    {
-        _self->grad = _self->_device->zeros(_shape);
     }
 }
 
