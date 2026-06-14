@@ -101,6 +101,16 @@ void _pow(uint t: SV_DispatchThreadID, TensorData *data)
 }
 
 [numthreads(64, 1, 1)]
+void _log(uint t: SV_DispatchThreadID, TensorData *data)
+{
+    if (t >= data->n)
+    {
+        return;
+    }
+    data->z[t] = log(data->x[t]);
+}
+
+[numthreads(64, 1, 1)]
 void _tanh(uint t: SV_DispatchThreadID, TensorData *data)
 {
     if (t >= data->n)

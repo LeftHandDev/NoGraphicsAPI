@@ -164,7 +164,7 @@ compile_shader(SOURCE samples/samplerbench/SamplerBench.slang STAGE compute OUTP
 # compile them all into a single Tensor.spv (Device_impl builds a pipeline per
 # entry point from that one module).
 compile_shader(SOURCE samples/learning/Tensor.slang STAGE compute OUTPUT learning/Tensor.spv
-    ENTRY _add _sub _mul _div _dot _mT _matmul _pow _cosh _tanh _relu _relu_backward
+    ENTRY _add _sub _mul _div _dot _mT _matmul _pow _log _cosh _tanh _relu _relu_backward
     EXTRA_DEPENDS ${COMMON_SHADER_DEPS} "${CMAKE_CURRENT_SOURCE_DIR}/samples/learning/Common.h")
 
 add_custom_target(shaders ALL DEPENDS ${NGAPI_SHADER_OUTPUTS})

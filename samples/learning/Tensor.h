@@ -54,7 +54,7 @@ public:
     Tensor operator*(float) const; // scalar multiplication
     Tensor operator/(float) const; // scalar division
 
-    Tensor operator[](unsigned int) const; // takes a slice of a matrix
+    Tensor operator[](unsigned int) const; // take a slice of a tensor
 
     Tensor mT() const;                  // 2D matrix transpose, +3D batched matrix transpose
     Tensor dot(const Tensor&) const;    // 1D dot product
@@ -63,10 +63,14 @@ public:
     Tensor pow(const Tensor&) const;
     Tensor pow(float) const;
 
+    Tensor mse(const Tensor&) const;
     Tensor sum() const;
     Tensor sqrt() const;
     Tensor rcp() const;
     Tensor exp() const;
+    Tensor expm1() const;
+    Tensor log() const;
+    Tensor log1p() const;
     Tensor cosh() const;
     Tensor tanh() const;
     Tensor sech() const;
@@ -113,6 +117,11 @@ inline Tensor operator*(float x, Tensor t)
 inline Tensor operator/(float x, Tensor t)
 {
     return x * t.rcp();
+}
+
+inline Tensor lerp(const Tensor& a, const Tensor& b, float t)
+{
+    return (1.f - t) * a + t * b;
 }
 
 inline std::ostream& operator<<(std::ostream& os, const Tensor& t)
@@ -177,13 +186,52 @@ public:
 
     virtual void train(float lr) override
     {
-        _weights = (_weights - _weights.grad() * lr).detach();
-        _biases = (_biases - _biases.grad() * lr).detach();
+        if (_steps == 0)
+        {
+            _weights_mean = _weights * 0.f;
+            _weights_variance = _weights * 0.f;
+
+            _biases_mean = _biases * 0.f;
+            _biases_variance = _biases * 0.f;
+        }
+
+        _steps += 1;
+        _adamBeta1T = pow(_adamBeta1, _steps);
+        _adamBeta2T = pow(_adamBeta2, _steps);
+
+        _weights_mean = lerp(_weights.grad(), _weights_mean, _adamBeta1).detach();
+        _weights_variance = lerp((_weights.grad() * _weights.grad()), _weights_variance, _adamBeta2).detach();
+
+        _biases_mean = lerp(_biases.grad(), _biases_mean, _adamBeta1).detach();
+        _biases_variance = lerp((_biases.grad() * _biases.grad()), _biases_variance, _adamBeta2).detach();
+
+        auto weights_mean = _weights_mean / (1.f - _adamBeta1T);
+        auto weights_variance = _weights_variance / (1.f - _adamBeta2T);
+
+        auto biases_mean = _biases_mean / (1.f - _adamBeta1T);
+        auto biases_variance = _biases_variance / (1.f - _adamBeta2T);
+
+        auto weights_adjustment = lr * (weights_mean / (weights_variance.sqrt() + 1e-10f));
+        auto biases_adjustment = lr * (biases_mean / (biases_variance.sqrt() + 1e-10f));
+
+        _weights = (_weights - weights_adjustment).detach();
+        _biases = (_biases - biases_adjustment).detach();
     }
 
 private:
     Tensor _weights;
     Tensor _biases;
+
+    Tensor _weights_mean;
+    Tensor _weights_variance;
+    Tensor _biases_mean;
+    Tensor _biases_variance;
+
+    uint64_t _steps = 0;
+    const float _adamBeta1 = 0.9;
+    const float _adamBeta2 = 0.999;
+    float _adamBeta1T = 0.f;
+    float _adamBeta2T = 0.f;
 };
 
 class Network : public Module

@@ -106,6 +106,7 @@ public:
         pipelines["mT"] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_mT");
         pipelines["matmul"] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_matmul");
         pipelines["pow"] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_pow");
+        pipelines["log"] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_log");
         pipelines["cosh"] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_cosh");
         pipelines["tanh"] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_tanh");
         pipelines["relu"] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_relu");
@@ -949,6 +950,12 @@ Tensor Tensor::pow(float x) const
     return pow(_self->_device->tensor({ x }));
 }
 
+Tensor Tensor::mse(const Tensor& other) const
+{
+    auto dif = *this - other;
+    return (dif * dif).sum() / flatten(dif._shape);
+}
+
 Tensor Tensor::sum() const
 {
     return dot(_self->_device->ones(_shape));
@@ -967,6 +974,39 @@ Tensor Tensor::rcp() const
 Tensor Tensor::exp() const
 {
     return _self->_device->repeat(e, _shape).pow(*this);
+}
+
+Tensor Tensor::expm1() const
+{
+    return exp() - 1.f;
+}
+
+Tensor Tensor::log() const
+{
+    auto size = flatten(_shape);
+    auto allocation = _self->_device->floats(size);
+
+    auto tensor_data = _self->_device->struct_data<TensorData>();
+    tensor_data.cpu->n = size;
+    tensor_data.cpu->x = _self->_allocation.gpu;
+    tensor_data.cpu->y = nullptr;
+    tensor_data.cpu->z = allocation.gpu;
+
+    auto cmd = _self->_device->record();
+    gpuSetPipeline(cmd, _self->_device->pipelines["log"]);
+    _self->_device->barrier(STAGE_COMPUTE, *this);
+    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+
+    auto out = Tensor(_self->_device, allocation, { *this }, _shape);
+
+    tensors_pending_writes[STAGE_COMPUTE].insert(out);
+
+    return out;
+}
+
+Tensor Tensor::log1p() const
+{
+    return (*this + 1).log();
 }
 
 Tensor Tensor::cosh() const
