@@ -7,8 +7,9 @@ struct alignas(16) TensorData
 {
     uint64_t n; // number of elements in x and z
     uint64_t m; // number of elements in y (m <= n)
+    float a;    // leaky relu alpha
     float* x;   // input
-    float* y;   // input
+    float* y;   // input (grad in _relu_backard)
     float* z;   // output
 };
 

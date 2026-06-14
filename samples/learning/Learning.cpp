@@ -75,24 +75,29 @@ void learningSample()
         std::mt19937 gen(rd());
         std::uniform_int_distribution<int> dis(0, 255);
 
-        size_t epochs = 100;
+        size_t epochs = 1000;
         auto y = device->tensor({ gt_flat });
 
         for (size_t i = 0; i < epochs; i++)
         {
-            auto z = autoencoder.forward(y);
-            auto L = ((z - y) * (z - y)).sum() / N;
+            auto a = (y + device->rand(y.shape()) * 2.f - 1.f).detach();
+            auto b = (y + device->rand(y.shape()) * 2.f - 1.f).detach();
+            auto z = autoencoder.forward(a);
+            auto L = ((z - b) * (z - b)).sum() / N;
             L.backward();
-            autoencoder.train(10.f);
+            autoencoder.train(0.1f);
             device->submit();
-            std::cout << "MSE " << L << "\t" << i << "/" << epochs << "\t" << std::endl;
+            std::cout << /*"MSE " << L << "\t" <<*/ i << "/" << epochs << "\t" << std::endl;
         }
 
         std::cout << std::endl;
 
-        auto z = autoencoder.forward(y);
-        auto hdr = z.sqrt().cpu();
+        auto a = y + device->rand(y.shape());
+        auto z = autoencoder.forward(a);
+        auto hdr = z.cpu();
+        stbi_write_hdr("input.exr", 256, 256, 3, a.cpu().data());
         stbi_write_hdr("output.exr", 256, 256, 3, hdr.data());
+        stbi_write_hdr("gt.exr", 256, 256, 3, gt_flat.data());
     }
     catch (const std::exception& e)
     {

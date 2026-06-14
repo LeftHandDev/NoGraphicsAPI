@@ -70,7 +70,7 @@ public:
     Tensor cosh() const;
     Tensor tanh() const;
     Tensor sech() const;
-    Tensor relu() const;
+    Tensor relu(float = 0.f) const;
     Tensor gelu() const;
 
     bool operator==(const Tensor& other) const
@@ -157,7 +157,7 @@ class Layer : public Module
 {
 public:
     Layer(Device* device, unsigned int in, unsigned int out)
-        : _weights(device->rand({ in, out }) * sqrt(1.f / in)), _biases(device->zeros({ 1, out }))
+        : _weights(((device->rand({ in, out }) * 2.f - 1.f) * sqrt(1.f / in)).detach()), _biases(device->zeros({ 1, out }))
     {
     }
 
@@ -202,7 +202,7 @@ public:
         Tensor out = _layers.front().forward(in);
         for (size_t i = 1; i < _layers.size(); i++)
         {
-            out = _layers[i].forward(out.relu());
+            out = _layers[i].forward(out.gelu()); //.relu(0.01f));
         }
         return out;
     }

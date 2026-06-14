@@ -151,7 +151,7 @@ public:
     {
         std::random_device rd;
         std::mt19937 gen(rd());
-        std::uniform_real_distribution<float> dis(-1.f, 1.f);
+        std::uniform_real_distribution<float> dis(0.f, 1.f);
 
         std::vector<float> data(flatten(shape));
         for (size_t i = 0; i < data.size(); i++)
@@ -1025,13 +1025,14 @@ Tensor Tensor::sech() const
     return cosh().rcp();
 }
 
-Tensor Tensor::relu() const
+Tensor Tensor::relu(float alpha) const
 {
     auto size = flatten(_shape);
     auto allocation = _self->_device->floats(size);
 
     auto tensor_data = _self->_device->struct_data<TensorData>();
     tensor_data.cpu->n = size;
+    tensor_data.cpu->a = alpha;
     tensor_data.cpu->x = _self->_allocation.gpu;
     tensor_data.cpu->y = nullptr;
     tensor_data.cpu->z = allocation.gpu;
@@ -1046,12 +1047,13 @@ Tensor Tensor::relu() const
     tensors_pending_writes[STAGE_COMPUTE].insert(out);
 
     Tensor self = *this;
-    out._self->_backward = [self](const Tensor& grad)
+    out._self->_backward = [self, alpha](const Tensor& grad)
     {
         auto size = flatten(self.shape());
         auto allocation = self._self->_device->floats(size);
         auto tensor_data = self._self->_device->struct_data<TensorData>();
         tensor_data.cpu->n = size;
+        tensor_data.cpu->a = alpha;
         tensor_data.cpu->x = self._self->_allocation.gpu;
         tensor_data.cpu->y = grad._self->_allocation.gpu;
         tensor_data.cpu->z = allocation.gpu;

@@ -127,7 +127,7 @@ void _relu(uint t: SV_DispatchThreadID, TensorData *data)
     {
         return;
     }
-    data->z[t] = max(data->x[t], 0.0);
+    data->z[t] = data->x[t] > 0.0 ? data->x[t] : data->x[t] * data->a;
 }
 
 [numthreads(64, 1, 1)]
@@ -137,5 +137,5 @@ void _relu_backward(uint t: SV_DispatchThreadID, TensorData *data)
     {
         return;
     }
-    data->z[t] = data->x[t] > 0.0 ? data->y[t] : 0.0;
+    data->z[t] = data->x[t] > 0.0 ? data->y[t] : data->y[t] * data->a;
 }
