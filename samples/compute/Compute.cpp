@@ -19,6 +19,7 @@ int main()
     auto surface = ngapi::createSurface(window);
 
     LinearAllocator allocator(device);
+    LinearAllocator<MEMORY_DESCRIPTOR> descriptorAllocator(device);
 
     auto swapchain = gpuCreateSwapchain(device, surface, FRAMES_IN_FLIGHT);
     auto swapchainDesc = gpuSwapchainDesc(swapchain);
@@ -29,7 +30,7 @@ int main()
     auto computeIR = loadIR("shaders/compute/Compute.spv");
     auto pipeline = gpuCreateComputePipeline(device, ByteSpan(computeIR.data(), computeIR.size()));
 
-    auto textureHeap = allocator.allocate<GpuTextureDescriptor>(1024);
+    auto textureHeap = descriptorAllocator.allocate<GpuTextureDescriptor>(1024);
 
     // Load input image
     int width, height, channels;

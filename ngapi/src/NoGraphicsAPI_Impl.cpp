@@ -1081,6 +1081,7 @@ void* gpuMallocHidden(VulkanDevice* vulkanDevice, size_t bytes, size_t align, ME
     switch (memory)
     {
     case MEMORY_DEFAULT: // DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT
+    case MEMORY_DESCRIPTOR:
     {
         auto usage =
             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
@@ -1099,7 +1100,7 @@ void* gpuMallocHidden(VulkanDevice* vulkanDevice, size_t bytes, size_t align, ME
         {
             usage |= VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT;
         }
-        else
+        else if (memory == MEMORY_DESCRIPTOR)
         {
             usage |= VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
         }
@@ -1666,9 +1667,9 @@ void initDeviceResources(GpuDevice device)
         vulkanDevice->rwDescriptorDataCpu =
             gpuMallocHidden(vulkanDevice, props.storageImageDescriptorSize * vulkanDevice->descriptorCount, GPU_DEFAULT_ALIGNMENT, MEMORY_DEFAULT);
         vulkanDevice->patchedDescriptorDataCpu =
-            gpuMallocHidden(vulkanDevice, props.sampledImageDescriptorSize * vulkanDevice->descriptorCount, props.descriptorBufferOffsetAlignment, MEMORY_DEFAULT);
+            gpuMallocHidden(vulkanDevice, props.sampledImageDescriptorSize * vulkanDevice->descriptorCount, props.descriptorBufferOffsetAlignment, MEMORY_DESCRIPTOR);
         vulkanDevice->rwPatchedDescriptorDataCpu =
-            gpuMallocHidden(vulkanDevice, props.storageImageDescriptorSize * vulkanDevice->descriptorCount, props.descriptorBufferOffsetAlignment, MEMORY_DEFAULT);
+            gpuMallocHidden(vulkanDevice, props.storageImageDescriptorSize * vulkanDevice->descriptorCount, props.descriptorBufferOffsetAlignment, MEMORY_DESCRIPTOR);
         vulkanDevice->patchDescriptorsDataCpu =
             static_cast<PatchDescriptorsData*>(gpuMallocHidden(vulkanDevice, sizeof(PatchDescriptorsData), GPU_DEFAULT_ALIGNMENT, MEMORY_DEFAULT));
 

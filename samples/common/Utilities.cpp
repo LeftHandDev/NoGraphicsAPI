@@ -203,6 +203,7 @@ TextRenderer::TextRenderer(GpuDevice gpuDevice, GpuTextureDesc textureDesc)
     : device(gpuDevice), targetDesc(textureDesc)
 {
     allocator = new LinearAllocator(device);
+    descriptorAllocator = new LinearAllocator<MEMORY_DESCRIPTOR>(device);
 
     auto textIRVertex = loadIR("shaders/common/TextVertex.spv");
     auto textIRPixel = loadIR("shaders/common/TextPixel.spv");
@@ -261,7 +262,7 @@ TextRenderer::TextRenderer(GpuDevice gpuDevice, GpuTextureDesc textureDesc)
         gpuDestroySemaphore(semaphore);
         stbi_image_free(atlasData);
 
-        textureHeap = allocator->allocate<GpuTextureDescriptor>(1024);
+        textureHeap = descriptorAllocator->allocate<GpuTextureDescriptor>(1024);
         textureHeap.cpu[0] = gpuTextureViewDescriptor(atlas, GpuViewDesc{ .format = FORMAT_RGBA8_UNORM });
     }
 }
@@ -274,6 +275,8 @@ TextRenderer::~TextRenderer()
     gpuFree(device, atlasPtr);
     allocator->reset();
     delete allocator;
+    descriptorAllocator->reset();
+    delete descriptorAllocator;
 }
 
 void TextRenderer::renderText(GpuCommandBuffer cmd, GpuTexture target, const std::string& text, float x, float y, float scale, float3 color)

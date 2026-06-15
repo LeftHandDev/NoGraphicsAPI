@@ -42,6 +42,7 @@ int main(int argc, char** argv)
     const uint32_t SEED = 1337; // fixed so the scene is reproducible
 
     LinearAllocator allocator(device);
+    LinearAllocator<MEMORY_DESCRIPTOR> descriptorAllocator(device);
 
     int width, height, channels;
     const std::string inputPath = std::string(NGAPI_TEST_ASSET_DIR) + "/Default.png";
@@ -89,7 +90,7 @@ int main(int argc, char** argv)
         INDEX_OUTPUT_SAMPLED = 7,
     };
 
-    auto textureHeap = allocator.allocate<GpuTextureDescriptor>(1024);
+    auto textureHeap = descriptorAllocator.allocate<GpuTextureDescriptor>(1024);
     textureHeap.cpu[INDEX_CUBE] = gpuTextureViewDescriptor(texture, GpuViewDesc{ .format = FORMAT_RGBA8_UNORM });
     textureHeap.cpu[INDEX_CURRENT_FRAME] = gpuRWTextureViewDescriptor(outputTexture, GpuViewDesc{ .format = FORMAT_RGBA32_FLOAT });
     textureHeap.cpu[INDEX_ALBEDO] = gpuRWTextureViewDescriptor(albedoTexture, GpuViewDesc{ .format = FORMAT_RGBA16_FLOAT });
@@ -311,6 +312,7 @@ int main(int argc, char** argv)
     int rc = test::finalize(args, "raytracing", actual);
 
     allocator.reset();
+    descriptorAllocator.reset();
     stbi_image_free(inputImage);
     gpuDestroyTexture(texture);
     gpuFree(device, texturePtr);
