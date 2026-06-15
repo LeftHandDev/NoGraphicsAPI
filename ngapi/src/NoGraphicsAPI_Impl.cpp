@@ -76,6 +76,10 @@ struct GpuSurface_T
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     std::vector<FORMAT> formats;
     GpuDevice device;
+    // Window framebuffer size (pixels), used as the swapchain's desired extent
+    // on platforms whose surface does not report its own size (Wayland). 0 = unknown.
+    uint32_t fallbackWidth = 0;
+    uint32_t fallbackHeight = 0;
 };
 struct GpuSwapchain_T
 {
@@ -92,6 +96,9 @@ struct GpuSwapchain_T
     // Per-swapchain so two swapchains (or threads) can acquire independently;
     // each swapchain itself is externally synchronized.
     VkFence acquireFence = VK_NULL_HANDLE;
+    // Desired extent when the surface does not report its own size (Wayland).
+    uint32_t fallbackWidth = 0;
+    uint32_t fallbackHeight = 0;
     GpuDevice device;
 };
 #endif // GPU_SURFACE_EXTENSION
@@ -271,6 +278,16 @@ VkBlendFactor gpuFactorToVkFactor(FACTOR factor)
         return VK_BLEND_FACTOR_DST_COLOR;
     case FACTOR_SRC_ALPHA:
         return VK_BLEND_FACTOR_SRC_ALPHA;
+    case FACTOR_ONE_MINUS_SRC_COLOR:
+        return VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
+    case FACTOR_ONE_MINUS_DST_COLOR:
+        return VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR;
+    case FACTOR_ONE_MINUS_SRC_ALPHA:
+        return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    case FACTOR_DST_ALPHA:
+        return VK_BLEND_FACTOR_DST_ALPHA;
+    case FACTOR_ONE_MINUS_DST_ALPHA:
+        return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
     default:
         return VK_BLEND_FACTOR_ONE;
     }
@@ -918,9 +935,12 @@ void* gpuVulkanInstance()
     return vulkanInstance->instance.instance;
 }
 
-GpuSurface gpuCreateSurface(void* vulkanSurface)
+GpuSurface gpuCreateSurface(void* vulkanSurface, uint32_t fallbackWidth, uint32_t fallbackHeight)
 {
-    return new GpuSurface_T{ static_cast<VkSurfaceKHR>(vulkanSurface), {} };
+    auto surface = new GpuSurface_T{ static_cast<VkSurfaceKHR>(vulkanSurface), {} };
+    surface->fallbackWidth = fallbackWidth;
+    surface->fallbackHeight = fallbackHeight;
+    return surface;
 }
 
 void* gpuVulkanSurface(GpuSurface surface)
@@ -2767,10 +2787,18 @@ static void buildSwapchainResources(GpuSwapchain swapchain)
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
-    auto built = vkb::SwapchainBuilder{ vulkanDevice->device, swapchain->surface }
-                     .add_image_usage_flags(VK_IMAGE_USAGE_TRANSFER_DST_BIT)
-                     .set_old_swapchain(swapchain->swapchain)
-                     .build();
+    vkb::SwapchainBuilder builder{ vulkanDevice->device, swapchain->surface };
+    builder.add_image_usage_flags(VK_IMAGE_USAGE_TRANSFER_DST_BIT)
+        .set_old_swapchain(swapchain->swapchain);
+    // When the surface dictates its own size (e.g. X11) vk-bootstrap uses
+    // currentExtent and ignores this; when it does not (e.g. Wayland reports
+    // currentExtent = 0xFFFFFFFF) vk-bootstrap would otherwise fall back to its
+    // 256x256 default, so steer it to the window's framebuffer size instead.
+    if (swapchain->fallbackWidth != 0 && swapchain->fallbackHeight != 0)
+    {
+        builder.set_desired_extent(swapchain->fallbackWidth, swapchain->fallbackHeight);
+    }
+    auto built = builder.build();
     if (!built)
     {
         fprintf(stderr, "NoGraphicsAPI: swapchain creation failed: %s\n", built.error().message().c_str());
@@ -2854,6 +2882,8 @@ GpuSwapchain gpuCreateSwapchain(GpuDevice device, GpuSurface surface, uint32_t i
 
     auto swapchain = new GpuSwapchain_T{};
     swapchain->surface = surface->surface;
+    swapchain->fallbackWidth = surface->fallbackWidth;
+    swapchain->fallbackHeight = surface->fallbackHeight;
     swapchain->presentQueue = vulkanDevice->device.get_queue(vkb::QueueType::present).value();
     swapchain->device = device;
 

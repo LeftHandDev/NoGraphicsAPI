@@ -40,7 +40,7 @@ cmake --build "$BUILD" -j"$(nproc)"
 cd "$BUILD/bin"
 
 status=0
-for t in test_compute test_graphics test_raytracing; do
+for t in test_compute test_graphics test_raytracing test_msdf; do
     echo "==> $t ${MODE_ARGS[*]} ${EXTRA_ARGS[*]}"
     if ! "./$t" "${MODE_ARGS[@]}" "${EXTRA_ARGS[@]}"; then
         status=1
