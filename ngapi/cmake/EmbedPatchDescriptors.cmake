@@ -31,6 +31,7 @@ execute_process(
     COMMAND "${SLANGC}" "${SLANG_SOURCE}"
             -target spirv -stage compute -entry main
             -I "${NGAPI_DIR}/include"
+            -warnings-disable 39001 # Sampler.h aliases the sampler heap binding on purpose
             -o "${SPV}"
     RESULT_VARIABLE SLANGC_RESULT)
 if(NOT SLANGC_RESULT EQUAL 0)

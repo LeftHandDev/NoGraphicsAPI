@@ -1,5 +1,7 @@
 #include "TAA.h"
 
+STATIC_SAMPLER(linearWrap, LINEAR, LINEAR, NEAREST, WRAP, WRAP, WRAP, 1, TRANSPARENT_BLACK, COMPARE_NONE, 0.0, 0.0, LOD_UNBOUNDED)
+
 [numthreads(16, 16, 1)] void main(uint3 threadId : SV_DispatchThreadID, TAAData* data)
 {
     uint width = data->width;
@@ -12,9 +14,10 @@
     float2 texelSize = 1.0 / float2(width, height);
 
     Texture2D<float4> colorTexture = textureHeap[data->srcColor];
+    HwSampler sampler = linearWrap();
 
-    float4 color = colorTexture.SampleLevel(samplerHeap[0], uv, 0);
-    float2 motionVectors = textureHeap[data->srcMotionVectors].SampleLevel(samplerHeap[0], uv, 0).xy;
+    float4 color = sampler.SampleLevel(colorTexture, uv, 0);
+    float2 motionVectors = sampler.SampleLevel(textureHeap[data->srcMotionVectors], uv, 0).xy;
 
     // Sample 3x3 neighborhood to find min/max bounds
     float4 neighborMin = color;
@@ -24,7 +27,7 @@
     {
         for (int x = -1; x <= 1; x++)
         {
-            float4 neighbor = colorTexture.SampleLevel(samplerHeap[0], uv + float2(x, y) * texelSize, 0);
+            float4 neighbor = sampler.SampleLevel(colorTexture, uv + float2(x, y) * texelSize, 0);
             neighborMin = min(neighborMin, neighbor);
             neighborMax = max(neighborMax, neighbor);
         }
@@ -32,7 +35,7 @@
 
     // Reproject UVs using motion vectors (subtract because motion = current - prev, scale by 0.5 for NDC to UV)
     float2 reprojectedUV = uv - motionVectors * 0.5;
-    float4 historyColor = textureHeap[data->srcHistory].SampleLevel(samplerHeap[0], reprojectedUV, 0);
+    float4 historyColor = sampler.SampleLevel(textureHeap[data->srcHistory], reprojectedUV, 0);
 
     // Clamp history to neighborhood bounds
     historyColor = clamp(historyColor, neighborMin, neighborMax);

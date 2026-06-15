@@ -16,6 +16,16 @@ namespace test
 {
     Args parseArgs(int argc, char** argv)
     {
+        // The implementation only requests the validation layer when asked
+        // (it costs ~10us per recorded command); the tests always want it —
+        // validationFailed() is part of every test's pass criteria. parseArgs
+        // runs before gpuCreateInstance in every test, so set it here.
+#ifdef _WIN32
+        _putenv_s("NGAPI_VALIDATION", "1");
+#else
+        setenv("NGAPI_VALIDATION", "1", 1);
+#endif
+
         Args a;
         for (int i = 1; i < argc; i++)
         {
