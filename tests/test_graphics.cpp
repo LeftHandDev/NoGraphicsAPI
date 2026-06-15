@@ -264,6 +264,7 @@ int main(int argc, char** argv)
     int rc = test::finalize(args, "graphics", actual);
 
     allocator.reset();
+    descriptorAllocator.reset();
     stbi_image_free(inputImage);
     gpuDestroyTexture(texture);
     gpuFree(device, texturePtr);

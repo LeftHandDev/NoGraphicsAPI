@@ -599,6 +599,7 @@ int main()
     stbi_image_free(inputImage);
 
     allocator.reset();
+    descriptorAllocator.reset();
 
     gpuDestroyTexture(texture);
     gpuFree(device, texturePtr);

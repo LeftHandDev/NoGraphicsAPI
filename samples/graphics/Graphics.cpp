@@ -315,6 +315,7 @@ int main()
     gpuWaitSemaphore(semaphore, nextFrame - 1);
 
     allocator.reset();
+    descriptorAllocator.reset();
 
     stbi_image_free(inputImage);
     gpuDestroyTexture(texture);
