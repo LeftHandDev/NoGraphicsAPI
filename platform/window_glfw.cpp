@@ -74,7 +74,11 @@ namespace ngapi
     {
         VkSurfaceKHR surface = VK_NULL_HANDLE;
         glfwCreateWindowSurface(static_cast<VkInstance>(gpuVulkanInstance()), window->handle, nullptr, &surface);
-        return gpuCreateSurface(surface);
+        // Pass the framebuffer size so the swapchain sizes correctly where the
+        // surface does not report its own extent (Wayland).
+        int fbWidth = 0, fbHeight = 0;
+        glfwGetFramebufferSize(window->handle, &fbWidth, &fbHeight);
+        return gpuCreateSurface(surface, static_cast<uint32_t>(fbWidth), static_cast<uint32_t>(fbHeight));
     }
 
     void destroySurface(Window* window, GpuSurface surface)

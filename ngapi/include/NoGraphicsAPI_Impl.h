@@ -143,7 +143,15 @@ enum FACTOR
     FACTOR_ONE,
     FACTOR_SRC_COLOR,
     FACTOR_DST_COLOR,
-    FACTOR_SRC_ALPHA /*, ...*/
+    FACTOR_SRC_ALPHA,
+    // One-minus / destination-alpha variants appended after the original set so
+    // existing values keep their ordinals. Needed for ordinary alpha
+    // compositing (e.g. text/UI: SRC_ALPHA, ONE_MINUS_SRC_ALPHA).
+    FACTOR_ONE_MINUS_SRC_COLOR,
+    FACTOR_ONE_MINUS_DST_COLOR,
+    FACTOR_ONE_MINUS_SRC_ALPHA,
+    FACTOR_DST_ALPHA,
+    FACTOR_ONE_MINUS_DST_ALPHA
 };
 enum TOPOLOGY
 {
@@ -412,7 +420,11 @@ struct GpuAccelerationStructureDesc
 
 #ifdef GPU_EXPOSE_INTERNAL
 void* gpuVulkanInstance();
-GpuSurface gpuCreateSurface(void* vulkanSurface);
+// fallbackWidth/Height: the window's framebuffer size in pixels. Used as the
+// swapchain's desired extent when the surface does not report its own size
+// (e.g. Wayland, where currentExtent is 0xFFFFFFFF); ignored otherwise. Pass 0
+// (the default) if unknown — the swapchain then uses the backend default size.
+GpuSurface gpuCreateSurface(void* vulkanSurface, uint32_t fallbackWidth = 0, uint32_t fallbackHeight = 0);
 void* gpuVulkanSurface(GpuSurface surface);
 void gpuDestroySurface(GpuSurface surface);
 #endif // GPU_EXPOSE_INTERNAL

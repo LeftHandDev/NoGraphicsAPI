@@ -92,7 +92,7 @@ endif()
 # ---------------------------------------------------------------------------
 # Shared sample utilities
 # ---------------------------------------------------------------------------
-add_library(ngapi-samples-common STATIC samples/common/Utilities.cpp)
+add_library(ngapi-samples-common STATIC samples/common/Utilities.cpp samples/common/MsdfFont.cpp)
 target_include_directories(ngapi-samples-common PUBLIC samples/common)
 target_link_libraries(ngapi-samples-common
     PUBLIC  ngapi::ngapi glm::glm
@@ -142,6 +142,10 @@ compile_shader(SOURCE samples/common/TextVertex.slang   STAGE vertex   OUTPUT co
     EXTRA_DEPENDS ${COMMON_SHADER_DEPS} "${CMAKE_CURRENT_SOURCE_DIR}/samples/common/Text.h")
 compile_shader(SOURCE samples/common/TextPixel.slang    STAGE fragment OUTPUT common/TextPixel.spv
     EXTRA_DEPENDS ${COMMON_SHADER_DEPS} "${CMAKE_CURRENT_SOURCE_DIR}/samples/common/Text.h")
+compile_shader(SOURCE samples/common/MsdfVertex.slang   STAGE vertex   OUTPUT common/MsdfVertex.spv
+    EXTRA_DEPENDS ${COMMON_SHADER_DEPS} "${CMAKE_CURRENT_SOURCE_DIR}/samples/common/MsdfShared.h")
+compile_shader(SOURCE samples/common/MsdfPixel.slang    STAGE fragment OUTPUT common/MsdfPixel.spv
+    EXTRA_DEPENDS ${COMMON_SHADER_DEPS} "${CMAKE_CURRENT_SOURCE_DIR}/samples/common/MsdfShared.h")
 
 set(RT_SHADER_DEPS ${COMMON_SHADER_DEPS}
     "${CMAKE_CURRENT_SOURCE_DIR}/samples/raytracing/Raytracing.h"
@@ -202,6 +206,7 @@ endfunction()
 add_windowed_sample(compute    samples/compute/Compute.cpp)
 add_windowed_sample(graphics   samples/graphics/Graphics.cpp)
 add_windowed_sample(raytracing samples/raytracing/Raytracing.cpp)
+add_windowed_sample(msdf       samples/msdf/MsdfSample.cpp)
 
 # Headless sample: no window, no shaders/assets.
 add_executable(multiplegpus samples/multiplegpus/MultipleGPUs.cpp)
