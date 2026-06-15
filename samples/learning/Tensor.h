@@ -211,10 +211,6 @@ private:
     Tensor _biases_variance;
 
     uint64_t _steps = 0;
-    const float _adamBeta1 = 0.9;
-    const float _adamBeta2 = 0.999;
-    float _adamBeta1T = 0.f;
-    float _adamBeta2T = 0.f;
 };
 
 class Network : public Module
