@@ -149,3 +149,20 @@ void _relu_backward(uint t: SV_DispatchThreadID, TensorData *data)
     }
     data->z[t] = data->x[t] > 0.0 ? data->y[t] : data->y[t] * data->a;
 }
+
+[numthreads(64, 1, 1)]
+void _adam(uint t: SV_DispatchThreadID, TensorAdamData *data)
+{
+    if (t >= data->n)
+    {
+        return;
+    }
+
+    data->mean[t] = lerp(data->grad[t], data->mean[t], data->b1);
+    data->variance[t] = lerp(data->grad[t] * data->grad[t], data->variance[t], data->b2);
+
+    float mean = data->mean[t] / (1.f - data->b1t);
+    float variance = data->variance[t] / (1.f - data->b2t);
+
+    data->adjustment[t] = mean / (sqrt(variance) + 1e-10);
+}

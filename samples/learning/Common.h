@@ -33,4 +33,17 @@ struct alignas(16) TensorMatMulData
     float* z;   // output
 };
 
+struct alignas(16) TensorAdamData
+{
+    uint64_t n; // number of elements
+    float b1;
+    float b2;
+    float b1t;
+    float b2t;
+    float* grad;       // input
+    float* mean;       // input/output
+    float* variance;   // input/output
+    float* adjustment; // output
+};
+
 #endif

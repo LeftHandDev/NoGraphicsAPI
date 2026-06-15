@@ -30,7 +30,8 @@ public:
 
     operator std::string() const;
 
-    std::vector<float> cpu();
+    std::vector<float> cpu();                          // blocking
+    void cpu(std::function<void(std::vector<float>)>); // non-blocking
 
     bool null() const;
     Shape shape() const;
@@ -39,10 +40,10 @@ public:
     Tensor detach() const;
 
     Tensor repeat(const Tensor&, Shape) const;
-    void copy(const Tensor&) const;
+    void copy(const Tensor&) const; // copy from
     void backward();
 
-    Tensor operator-() const; // element-wise negative
+    Tensor operator-() const; // element-wise negation
 
     Tensor operator+(const Tensor&) const; // element-wise addition
     Tensor operator-(const Tensor&) const; // element-wise subtraction
@@ -76,6 +77,9 @@ public:
     Tensor sech() const;
     Tensor relu(float = 0.f) const;
     Tensor gelu() const;
+
+    // usage: weights = (weights - lr * grad.adam(mean, variance, step));
+    Tensor adam(Tensor& mean, Tensor& variance, uint64_t steps, float b1 = 0.9, float b2 = 0.999);
 
     bool operator==(const Tensor& other) const
     {
@@ -166,8 +170,13 @@ class Layer : public Module
 {
 public:
     Layer(Device* device, unsigned int in, unsigned int out)
-        : _weights(((device->rand({ in, out }) * 2.f - 1.f) * sqrt(1.f / in)).detach()), _biases(device->zeros({ 1, out }))
+        : _weights(((device->rand({ in, out }) * 2.f - 1.f) * sqrt(1.f / in)).detach()),
+          _biases(device->zeros({ 1, out }))
     {
+        _weights_mean = device->zeros({ in, out });
+        _weights_variance = device->zeros({ in, out });
+        _biases_mean = device->zeros({ 1, out });
+        _biases_variance = device->zeros({ 1, out });
     }
 
     virtual Tensor forward(const Tensor& in) override
@@ -186,36 +195,10 @@ public:
 
     virtual void train(float lr) override
     {
-        if (_steps == 0)
-        {
-            _weights_mean = _weights * 0.f;
-            _weights_variance = _weights * 0.f;
-
-            _biases_mean = _biases * 0.f;
-            _biases_variance = _biases * 0.f;
-        }
-
         _steps += 1;
-        _adamBeta1T = pow(_adamBeta1, _steps);
-        _adamBeta2T = pow(_adamBeta2, _steps);
 
-        _weights_mean = lerp(_weights.grad(), _weights_mean, _adamBeta1).detach();
-        _weights_variance = lerp((_weights.grad() * _weights.grad()), _weights_variance, _adamBeta2).detach();
-
-        _biases_mean = lerp(_biases.grad(), _biases_mean, _adamBeta1).detach();
-        _biases_variance = lerp((_biases.grad() * _biases.grad()), _biases_variance, _adamBeta2).detach();
-
-        auto weights_mean = _weights_mean / (1.f - _adamBeta1T);
-        auto weights_variance = _weights_variance / (1.f - _adamBeta2T);
-
-        auto biases_mean = _biases_mean / (1.f - _adamBeta1T);
-        auto biases_variance = _biases_variance / (1.f - _adamBeta2T);
-
-        auto weights_adjustment = lr * (weights_mean / (weights_variance.sqrt() + 1e-10f));
-        auto biases_adjustment = lr * (biases_mean / (biases_variance.sqrt() + 1e-10f));
-
-        _weights = (_weights - weights_adjustment).detach();
-        _biases = (_biases - biases_adjustment).detach();
+        _weights = (_weights - lr * _weights.grad().adam(_weights_mean, _weights_variance, _steps)).detach();
+        _biases = (_biases - lr * _biases.grad().adam(_biases_mean, _biases_variance, _steps)).detach();
     }
 
 private:

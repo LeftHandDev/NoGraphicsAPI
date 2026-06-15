@@ -78,28 +78,29 @@ void learningSample()
         size_t epochs = 100;
         auto y = device->tensor({ gt_flat });
 
+        float noise_ratio = 0.25;
+
         for (size_t i = 0; i < epochs; i++)
         {
-            auto a = (y + (device->rand(y.shape()) * 2.f - 1.f) * 0.1).detach();
-            auto b = (y + (device->rand(y.shape()) * 2.f - 1.f) * 0.1).detach();
-            auto za = autoencoder.forward(a);
-            auto zb = autoencoder.forward(b);
-            auto L = 0.5f * (za.mse(b) + zb.mse(a));
+            auto a = (y + (device->rand(y.shape()) * 2.f - 1.f) * noise_ratio).detach();
+            auto b = (y + (device->rand(y.shape()) * 2.f - 1.f) * noise_ratio).detach();
+            auto z = autoencoder.forward(a);
+            auto L = z.mse(b);
             L.backward();
             autoencoder.train(0.001f);
             device->submit();
-            std::cout << /*"MSE " << L << "\t" <<*/ i << "/" << epochs << "\t" << std::endl;
+            L.cpu([&](std::vector<float> data)
+                  { std::cout << "MSE " << data.front() << "\t" << i << "/" << epochs << "\t" << std::endl; });
             // stbi_write_hdr("output.exr", 256, 256, 3, za.cpu().data());
         }
 
         std::cout << std::endl;
 
-        auto a = y + (device->rand(y.shape()) * 2.f - 1.f) * 0.1;
+        auto a = y + (device->rand(y.shape()) * 2.f - 1.f) * noise_ratio;
         auto z = autoencoder.forward(a);
-        auto hdr = z.cpu();
-        stbi_write_hdr("input.exr", 256, 256, 3, a.cpu().data());
-        stbi_write_hdr("output.exr", 256, 256, 3, hdr.data());
-        stbi_write_hdr("gt.exr", 256, 256, 3, gt_flat.data());
+        stbi_write_hdr("input.exr", 256, 256, 3, a.pow(2.2).cpu().data());
+        stbi_write_hdr("output.exr", 256, 256, 3, z.pow(2.2).cpu().data());
+        stbi_write_hdr("gt.exr", 256, 256, 3, y.pow(2.2).cpu().data());
     }
     catch (const std::exception& e)
     {

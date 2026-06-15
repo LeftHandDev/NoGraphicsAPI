@@ -159,7 +159,7 @@ public:
             alloc.gpu = reinterpret_cast<T*>(gpu + offset);
         }
 
-        alloc.size = size;
+        alloc.size = n;
         offset = align(offset + n, GPU_DEFAULT_ALIGNMENT);
         return alloc;
     }
@@ -168,11 +168,11 @@ public:
     void free(Allocation<T> alloc)
     {
         char* ptr = reinterpret_cast<char*>(alloc.gpu);
-        size_t off = ptr - gpu;
-        off = align(offset + alloc.size, GPU_DEFAULT_ALIGNMENT);
-        if (off == offset)
+        size_t start = ptr - gpu;
+        size_t end = align(start + alloc.size, GPU_DEFAULT_ALIGNMENT);
+        if (end == offset)
         {
-            offset = ptr - gpu;
+            offset = start;
         }
     }
 
