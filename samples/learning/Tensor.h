@@ -34,10 +34,14 @@ public:
     void cpu(std::function<void(std::vector<float>)>); // non-blocking
 
     bool null() const;
+    void zero() const; // zero the grad
+
     Shape shape() const;
+    uint64_t numel() const;
+
     Tensor grad() const;
     Tensor reshape(Shape) const;
-    Tensor detach() const;
+    Tensor detach() const; // create a clone detached from the graph
 
     Tensor repeat(const Tensor&, Shape) const;
     void copy(const Tensor&) const; // copy from
@@ -163,20 +167,16 @@ public:
     {
     }
     virtual Tensor forward(const Tensor& in) = 0;
-    virtual void train(float lr) = 0;
+    virtual std::vector<Tensor> parameters() = 0;
 };
 
-class Layer : public Module
+class Linear : public Module
 {
 public:
-    Layer(Device* device, unsigned int in, unsigned int out)
+    Linear(Device* device, unsigned int in, unsigned int out)
         : _weights(((device->rand({ in, out }) * 2.f - 1.f) * sqrt(1.f / in)).detach()),
           _biases(device->zeros({ 1, out }))
     {
-        _weights_mean = device->zeros({ in, out });
-        _weights_variance = device->zeros({ in, out });
-        _biases_mean = device->zeros({ 1, out });
-        _biases_variance = device->zeros({ 1, out });
     }
 
     virtual Tensor forward(const Tensor& in) override
@@ -193,30 +193,20 @@ public:
         return in.matmul(_weights) + _biases;
     }
 
-    virtual void train(float lr) override
+    virtual std::vector<Tensor> parameters() override
     {
-        _steps += 1;
-
-        _weights = (_weights - lr * _weights.grad().adam(_weights_mean, _weights_variance, _steps)).detach();
-        _biases = (_biases - lr * _biases.grad().adam(_biases_mean, _biases_variance, _steps)).detach();
+        return { _weights, _biases };
     }
 
 private:
     Tensor _weights;
     Tensor _biases;
-
-    Tensor _weights_mean;
-    Tensor _weights_variance;
-    Tensor _biases_mean;
-    Tensor _biases_variance;
-
-    uint64_t _steps = 0;
 };
 
-class Network : public Module
+class Sequential : public Module
 {
 public:
-    Network(Device* device, Shape layers)
+    Sequential(Device* device, Shape layers)
     {
         for (size_t i = 1; i < layers.size(); i++)
         {
@@ -234,16 +224,93 @@ public:
         return out;
     }
 
-    virtual void train(float lr) override
+    virtual std::vector<Tensor> parameters() override
     {
-        for (auto& layer : _layers)
+        std::vector<Tensor> params;
+        for (auto layer : _layers)
         {
-            layer.train(lr);
+            for (auto& tensor : layer.parameters())
+            {
+                params.push_back(tensor);
+            }
+        }
+        return params;
+    }
+
+private:
+    std::vector<Linear> _layers;
+};
+
+class Optimizer
+{
+public:
+    Optimizer(std::vector<Tensor> parameters) : _parameters(parameters)
+    {
+    }
+
+    ~Optimizer()
+    {
+    }
+
+    virtual void zero_grad()
+    {
+        for (auto p : _parameters)
+        {
+            p.zero();
+        }
+    }
+
+    virtual void step() = 0;
+
+protected:
+    std::vector<Tensor> _parameters;
+};
+
+class SGD : public Optimizer
+{
+public:
+    SGD(std::vector<Tensor> parameters, float lr) : Optimizer(parameters), _lr(lr)
+    {
+    }
+
+    virtual void step() override
+    {
+        for (auto& p : _parameters)
+        {
+            p.copy(p - _lr * p.grad());
         }
     }
 
 private:
-    std::vector<Layer> _layers;
+    float _lr;
+};
+
+class Adam : public Optimizer
+{
+public:
+    Adam(std::vector<Tensor> parameters, float lr) : Optimizer(parameters), _lr(lr)
+    {
+        for (auto p : parameters)
+        {
+            _mean.push_back(p * 0.f);
+            _variance.push_back(p * 0.f);
+        }
+    }
+
+    virtual void step() override
+    {
+        ++_steps;
+        for (size_t i = 0; i < _parameters.size(); i++)
+        {
+            _parameters[i].copy(_parameters[i] - _lr * _parameters[i].grad().adam(_mean[i], _variance[i], _steps));
+        }
+    }
+
+private:
+    float _lr;
+    std::vector<Tensor> _mean;
+    std::vector<Tensor> _variance;
+    uint64_t _steps = 0;
 };
 
 #endif

@@ -413,9 +413,19 @@ bool Tensor::null() const
     return _shape.empty();
 }
 
+void Tensor::zero() const
+{
+    _self->grad = {};
+}
+
 Shape Tensor::shape() const
 {
     return _shape;
+}
+
+uint64_t Tensor::numel() const
+{
+    return flatten(_shape);
 }
 
 Tensor Tensor::grad() const

@@ -34,7 +34,35 @@ void learningSample()
         stbi_image_free(ptr);
 
         const unsigned int N = 256 * 256 * 3;
-        Network autoencoder(device, { N, 256, N });
+
+        class Autoencoder : public Module
+        {
+        public:
+            Autoencoder(Device* device)
+                : encoder(device, { N, 256 }), decoder(device, { 256, N })
+            {
+            }
+
+            virtual Tensor forward(const Tensor& tensor) override
+            {
+                return decoder.forward(encoder.forward(tensor).gelu());
+            }
+
+            virtual std::vector<Tensor> parameters() override
+            {
+                std::vector<Tensor> enc = encoder.parameters();
+                std::vector<Tensor> dec = decoder.parameters();
+                enc.insert(enc.end(), dec.begin(), dec.end());
+                return enc;
+            }
+
+        private:
+            Sequential encoder;
+            Sequential decoder;
+
+        } autoencoder(device);
+
+        Adam optimizer(autoencoder.parameters(), 0.001f);
 
         size_t steps = 100;
         auto y = device->tensor({ gt });
@@ -43,12 +71,13 @@ void learningSample()
 
         for (size_t i = 0; i < steps; i++)
         {
-            auto a = (y + (device->rand(y.shape()) * 2.f - 1.f) * noise_ratio).detach();
-            auto b = (y + (device->rand(y.shape()) * 2.f - 1.f) * noise_ratio).detach();
-            auto z = autoencoder.forward(a);
-            auto L = z.mse(b);
+            optimizer.zero_grad();
+            auto a = y + (device->rand(y.shape()) * 2.f - 1.f) * noise_ratio;
+            auto b = y + (device->rand(y.shape()) * 2.f - 1.f) * noise_ratio;
+            auto z = autoencoder.forward(a.detach());
+            auto L = z.mse(b.detach());
             L.backward();
-            autoencoder.train(0.001f);
+            optimizer.step();
             device->submit();
             L.cpu([&](std::vector<float> data)
                   { std::cout << "MSE " << data.front() << "\t" << i << "/" << steps << "\t" << std::endl; });
