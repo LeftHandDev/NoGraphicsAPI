@@ -68,9 +68,18 @@ public:
 
     // --- accessors used by the renderer -------------------------------------
     const Glyph* glyph(uint32_t codepoint) const;
-    uint32_t atlasIndex() const { return heapIndex; }
-    float distanceRange() const { return pxRange; }
-    float2 atlasSize() const { return { static_cast<float>(atlasW), static_cast<float>(atlasH) }; }
+    uint32_t atlasIndex() const
+    {
+        return heapIndex;
+    }
+    float distanceRange() const
+    {
+        return pxRange;
+    }
+    float2 atlasSize() const
+    {
+        return { static_cast<float>(atlasW), static_cast<float>(atlasH) };
+    }
 
 private:
     GpuDevice device;
@@ -79,7 +88,7 @@ private:
     uint32_t heapIndex = 0;
 
     int atlasW = 0, atlasH = 0;
-    float pxRange = 0.0f;          // distanceRange, atlas texels
+    float pxRange = 0.0f;           // distanceRange, atlas texels
     float metricsLineHeight = 0.0f; // em
     float metricsAscender = 0.0f;   // em
     float metricsDescender = 0.0f;  // em (negative)
@@ -124,17 +133,22 @@ public:
     void render(GpuCommandBuffer cmd, GpuTexture target, uint32_t targetW, uint32_t targetH,
                 LOAD_OP loadOp = LOAD_OP_LOAD);
 
-    uint32_t glyphCount() const { return count; }
+    uint32_t glyphCount() const
+    {
+        return count;
+    }
 
 private:
     GpuDevice device;
     GpuPipeline pipeline = nullptr;
     GpuDepthStencilState depthStencilState = nullptr;
 
-    // Texture heap holding the atlas descriptors. Allocated via
-    // gpuAllocTextureHeap so it satisfies the descriptor-buffer usage and
+    // Texture heap holding the atlas descriptors. Allocated with
+    // MEMORY_DESCRIPTOR so it satisfies the descriptor-buffer usage and
     // alignment that gpuSetActiveTextureHeapPtr requires on direct-bind devices.
-    GpuTextureHeap heap = {};
+    void* heapAlloc = nullptr;
+    GpuTextureDescriptor* heapCpu = nullptr;
+    void* heapGpu = nullptr;
     uint32_t heapCapacity = 0;
     uint32_t nextHeapSlot = 0;
 

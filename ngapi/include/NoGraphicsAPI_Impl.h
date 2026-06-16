@@ -351,12 +351,6 @@ struct GpuTextureDescriptor
 {
     uint64_t data[4];
 };
-struct GpuTextureHeap
-{
-    GpuTextureDescriptor* cpu; // host-visible descriptor slots; write view descriptors here
-    void* gpu;                 // device pointer to pass to gpuSetActiveTextureHeapPtr
-    uint32_t capacity;         // number of descriptor slots
-};
 
 #ifdef GPU_RAY_TRACING_EXTENSION
 struct GpuAccelerationStructureSizes
@@ -459,18 +453,6 @@ GpuTexture gpuCreateTexture(GpuDevice device, GpuTextureDesc desc, void* ptrGpu)
 void gpuDestroyTexture(GpuTexture texture);
 GpuTextureDescriptor gpuTextureViewDescriptor(GpuTexture texture, GpuViewDesc desc);
 GpuTextureDescriptor gpuRWTextureViewDescriptor(GpuTexture texture, GpuViewDesc desc);
-
-// Allocates a texture descriptor heap for gpuSetActiveTextureHeapPtr.
-//
-// Always use this (never a raw gpuMalloc) for buffers passed to
-// gpuSetActiveTextureHeapPtr. The heap is allocated with MEMORY_DESCRIPTOR and
-// the device's descriptorBufferOffsetAlignment. Both are mandatory on devices
-// that bind the heap directly as a Vulkan descriptor buffer (sampled-image
-// descriptor size == 32 B, e.g. RADV GFX12): a plain gpuMalloc heap omits the
-// descriptor-buffer usage bit and alignment and causes a GPUVM fault /
-// device-lost there, with no validation message.
-GpuTextureHeap gpuAllocTextureHeap(GpuDevice device, uint32_t descriptorCount);
-void gpuFreeTextureHeap(GpuDevice device, GpuTextureHeap heap);
 
 // Pipelines
 GpuPipeline gpuCreateComputePipeline(GpuDevice device, ByteSpan computeIR, const char* entry = "main");

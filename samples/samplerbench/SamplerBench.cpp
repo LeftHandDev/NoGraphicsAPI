@@ -104,6 +104,7 @@ int main()
     std::printf("device: %s (%s)\n\n", desc.name, desc.discrete ? "discrete" : "integrated");
 
     LinearAllocator allocator(device);
+    LinearAllocator<MEMORY_DESCRIPTOR> descriptorAllocator(device);
     auto queue = gpuCreateQueue(device);
 
     auto benchIR = loadIR("shaders/samplerbench/Bench.spv");
@@ -116,7 +117,7 @@ int main()
     const uint32_t width = 1024, height = 1024;
     const size_t textureBytes = static_cast<size_t>(width) * height * 4;
 
-    auto textureHeap = gpuAllocTextureHeap(device, 16);
+    auto textureHeap = descriptorAllocator.allocate<GpuTextureDescriptor>(16);
 
     auto upload = allocator.allocate<uint32_t>(width * height);
     for (uint32_t i = 0; i < width * height; i++)
@@ -209,7 +210,7 @@ int main()
     } // timer scope
 
     allocator.reset();
-    gpuFreeTextureHeap(device, textureHeap);
+    descriptorAllocator.reset();
     gpuDestroyTexture(srcTexture);
     gpuDestroyTexture(dstTexture);
     gpuFree(device, srcPtr);

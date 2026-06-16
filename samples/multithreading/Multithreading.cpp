@@ -71,6 +71,7 @@ int main(int argc, char** argv)
     // Shared, set up once on the main thread, read-only afterwards: the IR
     // bytes, a 1x1 white texture and the descriptor heap that points at it.
     LinearAllocator mainAllocator(device);
+    LinearAllocator<MEMORY_DESCRIPTOR> descriptorAllocator(device);
     auto mainQueue = gpuCreateQueue(device);
 
     auto ir = loadIR("shaders/multithreading/Multithreading.spv");
@@ -88,10 +89,10 @@ int main(int argc, char** argv)
     auto upload = mainAllocator.allocate<uint32_t>(1);
     upload.cpu[0] = 0xffffffffu;
 
-    // Texture heaps must be allocated via gpuAllocTextureHeap (MEMORY_DESCRIPTOR
-    // + descriptor-buffer alignment); a MEMORY_DEFAULT heap from mainAllocator
-    // faults on devices that bind the heap directly (descriptor size == 32 B).
-    auto textureHeap = gpuAllocTextureHeap(device, 16);
+    // Texture heaps must be allocated with MEMORY_DESCRIPTOR (descriptor-buffer
+    // usage + alignment); a MEMORY_DEFAULT heap faults on devices that bind the
+    // heap directly (descriptor size == 32 B).
+    auto textureHeap = descriptorAllocator.allocate<GpuTextureDescriptor>(16);
     textureHeap.cpu[0] = gpuTextureViewDescriptor(whiteTexture, GpuViewDesc{ .format = FORMAT_RGBA8_UNORM });
 
     {
@@ -266,7 +267,7 @@ int main(int argc, char** argv)
     gpuDestroySemaphore(scalingSemaphore);
     gpuFreePipeline(pipeline);
     mainAllocator.reset();
-    gpuFreeTextureHeap(device, textureHeap);
+    descriptorAllocator.reset();
     gpuDestroyTexture(whiteTexture);
     gpuFree(device, whitePtr);
     gpuDestroyQueue(mainQueue);

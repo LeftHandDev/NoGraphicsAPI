@@ -1126,6 +1126,11 @@ void* gpuMallocHidden(VulkanDevice* vulkanDevice, size_t bytes, size_t align, ME
             usage |= VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
         }
 
+        if (sampler || memory == MEMORY_DESCRIPTOR)
+        {
+            align = std::max<size_t>(align, vulkanDevice->descriptorBufferProperties.descriptorBufferOffsetAlignment);
+        }
+
         auto properties =
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
@@ -1177,27 +1182,6 @@ void* gpuMalloc(GpuDevice device, size_t bytes, size_t align, MEMORY memory)
 {
     VulkanDevice* vulkanDevice = device->vulkanDevice;
     return gpuMallocHidden(vulkanDevice, bytes, align, memory);
-}
-
-GpuTextureHeap gpuAllocTextureHeap(GpuDevice device, uint32_t descriptorCount)
-{
-    VulkanDevice* vulkanDevice = device->vulkanDevice;
-    // MEMORY_DESCRIPTOR sets VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
-    // descriptorBufferOffsetAlignment is required when the heap is bound directly
-    // as a descriptor buffer. Both are needed for gpuSetActiveTextureHeapPtr.
-    size_t align = vulkanDevice->descriptorBufferProperties.descriptorBufferOffsetAlignment;
-    void* cpu = gpuMalloc(device, sizeof(GpuTextureDescriptor) * descriptorCount, align, MEMORY_DESCRIPTOR);
-
-    GpuTextureHeap heap = {};
-    heap.cpu = static_cast<GpuTextureDescriptor*>(cpu);
-    heap.gpu = gpuHostToDevicePointer(device, cpu);
-    heap.capacity = descriptorCount;
-    return heap;
-}
-
-void gpuFreeTextureHeap(GpuDevice device, GpuTextureHeap heap)
-{
-    gpuFree(device, heap.cpu);
 }
 
 void gpuFree(GpuDevice device, void* ptr)
@@ -2246,15 +2230,16 @@ void gpuSetActiveTextureHeapPtr(GpuCommandBuffer cb, void* ptrGpu)
     {
         // Direct-bind path: the user's heap is bound as a Vulkan descriptor
         // buffer, so it must have been allocated with descriptor-buffer usage and
-        // alignment (i.e. via gpuAllocTextureHeap / MEMORY_DESCRIPTOR). A plain
-        // gpuMalloc heap mis-derives the descriptor-buffer base address and causes
-        // a GPUVM fault / device-lost with no validation message.
+        // alignment (i.e. with MEMORY_DESCRIPTOR). A plain MEMORY_DEFAULT heap
+        // mis-derives the descriptor-buffer base address and causes a GPUVM fault
+        // / device-lost with no validation message. MEMORY_DESCRIPTOR guarantees
+        // both the usage bit and descriptorBufferOffsetAlignment.
         assert((alloc.usage & VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT) &&
                "texture heap passed to gpuSetActiveTextureHeapPtr was not allocated "
-               "with MEMORY_DESCRIPTOR (use gpuAllocTextureHeap)");
+               "with MEMORY_DESCRIPTOR");
         assert((address % vulkanDevice->descriptorBufferProperties.descriptorBufferOffsetAlignment) == 0 &&
                "texture heap address does not meet descriptorBufferOffsetAlignment "
-               "(use gpuAllocTextureHeap)");
+               "(allocate with MEMORY_DESCRIPTOR)");
     }
 
     VkDescriptorBufferBindingInfoEXT bufferBindingInfo[3] = {};
