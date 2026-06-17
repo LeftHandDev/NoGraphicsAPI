@@ -8,29 +8,29 @@ struct alignas(16) TensorData
     uint64_t n; // number of elements in x and z
     uint64_t m; // number of elements in y (m <= n)
     float a;    // leaky relu alpha
-    float* x;   // input
-    float* y;   // input (grad in _relu_backard)
-    float* z;   // output
+    uint8_t* x; // input
+    uint8_t* y; // input (grad in _relu_backard)
+    uint8_t* z; // output
 };
 
 struct alignas(16) TensorTransposeData
 {
     uint64_t n; // number of elements in x and y
-    uint64_t r; // number of rows
-    uint64_t c; // number of columns
-    float* x;   // input
-    float* y;   // output
+    uint r;     // number of rows
+    uint c;     // number of columns
+    uint8_t* x; // input
+    uint8_t* y; // output
 };
 
 struct alignas(16) TensorMatMulData
 {
     uint64_t n; // number of elements in z
-    uint64_t a; // number of rows in x
-    uint64_t b; // number of columns in x, number of rows in y
-    uint64_t c; // number of columns in y
-    float* x;   // input
-    float* y;   // input
-    float* z;   // output
+    uint a;     // number of rows in x
+    uint b;     // number of columns in x, number of rows in y
+    uint c;     // number of columns in y
+    uint8_t* x; // input
+    uint8_t* y; // input
+    uint8_t* z; // output
 };
 
 struct alignas(16) TensorAdamData
@@ -40,10 +40,10 @@ struct alignas(16) TensorAdamData
     float b2;
     float b1t;
     float b2t;
-    float* grad;       // input
-    float* mean;       // input/output
-    float* variance;   // input/output
-    float* adjustment; // output
+    uint8_t* grad;       // input
+    uint8_t* mean;       // input/output
+    uint8_t* variance;   // input/output
+    uint8_t* adjustment; // output
 };
 
 #endif

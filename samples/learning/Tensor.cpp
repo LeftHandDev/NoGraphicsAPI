@@ -78,20 +78,19 @@ public:
         }
 
         auto tensorIR = loadIR("shaders/learning/Tensor.spv");
-        pipelines["add"] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_add");
-        pipelines["sub"] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_sub");
-        pipelines["mul"] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_mul");
-        pipelines["div"] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_div");
-        pipelines["dot"] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_dot");
-        pipelines["mT"] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_mT");
-        pipelines["matmul"] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_matmul");
-        pipelines["pow"] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_pow");
-        pipelines["log"] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_log");
-        pipelines["cosh"] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_cosh");
-        pipelines["tanh"] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_tanh");
-        pipelines["relu"] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_relu");
-        pipelines["relu_backward"] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_relu_backward");
-        pipelines["adam"] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_adam");
+        for (auto op : { "add", "sub", "mul", "div", "dot", "mT", "matmul",
+                         "pow", "log", "cosh", "tanh", "relu", "relu_backward", "gelu", "gelu_backward",
+                         "adam" })
+        {
+            std::string name = op;
+            pipelines[name][Tensor::Type::float32] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), ("_" + name + "_f32").c_str());
+            pipelines[name][Tensor::Type::float16] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), ("_" + name + "_f16").c_str());
+        }
+        // Cooperative-matrix matmul is fp16 input / fp32 accumulate only.
+        pipelines["matmul_wmma"][Tensor::Type::float16] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_matmul_wmma");
+        // Type-conversion kernels, keyed by destination type.
+        pipelines["cast"][Tensor::Type::float32] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_fp32_fp16");
+        pipelines["cast"][Tensor::Type::float16] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_fp16_fp32");
     }
 
     ~Device_impl()
@@ -111,9 +110,12 @@ public:
 
         gpuDestroyQueue(queue);
 
-        for (auto [entry, pipeline] : pipelines)
+        for (auto& [entry, variants] : pipelines)
         {
-            gpuFreePipeline(pipeline);
+            for (auto& [type, pipeline] : variants)
+            {
+                gpuFreePipeline(pipeline);
+            }
         }
 
         auto iter = std::remove(devices.begin(), devices.end(), reinterpret_cast<Device*>(this));
@@ -124,12 +126,12 @@ public:
         gpuDestroyDevice(device);
     }
 
-    virtual Tensor tensor(std::vector<float> data, Shape shape = {}) override
+    virtual Tensor tensor(std::vector<float> data, Shape shape = {}, Tensor::Type type = Tensor::Type::float32) override
     {
-        return Tensor(this, data, {}, shape);
+        return Tensor(this, data, {}, shape, type);
     }
 
-    virtual Tensor rand(Shape shape) override
+    virtual Tensor rand(Shape shape, Tensor::Type type = Tensor::Type::float32) override
     {
         std::random_device rd;
         std::mt19937 gen(rd());
@@ -141,19 +143,24 @@ public:
             data[i] = dis(gen);
         }
 
+        if (type == Tensor::Type::float16)
+        {
+            return Tensor(this, data, {}, shape).float16();
+        }
+
         return Tensor(this, data, {}, shape);
     }
 
-    virtual Tensor zeros(Shape shape) override
+    virtual Tensor zeros(Shape shape, Tensor::Type type = Tensor::Type::float32) override
     {
         std::vector<float> data(flatten(shape), 0.f);
-        return Tensor(this, data, {}, shape);
+        return Tensor(this, data, {}, shape, type);
     }
 
-    virtual Tensor ones(Shape shape) override
+    virtual Tensor ones(Shape shape, Tensor::Type type = Tensor::Type::float32) override
     {
         std::vector<float> data(flatten(shape), 1.f);
-        return Tensor(this, data, {}, shape);
+        return Tensor(this, data, {}, shape, type);
     }
 
     virtual Tensor repeat(float x, Shape shape) override
@@ -200,9 +207,9 @@ public:
         return readback_allocator[ring()]->allocate<float>(size);
     }
 
-    Allocation<float> floats(size_t size)
+    Allocation<uint8_t> alloc(size_t size, Tensor::Type type)
     {
-        return tensor_allocator->allocate<float>(size);
+        return tensor_allocator->allocate<uint8_t>(size * (type == Tensor::Type::float16 ? sizeof(short) : sizeof(float)));
     }
 
     template <typename T>
@@ -304,7 +311,7 @@ public:
         }
     }
 
-    void free(Allocation<float> allocation)
+    void free(Allocation<uint8_t> allocation)
     {
         pending_free[frame].push_back(allocation);
     }
@@ -317,8 +324,8 @@ public:
     TensorAllocator* tensor_allocator = {};
     StructAllocator* struct_allocator[FRAMES_IN_FLIGHT] = {};
     ReadbackAllocator* readback_allocator[FRAMES_IN_FLIGHT] = {};
-    std::map<uint64_t, std::vector<Allocation<float>>> pending_free;
-    std::map<std::string, GpuPipeline> pipelines;
+    std::map<uint64_t, std::vector<Allocation<uint8_t>>> pending_free;
+    std::map<std::string, std::map<Tensor::Type, GpuPipeline>> pipelines;
     std::map<uint64_t, std::vector<std::pair<Allocation<float>, std::function<void(std::vector<float>)>>>> cpu_callbacks;
 };
 
@@ -333,7 +340,7 @@ public:
         }
     }
     Device_impl* _device = nullptr;
-    Allocation<float> _allocation;
+    Allocation<uint8_t> _allocation;
     bool _slice = false;
     Tensor grad;
     std::vector<Tensor> _prev;
@@ -370,17 +377,19 @@ Tensor::Tensor(Tensor&& other) noexcept
 {
     _shape = std::move(other._shape);
     _self = std::move(other._self);
+    _type = other._type;
 }
 
 Tensor& Tensor::operator=(Tensor&& other) noexcept
 {
     _shape = std::move(other._shape);
     _self = std::move(other._self);
+    _type = other._type;
     return *this;
 }
 
-Tensor::Tensor(Device_impl* device, std::vector<float> data, std::vector<Tensor> prev, Shape shape, bool slice)
-    : _shape(shape)
+Tensor::Tensor(Device_impl* device, std::vector<float> data, std::vector<Tensor> prev, Shape shape, Type type, bool slice)
+    : _shape(shape), _type(Type::float32)
 {
     if (_shape.empty())
     {
@@ -395,14 +404,19 @@ Tensor::Tensor(Device_impl* device, std::vector<float> data, std::vector<Tensor>
 
     _self = std::make_shared<Tensor_impl>();
     _self->_device = device;
-    _self->_allocation = _self->_device->floats(data.size());
+    _self->_allocation = _self->_device->alloc(data.size(), _type);
     _self->_slice = slice;
     _self->_prev = std::move(prev);
-    memcpy(_self->_allocation.cpu, data.data(), data.size() * sizeof(float));
+    memcpy(_self->_allocation.cpu, data.data(), _self->_allocation.size);
+
+    if (type == Type::float16)
+    {
+        *this = float16();
+    }
 }
 
-Tensor::Tensor(Device_impl* device, Allocation<float> allocation, std::vector<Tensor> prev, Shape shape, bool slice)
-    : _shape(shape)
+Tensor::Tensor(Device_impl* device, Allocation<uint8_t> allocation, std::vector<Tensor> prev, Shape shape, Type type, bool slice)
+    : _shape(shape), _type(type)
 {
     _self = std::make_shared<Tensor_impl>(device, allocation, slice);
     _self->_prev = std::move(prev);
@@ -462,6 +476,11 @@ std::string to_string(Allocation<float> readback, Shape shape, uint64_t offset =
 
 Tensor::operator std::string() const
 {
+    if (_type == Type::float16)
+    {
+        return std::string(float32());
+    }
+
     auto size = flatten(_shape);
     auto readback = _self->_device->readback(size);
     auto cmd = _self->_device->record();
@@ -475,6 +494,11 @@ Tensor::operator std::string() const
 
 std::vector<float> Tensor::cpu()
 {
+    if (_type == Type::float16)
+    {
+        return float32().cpu();
+    }
+
     auto size = flatten(_shape);
     auto readback = _self->_device->readback(size);
     auto cmd = _self->_device->record();
@@ -490,6 +514,12 @@ std::vector<float> Tensor::cpu()
 
 void Tensor::cpu(std::function<void(std::vector<float>)> cb)
 {
+    if (_type == Type::float16)
+    {
+        float32().cpu(cb);
+        return;
+    }
+
     auto size = flatten(_shape);
     auto readback = _self->_device->readback(size);
     auto cmd = _self->_device->record();
@@ -529,7 +559,7 @@ Tensor Tensor::operator+(const Tensor& other) const
     }
 
     auto size = flatten(_shape);
-    auto allocation = _self->_device->floats(size);
+    auto allocation = _self->_device->alloc(size, _type);
 
     auto tensor_data = _self->_device->struct_data<TensorData>();
     tensor_data.cpu->n = size;
@@ -539,11 +569,11 @@ Tensor Tensor::operator+(const Tensor& other) const
     tensor_data.cpu->z = allocation.gpu;
 
     auto cmd = _self->_device->record();
-    gpuSetPipeline(cmd, _self->_device->pipelines["add"]);
+    gpuSetPipeline(cmd, _self->_device->pipelines["add"][_type]);
     _self->_device->barrier(STAGE_COMPUTE, { *this, other });
     gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
 
-    auto out = Tensor(_self->_device, allocation, { *this, other }, _shape);
+    auto out = Tensor(_self->_device, allocation, { *this, other }, _shape, _type);
 
     tensors_pending_writes[STAGE_COMPUTE].insert(out);
 
@@ -584,6 +614,11 @@ Tensor Tensor::operator-(const Tensor& other) const
         return *this;
     }
 
+    if (_type != other._type)
+    {
+        throw std::runtime_error("Implicit type conversion not yet supported");
+    }
+
     uint broadcast = 1;
     if (_shape != other._shape)
     {
@@ -602,7 +637,7 @@ Tensor Tensor::operator-(const Tensor& other) const
     }
 
     auto size = flatten(_shape);
-    auto allocation = _self->_device->floats(size);
+    auto allocation = _self->_device->alloc(size, _type);
 
     auto tensor_data = _self->_device->struct_data<TensorData>();
     tensor_data.cpu->n = size;
@@ -612,11 +647,11 @@ Tensor Tensor::operator-(const Tensor& other) const
     tensor_data.cpu->z = allocation.gpu;
 
     auto cmd = _self->_device->record();
-    gpuSetPipeline(cmd, _self->_device->pipelines["sub"]);
+    gpuSetPipeline(cmd, _self->_device->pipelines["sub"][_type]);
     _self->_device->barrier(STAGE_COMPUTE, { *this, other });
     gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
 
-    auto out = Tensor(_self->_device, allocation, { *this, other }, _shape);
+    auto out = Tensor(_self->_device, allocation, { *this, other }, _shape, _type);
 
     tensors_pending_writes[STAGE_COMPUTE].insert(out);
 
@@ -642,6 +677,11 @@ Tensor Tensor::operator-(const Tensor& other) const
 
 Tensor Tensor::operator*(const Tensor& other) const
 {
+    if (_type != other._type)
+    {
+        throw std::runtime_error("Implicit type conversion not yet supported");
+    }
+
     uint broadcast = 1;
     if (_shape != other._shape)
     {
@@ -660,7 +700,7 @@ Tensor Tensor::operator*(const Tensor& other) const
     }
 
     auto size = flatten(_shape);
-    auto allocation = _self->_device->floats(size);
+    auto allocation = _self->_device->alloc(size, _type);
 
     auto tensor_data = _self->_device->struct_data<TensorData>();
     tensor_data.cpu->n = size;
@@ -670,11 +710,11 @@ Tensor Tensor::operator*(const Tensor& other) const
     tensor_data.cpu->z = allocation.gpu;
 
     auto cmd = _self->_device->record();
-    gpuSetPipeline(cmd, _self->_device->pipelines["mul"]);
+    gpuSetPipeline(cmd, _self->_device->pipelines["mul"][_type]);
     _self->_device->barrier(STAGE_COMPUTE, { *this, other });
     gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
 
-    auto out = Tensor(_self->_device, allocation, { *this, other }, _shape);
+    auto out = Tensor(_self->_device, allocation, { *this, other }, _shape, _type);
 
     tensors_pending_writes[STAGE_COMPUTE].insert(out);
 
@@ -689,6 +729,11 @@ Tensor Tensor::operator*(const Tensor& other) const
 
 Tensor Tensor::operator/(const Tensor& other) const
 {
+    if (_type != other._type)
+    {
+        throw std::runtime_error("Implicit type conversion not yet supported");
+    }
+
     uint broadcast = 1;
     if (_shape != other._shape)
     {
@@ -707,7 +752,7 @@ Tensor Tensor::operator/(const Tensor& other) const
     }
 
     auto size = flatten(_shape);
-    auto allocation = _self->_device->floats(size);
+    auto allocation = _self->_device->alloc(size, _type);
 
     auto tensor_data = _self->_device->struct_data<TensorData>();
     tensor_data.cpu->n = size;
@@ -717,11 +762,11 @@ Tensor Tensor::operator/(const Tensor& other) const
     tensor_data.cpu->z = allocation.gpu;
 
     auto cmd = _self->_device->record();
-    gpuSetPipeline(cmd, _self->_device->pipelines["div"]);
+    gpuSetPipeline(cmd, _self->_device->pipelines["div"][_type]);
     _self->_device->barrier(STAGE_COMPUTE, { *this, other });
     gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
 
-    auto out = Tensor(_self->_device, allocation, { *this, other }, _shape);
+    auto out = Tensor(_self->_device, allocation, { *this, other }, _shape, _type);
 
     tensors_pending_writes[STAGE_COMPUTE].insert(out);
 
@@ -748,22 +793,22 @@ Tensor Tensor::operator/(const Tensor& other) const
 
 Tensor Tensor::operator+(float x) const
 {
-    return *this + _self->_device->tensor({ x });
+    return *this + _self->_device->tensor({ x }, {}, _type);
 }
 
 Tensor Tensor::operator-(float x) const
 {
-    return *this - _self->_device->tensor({ x });
+    return *this - _self->_device->tensor({ x }, {}, _type);
 }
 
 Tensor Tensor::operator*(float x) const
 {
-    return *this * _self->_device->tensor({ x });
+    return *this * _self->_device->tensor({ x }, {}, _type);
 }
 
 Tensor Tensor::operator/(float x) const
 {
-    return *this / _self->_device->tensor({ x });
+    return *this / _self->_device->tensor({ x }, {}, _type);
 }
 
 Tensor Tensor::operator[](unsigned int i) const
@@ -777,11 +822,11 @@ Tensor Tensor::operator[](unsigned int i) const
 
     auto size = flatten(res_shape);
 
-    Allocation<float> allocation = _self->_allocation;
-    allocation.cpu += (size * i);
-    allocation.gpu += (size * i);
+    Allocation<uint8_t> allocation = _self->_allocation;
+    allocation.cpu += (size * i * (_type == Type::float16 ? sizeof(short) : sizeof(float)));
+    allocation.gpu += (size * i * (_type == Type::float16 ? sizeof(short) : sizeof(float)));
 
-    return Tensor(_self->_device, allocation, { *this }, res_shape, true);
+    return Tensor(_self->_device, allocation, { *this }, res_shape, _type, true);
 }
 
 Tensor Tensor::repeat(const Tensor& tensor, Shape shape) const
@@ -800,7 +845,7 @@ Tensor Tensor::mT() const
     Shape res_shape = { _shape.back(), _shape.front() };
     auto size = flatten(res_shape);
 
-    auto allocation = _self->_device->floats(size);
+    auto allocation = _self->_device->alloc(size, _type);
 
     auto tensor_data = _self->_device->struct_data<TensorTransposeData>();
     tensor_data.cpu->n = size;
@@ -810,11 +855,11 @@ Tensor Tensor::mT() const
     tensor_data.cpu->y = allocation.gpu;
 
     auto cmd = _self->_device->record();
-    gpuSetPipeline(cmd, _self->_device->pipelines["mT"]);
+    gpuSetPipeline(cmd, _self->_device->pipelines["mT"][_type]);
     _self->_device->barrier(STAGE_COMPUTE, { *this });
     gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
 
-    auto out = Tensor(_self->_device, allocation, { *this }, res_shape);
+    auto out = Tensor(_self->_device, allocation, { *this }, res_shape, _type);
 
     tensors_pending_writes[STAGE_COMPUTE].insert(out);
 
@@ -823,6 +868,11 @@ Tensor Tensor::mT() const
 
 Tensor Tensor::dot(const Tensor& other) const
 {
+    if (_type != other._type)
+    {
+        throw std::runtime_error("Implicit type conversion not yet supported");
+    }
+
     if (_shape != other._shape)
     {
         auto error = "cannot compute the dot product of tensor of shape " + to_string(other._shape) + " to tensor of shape " + to_string(_shape);
@@ -830,8 +880,8 @@ Tensor Tensor::dot(const Tensor& other) const
     }
 
     auto size = flatten(_shape);
-    auto allocation = _self->_device->floats(1);
-    memset(allocation.cpu, 0, sizeof(float));
+    auto allocation = _self->_device->alloc(1, _type);
+    memset(allocation.cpu, 0, _type == Type::float16 ? sizeof(short) : sizeof(float));
 
     auto tensor_data = _self->_device->struct_data<TensorData>();
     tensor_data.cpu->n = size;
@@ -840,11 +890,11 @@ Tensor Tensor::dot(const Tensor& other) const
     tensor_data.cpu->z = allocation.gpu;
 
     auto cmd = _self->_device->record();
-    gpuSetPipeline(cmd, _self->_device->pipelines["dot"]);
+    gpuSetPipeline(cmd, _self->_device->pipelines["dot"][_type]);
     _self->_device->barrier(STAGE_COMPUTE, { *this, other });
     gpuDispatch(cmd, tensor_data.gpu, { 1, 1, 1 });
 
-    auto out = Tensor(_self->_device, allocation, { *this, other }, { 1 });
+    auto out = Tensor(_self->_device, allocation, { *this, other }, { 1 }, _type);
 
     tensors_pending_writes[STAGE_COMPUTE].insert(out);
 
@@ -859,6 +909,11 @@ Tensor Tensor::dot(const Tensor& other) const
 
 Tensor Tensor::matmul(const Tensor& other) const
 {
+    if (_type != other._type)
+    {
+        throw std::runtime_error("Implicit type conversion not yet supported");
+    }
+
     if (_shape.size() != 2 || other._shape.size() != 2)
     {
         std::string error = "batched matmul not yet implemented";
@@ -872,10 +927,13 @@ Tensor Tensor::matmul(const Tensor& other) const
         throw std::runtime_error(error);
     }
 
+    bool wmma = _shape.front() % 16 == 0 && _shape.back() % 16 == 0 && other._shape.back() % 16 == 0;
+    auto out_type = wmma ? Type::float32 : _type;
+
     Shape res_shape = { _shape.front(), other._shape.back() };
     auto size = flatten(res_shape);
 
-    auto allocation = _self->_device->floats(size);
+    auto allocation = _self->_device->alloc(size, out_type);
 
     auto tensor_data = _self->_device->struct_data<TensorMatMulData>();
     tensor_data.cpu->n = size;
@@ -887,13 +945,34 @@ Tensor Tensor::matmul(const Tensor& other) const
     tensor_data.cpu->z = allocation.gpu;
 
     auto cmd = _self->_device->record();
-    gpuSetPipeline(cmd, _self->_device->pipelines["matmul"]);
-    _self->_device->barrier(STAGE_COMPUTE, { *this, other });
-    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
 
-    auto out = Tensor(_self->_device, allocation, { *this, other }, res_shape);
+    gpuSetPipeline(cmd, wmma
+                            ? _self->_device->pipelines["matmul_wmma"][Type::float16]
+                            : _self->_device->pipelines["matmul"][_type]);
 
+    if (wmma)
+    {
+        auto lhs = float16();
+        auto rhs = other.float16();
+        tensor_data.cpu->x = lhs._self->_allocation.gpu;
+        tensor_data.cpu->y = rhs._self->_allocation.gpu;
+        auto tiles = (uint)((res_shape.front() / 16) * (res_shape.back() / 16));
+        _self->_device->barrier(STAGE_COMPUTE, { lhs, rhs });
+        gpuDispatch(cmd, tensor_data.gpu, { tiles, 1, 1 });
+    }
+    else
+    {
+        _self->_device->barrier(STAGE_COMPUTE, { *this, other });
+        gpuDispatch(cmd, tensor_data.gpu, { (uint)(size + 63) / 64, 1, 1 });
+    }
+
+    auto out = Tensor(_self->_device, allocation, { *this, other }, res_shape, out_type);
     tensors_pending_writes[STAGE_COMPUTE].insert(out);
+
+    if (wmma && _type == Type::float16)
+    {
+        out = out.float16();
+    }
 
     Tensor self = *this;
     out._self->_backward = [self, other](const Tensor& grad)
@@ -906,6 +985,11 @@ Tensor Tensor::matmul(const Tensor& other) const
 
 Tensor Tensor::pow(const Tensor& other) const
 {
+    if (_type != other._type)
+    {
+        throw std::runtime_error("Implicit type conversion not yet supported");
+    }
+
     uint broadcast = 1;
     if (_shape != other._shape)
     {
@@ -924,7 +1008,7 @@ Tensor Tensor::pow(const Tensor& other) const
     }
 
     auto size = flatten(_shape);
-    auto allocation = _self->_device->floats(size);
+    auto allocation = _self->_device->alloc(size, _type);
 
     auto tensor_data = _self->_device->struct_data<TensorData>();
     tensor_data.cpu->n = size;
@@ -934,11 +1018,11 @@ Tensor Tensor::pow(const Tensor& other) const
     tensor_data.cpu->z = allocation.gpu;
 
     auto cmd = _self->_device->record();
-    gpuSetPipeline(cmd, _self->_device->pipelines["pow"]);
+    gpuSetPipeline(cmd, _self->_device->pipelines["pow"][_type]);
     _self->_device->barrier(STAGE_COMPUTE, { *this, other });
     gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
 
-    auto out = Tensor(_self->_device, allocation, { *this, other }, _shape);
+    auto out = Tensor(_self->_device, allocation, { *this, other }, _shape, _type);
 
     tensors_pending_writes[STAGE_COMPUTE].insert(out);
 
@@ -958,7 +1042,7 @@ Tensor Tensor::mse(const Tensor& other) const
 
 Tensor Tensor::sum() const
 {
-    return dot(_self->_device->ones(_shape));
+    return dot(_self->_device->ones(_shape, _type));
 }
 
 Tensor Tensor::sqrt() const
@@ -984,7 +1068,7 @@ Tensor Tensor::expm1() const
 Tensor Tensor::log() const
 {
     auto size = flatten(_shape);
-    auto allocation = _self->_device->floats(size);
+    auto allocation = _self->_device->alloc(size, _type);
 
     auto tensor_data = _self->_device->struct_data<TensorData>();
     tensor_data.cpu->n = size;
@@ -993,11 +1077,11 @@ Tensor Tensor::log() const
     tensor_data.cpu->z = allocation.gpu;
 
     auto cmd = _self->_device->record();
-    gpuSetPipeline(cmd, _self->_device->pipelines["log"]);
+    gpuSetPipeline(cmd, _self->_device->pipelines["log"][_type]);
     _self->_device->barrier(STAGE_COMPUTE, { *this });
     gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
 
-    auto out = Tensor(_self->_device, allocation, { *this }, _shape);
+    auto out = Tensor(_self->_device, allocation, { *this }, _shape, _type);
 
     tensors_pending_writes[STAGE_COMPUTE].insert(out);
 
@@ -1012,7 +1096,7 @@ Tensor Tensor::log1p() const
 Tensor Tensor::cosh() const
 {
     auto size = flatten(_shape);
-    auto allocation = _self->_device->floats(size);
+    auto allocation = _self->_device->alloc(size, _type);
 
     auto tensor_data = _self->_device->struct_data<TensorData>();
     tensor_data.cpu->n = size;
@@ -1021,11 +1105,11 @@ Tensor Tensor::cosh() const
     tensor_data.cpu->z = allocation.gpu;
 
     auto cmd = _self->_device->record();
-    gpuSetPipeline(cmd, _self->_device->pipelines["cosh"]);
+    gpuSetPipeline(cmd, _self->_device->pipelines["cosh"][_type]);
     _self->_device->barrier(STAGE_COMPUTE, { *this });
     gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
 
-    auto out = Tensor(_self->_device, allocation, { *this }, _shape);
+    auto out = Tensor(_self->_device, allocation, { *this }, _shape, _type);
 
     tensors_pending_writes[STAGE_COMPUTE].insert(out);
 
@@ -1035,7 +1119,7 @@ Tensor Tensor::cosh() const
 Tensor Tensor::tanh() const
 {
     auto size = flatten(_shape);
-    auto allocation = _self->_device->floats(size);
+    auto allocation = _self->_device->alloc(size, _type);
 
     auto tensor_data = _self->_device->struct_data<TensorData>();
     tensor_data.cpu->n = size;
@@ -1044,11 +1128,11 @@ Tensor Tensor::tanh() const
     tensor_data.cpu->z = allocation.gpu;
 
     auto cmd = _self->_device->record();
-    gpuSetPipeline(cmd, _self->_device->pipelines["tanh"]);
+    gpuSetPipeline(cmd, _self->_device->pipelines["tanh"][_type]);
     _self->_device->barrier(STAGE_COMPUTE, { *this });
     gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
 
-    auto out = Tensor(_self->_device, allocation, { *this }, _shape);
+    auto out = Tensor(_self->_device, allocation, { *this }, _shape, _type);
 
     tensors_pending_writes[STAGE_COMPUTE].insert(out);
 
@@ -1068,7 +1152,7 @@ Tensor Tensor::sech() const
 Tensor Tensor::relu(float alpha) const
 {
     auto size = flatten(_shape);
-    auto allocation = _self->_device->floats(size);
+    auto allocation = _self->_device->alloc(size, _type);
 
     auto tensor_data = _self->_device->struct_data<TensorData>();
     tensor_data.cpu->n = size;
@@ -1078,11 +1162,11 @@ Tensor Tensor::relu(float alpha) const
     tensor_data.cpu->z = allocation.gpu;
 
     auto cmd = _self->_device->record();
-    gpuSetPipeline(cmd, _self->_device->pipelines["relu"]);
+    gpuSetPipeline(cmd, _self->_device->pipelines["relu"][_type]);
     _self->_device->barrier(STAGE_COMPUTE, { *this });
     gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
 
-    auto out = Tensor(_self->_device, allocation, { *this }, _shape);
+    auto out = Tensor(_self->_device, allocation, { *this }, _shape, _type);
 
     tensors_pending_writes[STAGE_COMPUTE].insert(out);
 
@@ -1090,7 +1174,7 @@ Tensor Tensor::relu(float alpha) const
     out._self->_backward = [self, alpha](const Tensor& grad)
     {
         auto size = flatten(self.shape());
-        auto allocation = self._self->_device->floats(size);
+        auto allocation = self._self->_device->alloc(size, self._type);
         auto tensor_data = self._self->_device->struct_data<TensorData>();
         tensor_data.cpu->n = size;
         tensor_data.cpu->a = alpha;
@@ -1099,11 +1183,11 @@ Tensor Tensor::relu(float alpha) const
         tensor_data.cpu->z = allocation.gpu;
 
         auto cmd = self._self->_device->record();
-        gpuSetPipeline(cmd, self._self->_device->pipelines["relu_backward"]);
+        gpuSetPipeline(cmd, self._self->_device->pipelines["relu_backward"][self._type]);
         self._self->_device->barrier(STAGE_COMPUTE, { self, grad });
         gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
 
-        auto term = Tensor(self._self->_device, allocation, {}, self.shape());
+        auto term = Tensor(self._self->_device, allocation, {}, self.shape(), self._type);
 
         tensors_pending_writes[STAGE_COMPUTE].insert(term);
 
@@ -1114,13 +1198,124 @@ Tensor Tensor::relu(float alpha) const
 
 Tensor Tensor::gelu() const
 {
-    return *this * 0.5f * (1.f + (::sqrt(2.f / pi) * (*this + (*this * *this * *this) * 0.044715f)).tanh());
+    auto size = flatten(_shape);
+    auto allocation = _self->_device->alloc(size, _type);
+
+    auto tensor_data = _self->_device->struct_data<TensorData>();
+    tensor_data.cpu->n = size;
+    tensor_data.cpu->x = _self->_allocation.gpu;
+    tensor_data.cpu->y = nullptr;
+    tensor_data.cpu->z = allocation.gpu;
+
+    auto cmd = _self->_device->record();
+    gpuSetPipeline(cmd, _self->_device->pipelines["gelu"][_type]);
+    _self->_device->barrier(STAGE_COMPUTE, { *this });
+    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+
+    auto out = Tensor(_self->_device, allocation, { *this }, _shape, _type);
+
+    tensors_pending_writes[STAGE_COMPUTE].insert(out);
+
+    Tensor self = *this;
+    out._self->_backward = [self](const Tensor& grad)
+    {
+        auto size = flatten(self.shape());
+        auto allocation = self._self->_device->alloc(size, self._type);
+        auto tensor_data = self._self->_device->struct_data<TensorData>();
+        tensor_data.cpu->n = size;
+        tensor_data.cpu->x = self._self->_allocation.gpu;
+        tensor_data.cpu->y = grad._self->_allocation.gpu;
+        tensor_data.cpu->z = allocation.gpu;
+
+        auto cmd = self._self->_device->record();
+        gpuSetPipeline(cmd, self._self->_device->pipelines["gelu_backward"][self._type]);
+        self._self->_device->barrier(STAGE_COMPUTE, { self, grad });
+        gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+
+        auto term = Tensor(self._self->_device, allocation, {}, self.shape(), self._type);
+
+        tensors_pending_writes[STAGE_COMPUTE].insert(term);
+
+        self._self->grad = (self._self->grad + term).detach();
+    };
+    return out;
+}
+
+Tensor Tensor::float16() const
+{
+    if (_type == Type::float16)
+    {
+        return *this;
+    }
+
+    auto size = flatten(_shape);
+    auto allocation = _self->_device->alloc(size, Type::float16);
+
+    auto tensor_data = _self->_device->struct_data<TensorData>();
+    tensor_data.cpu->n = size;
+    tensor_data.cpu->x = _self->_allocation.gpu;
+    tensor_data.cpu->y = nullptr;
+    tensor_data.cpu->z = allocation.gpu;
+
+    auto cmd = _self->_device->record();
+    gpuSetPipeline(cmd, _self->_device->pipelines["cast"][Type::float16]);
+    _self->_device->barrier(STAGE_COMPUTE, { *this });
+    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+
+    auto out = Tensor(_self->_device, allocation, { *this }, _shape, Type::float16);
+
+    tensors_pending_writes[STAGE_COMPUTE].insert(out);
+
+    Tensor self = *this;
+    out._self->_backward = [self](const Tensor& grad)
+    {
+        self._self->grad = (self._self->grad + grad.float32()).detach();
+    };
+    return out;
+}
+
+Tensor Tensor::float32() const
+{
+    if (_type == Type::float32)
+    {
+        return *this;
+    }
+
+    auto size = flatten(_shape);
+    auto allocation = _self->_device->alloc(size, Type::float32);
+
+    auto tensor_data = _self->_device->struct_data<TensorData>();
+    tensor_data.cpu->n = size;
+    tensor_data.cpu->x = _self->_allocation.gpu;
+    tensor_data.cpu->y = nullptr;
+    tensor_data.cpu->z = allocation.gpu;
+
+    auto cmd = _self->_device->record();
+    gpuSetPipeline(cmd, _self->_device->pipelines["cast"][Type::float32]);
+    _self->_device->barrier(STAGE_COMPUTE, { *this });
+    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+
+    auto out = Tensor(_self->_device, allocation, { *this }, _shape, Type::float32);
+
+    tensors_pending_writes[STAGE_COMPUTE].insert(out);
+
+    Tensor self = *this;
+    out._self->_backward = [self](const Tensor& grad)
+    {
+        self._self->grad = (self._self->grad + grad.float16()).detach();
+    };
+    return out;
 }
 
 Tensor Tensor::adam(Tensor& mean, Tensor& variance, uint64_t steps, float b1, float b2)
 {
+    if (_type != mean._type || _type != variance._type)
+    {
+        throw std::runtime_error("Implicit type conversion not yet supported");
+    }
+
     auto size = flatten(_shape);
-    auto allocation = _self->_device->floats(size);
+    auto allocation = _self->_device->alloc(size, _type);
 
     auto tensor_data = _self->_device->struct_data<TensorAdamData>();
     tensor_data.cpu->n = size;
@@ -1134,11 +1329,11 @@ Tensor Tensor::adam(Tensor& mean, Tensor& variance, uint64_t steps, float b1, fl
     tensor_data.cpu->adjustment = allocation.gpu;
 
     auto cmd = _self->_device->record();
-    gpuSetPipeline(cmd, _self->_device->pipelines["adam"]);
+    gpuSetPipeline(cmd, _self->_device->pipelines["adam"][_type]);
     _self->_device->barrier(STAGE_COMPUTE, { *this, mean, variance });
     gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
 
-    auto out = Tensor(_self->_device, allocation, { *this, mean, variance }, _shape);
+    auto out = Tensor(_self->_device, allocation, { *this, mean, variance }, _shape, _type);
 
     tensors_pending_writes[STAGE_COMPUTE].insert({ mean, variance, out });
 
@@ -1154,14 +1349,14 @@ Tensor Tensor::reshape(Shape shape) const
     }
 
     auto size = flatten(_shape);
-    auto byte_size = size * sizeof(float);
-    auto allocation = _self->_device->floats(size);
+    auto byte_size = size * (_type == Type::float16 ? sizeof(short) : sizeof(float));
+    auto allocation = _self->_device->alloc(size, _type);
 
     auto cmd = _self->_device->record();
     _self->_device->barrier(STAGE_TRANSFER, { *this });
     gpuMemCpy(cmd, allocation.gpu, _self->_allocation.gpu, byte_size);
 
-    auto out = Tensor(_self->_device, allocation, { *this }, shape);
+    auto out = Tensor(_self->_device, allocation, { *this }, shape, _type);
 
     tensors_pending_writes[STAGE_TRANSFER].insert(out);
 
@@ -1171,14 +1366,14 @@ Tensor Tensor::reshape(Shape shape) const
 Tensor Tensor::detach() const
 {
     auto size = flatten(_shape);
-    auto byte_size = size * sizeof(float);
-    auto allocation = _self->_device->floats(size);
+    auto byte_size = size * (_type == Type::float16 ? sizeof(short) : sizeof(float));
+    auto allocation = _self->_device->alloc(size, _type);
 
     auto cmd = _self->_device->record();
     _self->_device->barrier(STAGE_TRANSFER, { *this });
     gpuMemCpy(cmd, allocation.gpu, _self->_allocation.gpu, byte_size);
 
-    auto out = Tensor(_self->_device, allocation, {}, _shape);
+    auto out = Tensor(_self->_device, allocation, {}, _shape, _type);
 
     tensors_pending_writes[STAGE_TRANSFER].insert(out);
 
@@ -1187,6 +1382,11 @@ Tensor Tensor::detach() const
 
 void Tensor::copy(const Tensor& other) const
 {
+    if (_type != other._type)
+    {
+        throw std::runtime_error("Implicit type conversion not yet supported");
+    }
+
     if (flatten(_shape) != flatten(other._shape))
     {
         auto error = "cannot copy tensor of shape " + to_string(_shape) + " from shape " + to_string(other._shape);
@@ -1194,7 +1394,7 @@ void Tensor::copy(const Tensor& other) const
     }
 
     auto size = flatten(_shape);
-    auto byte_size = size * sizeof(float);
+    auto byte_size = size * (_type == Type::float16 ? sizeof(short) : sizeof(float));
 
     auto cmd = _self->_device->record();
     _self->_device->barrier(STAGE_TRANSFER, { other });
@@ -1222,7 +1422,7 @@ void Tensor::backward()
     std::vector<Tensor> graph;
     build(*this, visited, graph);
 
-    _self->grad = _self->_device->ones({ _shape });
+    _self->grad = _self->_device->ones(_shape, _type);
     for (auto iter = graph.rbegin(); iter != graph.rend(); iter++)
     {
         if (iter->_self->_backward)

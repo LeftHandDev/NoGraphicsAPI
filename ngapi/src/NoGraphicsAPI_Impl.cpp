@@ -359,7 +359,8 @@ struct VulkanInstance
         inst->requiredDeviceExtensions = {
             VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME,
             VK_EXT_MESH_SHADER_EXTENSION_NAME,
-            VK_KHR_SHADER_DRAW_PARAMETERS_EXTENSION_NAME
+            VK_KHR_SHADER_DRAW_PARAMETERS_EXTENSION_NAME,
+            VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME
         };
 
 #ifdef GPU_SURFACE_EXTENSION
@@ -549,6 +550,13 @@ struct VulkanDevice
         descriptorBufferFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT;
         descriptorBufferFeatures.descriptorBuffer = VK_TRUE;
 
+        // Cooperative matrix (CoopMat in shaders) is a device feature gated by
+        // VK_KHR_cooperative_matrix; it also requires the Vulkan memory model
+        // (enabled in the Vulkan 1.2 feature block below).
+        VkPhysicalDeviceCooperativeMatrixFeaturesKHR cooperativeMatrixFeatures = {};
+        cooperativeMatrixFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR;
+        cooperativeMatrixFeatures.cooperativeMatrix = VK_TRUE;
+
         VkPhysicalDeviceVulkan13Features physicalDeviceVulkan13Features = {};
         physicalDeviceVulkan13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
         physicalDeviceVulkan13Features.synchronization2 = VK_TRUE;
@@ -561,6 +569,8 @@ struct VulkanDevice
         physicalDeviceVulkan12Features.runtimeDescriptorArray = VK_TRUE;
         physicalDeviceVulkan12Features.shaderInt8 = VK_TRUE;
         physicalDeviceVulkan12Features.samplerMirrorClampToEdge = VK_TRUE; // MIRROR_CLAMP address mode
+        physicalDeviceVulkan12Features.vulkanMemoryModel = VK_TRUE;        // required by VK_KHR_cooperative_matrix
+        physicalDeviceVulkan12Features.vulkanMemoryModelDeviceScope = VK_TRUE;
 #ifndef _WIN32
         physicalDeviceVulkan12Features.storagePushConstant8 = VK_TRUE;
 #endif
@@ -581,7 +591,8 @@ struct VulkanDevice
         deviceBuilder
             .add_pNext(&physicalDeviceVulkan12Features)
             .add_pNext(&physicalDeviceVulkan13Features)
-            .add_pNext(&descriptorBufferFeatures);
+            .add_pNext(&descriptorBufferFeatures)
+            .add_pNext(&cooperativeMatrixFeatures);
 #ifdef GPU_RAY_TRACING_EXTENSION
         deviceBuilder
             .add_pNext(&rayQueryFeatures)

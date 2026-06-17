@@ -21,6 +21,12 @@ class Allocation;
 class Tensor
 {
 public:
+    enum class Type
+    {
+        float16,
+        float32
+    };
+
     Tensor() = default;
     Tensor(Tensor&&) noexcept;
     Tensor& operator=(Tensor&&) noexcept;
@@ -82,6 +88,9 @@ public:
     Tensor relu(float = 0.f) const;
     Tensor gelu() const;
 
+    Tensor float16() const;
+    Tensor float32() const;
+
     // usage: weights = (weights - lr * grad.adam(mean, variance, step));
     Tensor adam(Tensor& mean, Tensor& variance, uint64_t steps, float b1 = 0.9, float b2 = 0.999);
 
@@ -100,9 +109,10 @@ private:
     const float pi = 3.1415926535f;
     const Shape unit = { 1 };
     Shape _shape;
+    Type _type;
     friend class Device_impl;
-    explicit Tensor(Device_impl*, std::vector<float>, std::vector<Tensor> prev, Shape = {}, bool slice = false);
-    explicit Tensor(Device_impl*, Allocation<float>, std::vector<Tensor> prev, Shape = {}, bool slice = false);
+    explicit Tensor(Device_impl*, std::vector<float>, std::vector<Tensor> prev, Shape = {}, Type = Type::float32, bool slice = false);
+    explicit Tensor(Device_impl*, Allocation<uint8_t>, std::vector<Tensor> prev, Shape = {}, Type = Type::float32, bool slice = false);
     std::shared_ptr<Tensor_impl> _self;
     static void build(Tensor, std::set<Tensor>&, std::vector<Tensor>&);
 };
@@ -142,10 +152,10 @@ class Device
 public:
     virtual ~Device() = default;
     virtual void submit() = 0;
-    virtual Tensor tensor(std::vector<float>, Shape = {}) = 0;
-    virtual Tensor rand(Shape) = 0;
-    virtual Tensor zeros(Shape) = 0;
-    virtual Tensor ones(Shape) = 0;
+    virtual Tensor tensor(std::vector<float>, Shape = {}, Tensor::Type = Tensor::Type::float32) = 0;
+    virtual Tensor rand(Shape, Tensor::Type = Tensor::Type::float32) = 0;
+    virtual Tensor zeros(Shape, Tensor::Type = Tensor::Type::float32) = 0;
+    virtual Tensor ones(Shape, Tensor::Type = Tensor::Type::float32) = 0;
     virtual Tensor repeat(float, Shape) = 0;
     virtual Tensor repeat(const Tensor&, Shape) = 0;
 };
@@ -219,7 +229,7 @@ public:
         Tensor out = _layers.front().forward(in);
         for (size_t i = 1; i < _layers.size(); i++)
         {
-            out = _layers[i].forward(out.gelu()); //.relu(0.01f));
+            out = _layers[i].forward(out.gelu());
         }
         return out;
     }
