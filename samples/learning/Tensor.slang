@@ -1,6 +1,13 @@
 #include "Common.h"
+#include "../common/Random.h"
 
 static const float PI = 3.1415926535897932384626433832795f;
+
+float _rand_uniform(uint t, uint seed)
+{
+    uint hash = xxhash32(uint3(t, seed, 1));
+    return randomFloat(hash);
+}
 
 void _add_impl<T : IArithmetic>(uint t, TensorData* data)
 {
@@ -102,17 +109,20 @@ void _mT_impl<T : IArithmetic>(uint t, TensorTransposeData *data)
 }
 
 [numthreads(32, 1, 1)] 
-void _matmul_wmma(uint3 g : SV_GroupID, TensorMatMulData* data)
+void _affine(uint3 g : SV_GroupID, TensorAffineData* data)
 {
     half* x = (half*)data->x;
     half* y = (half*)data->y;
     float* z = (float*)data->z;
+    half* w = (half*)data->w;  
 
-    uint tiles = data->c / 16; // number of 16-wide column tiles in z
-    uint z_row = g.x / tiles;  // tile row index into z
-    uint z_col = g.x % tiles;  // tile col index into z
+    uint tiles = data->c / 16;
 
-    var c = linalg::CoopMat<float, MemoryScope.Subgroup, 16, 16, linalg::CoopMatMatrixUse.MatrixAccumulator>(0.f);
+    uint z_row = g.x / tiles;
+    uint z_col = g.x % tiles;
+
+    var c = linalg::CoopMat<float, MemoryScope.Subgroup, 16, 16, linalg::CoopMatMatrixUse.MatrixAccumulator>
+                .Load<linalg::CoopMatMatrixLayout.RowMajor>(z, z_col * 16, 0);
 
     for (uint i = 0; i < data->b; i += 16)
     {
@@ -123,7 +133,8 @@ void _matmul_wmma(uint3 g : SV_GroupID, TensorMatMulData* data)
         c = linalg::coopMatMulAdd<float, false>(a, b, c);
     }
 
-    c.Store<linalg::CoopMatMatrixLayout.RowMajor>(z, z_row * 16 * data->c + z_col * 16, data->c);
+    var ch = linalg::CoopMat<half, MemoryScope.Subgroup, 16, 16, linalg::CoopMatMatrixUse.MatrixAccumulator>(c);
+    ch.Store<linalg::CoopMatMatrixLayout.RowMajor>(w, z_row * 16 * data->c + z_col * 16, data->c);
 }
 
 void _matmul_impl_f32(uint t, TensorMatMulData* data)
@@ -435,6 +446,26 @@ void _fp16_fp32(uint t : SV_DispatchThreadID, TensorData* data)
     float* x = (float*)data->x;
     half* z = (half*)data->z;
     z[t] = (half)x[t];
+}
+
+[numthreads(64, 1, 1)] void _rand_f32(uint t : SV_DispatchThreadID, TensorData* data)
+{
+    if (t >= data->n)
+    {
+        return;
+    }
+    float* z = (float*)data->z;
+    z[t] = _rand_uniform(t, (uint)data->m);
+}
+
+[numthreads(64, 1, 1)] void _rand_f16(uint t : SV_DispatchThreadID, TensorData* data)
+{
+    if (t >= data->n)
+    {
+        return;
+    }
+    half* z = (half*)data->z;
+    z[t] = (half)_rand_uniform(t, (uint)data->m);
 }
 
 [numthreads(64, 1, 1)] void _add_f32(uint t : SV_DispatchThreadID, TensorData* data){ _add_impl<float>(t, data); }

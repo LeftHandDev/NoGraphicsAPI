@@ -149,7 +149,7 @@ compile_shader(SOURCE samples/common/MsdfPixel.slang    STAGE fragment OUTPUT co
 
 set(RT_SHADER_DEPS ${COMMON_SHADER_DEPS}
     "${CMAKE_CURRENT_SOURCE_DIR}/samples/raytracing/Raytracing.h"
-    "${CMAKE_CURRENT_SOURCE_DIR}/samples/raytracing/Random.h")
+    "${CMAKE_CURRENT_SOURCE_DIR}/samples/common/Random.h")
 compile_shader(SOURCE samples/raytracing/Raytracing.slang STAGE compute OUTPUT raytracing/Raytracing.spv
     EXTRA_DEPENDS ${RT_SHADER_DEPS})
 compile_shader(SOURCE samples/raytracing/ReSTIR.slang   STAGE compute  OUTPUT raytracing/RIS.spv   ENTRY RIS
@@ -173,12 +173,14 @@ compile_shader(SOURCE samples/multithreading/Multithreading.slang STAGE compute 
 # entry point from that one module).
 compile_shader(SOURCE samples/learning/Tensor.slang STAGE compute OUTPUT learning/Tensor.spv
     ENTRY _add_f32 _add_f16 _sub_f32 _sub_f16 _mul_f32 _mul_f16 _div_f32 _div_f16
-          _dot_f32 _dot_f16 _mT_f32 _mT_f16 _matmul_f32 _matmul_f16 _matmul_wmma
+          _dot_f32 _dot_f16 _mT_f32 _mT_f16 _matmul_f32 _matmul_f16 _affine
           _pow_f32 _pow_f16 _log_f32 _log_f16 _cosh_f32 _cosh_f16 _tanh_f32 _tanh_f16
           _relu_f32 _relu_f16 _relu_backward_f32 _relu_backward_f16 
           _gelu_f32 _gelu_f16 _gelu_backward_f32 _gelu_backward_f16 
-          _adam_f32 _adam_f16 _fp32_fp16 _fp16_fp32
-    EXTRA_DEPENDS ${COMMON_SHADER_DEPS} "${CMAKE_CURRENT_SOURCE_DIR}/samples/learning/Common.h")
+          _adam_f32 _adam_f16 _fp32_fp16 _fp16_fp32 _rand_f32 _rand_f16
+    EXTRA_DEPENDS ${COMMON_SHADER_DEPS} 
+    "${CMAKE_CURRENT_SOURCE_DIR}/samples/learning/Common.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/samples/common/Random.h")
 
 add_custom_target(shaders ALL DEPENDS ${NGAPI_SHADER_OUTPUTS})
 

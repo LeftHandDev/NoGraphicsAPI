@@ -43,6 +43,7 @@ public:
     void zero() const; // zero the grad
 
     Shape shape() const;
+    Type type() const;
     uint64_t numel() const;
 
     Tensor grad() const;
@@ -67,9 +68,10 @@ public:
 
     Tensor operator[](unsigned int) const; // take a slice of a tensor
 
-    Tensor mT() const;                  // 2D matrix transpose, +3D batched matrix transpose
-    Tensor dot(const Tensor&) const;    // 1D dot product
-    Tensor matmul(const Tensor&) const; // 2D matrix multiplication, +3D batched matrix multiplcation
+    Tensor mT() const;                                 // 2D matrix transpose, +3D batched matrix transpose
+    Tensor dot(const Tensor&) const;                   // 1D dot product
+    Tensor matmul(const Tensor&) const;                // 2D matrix multiplication, +3D batched matrix multiplcation
+    Tensor affine(const Tensor&, const Tensor&) const; // Use wmma when possible, otherwise falls back to matmul(weights) + biases
 
     Tensor pow(const Tensor&) const;
     Tensor pow(float) const;
@@ -183,10 +185,14 @@ public:
 class Linear : public Module
 {
 public:
-    Linear(Device* device, unsigned int in, unsigned int out)
+    Linear(Device* device, unsigned int in, unsigned int out, bool affine)
         : _weights(((device->rand({ in, out }) * 2.f - 1.f) * sqrt(1.f / in)).detach()),
           _biases(device->zeros({ 1, out }))
     {
+        if (affine)
+        {
+            _weights = _weights.float16();
+        }
     }
 
     virtual Tensor forward(const Tensor& in) override
@@ -200,7 +206,7 @@ public:
         {
             return in.reshape({ 1, in.shape().front() }).matmul(_weights) + _biases;
         }
-        return in.matmul(_weights) + _biases;
+        return _weights.type() == Tensor::Type::float16 ? in.affine(_weights, _biases) : in.matmul(_weights) + _biases;
     }
 
     virtual std::vector<Tensor> parameters() override
@@ -216,11 +222,11 @@ private:
 class Sequential : public Module
 {
 public:
-    Sequential(Device* device, Shape layers)
+    Sequential(Device* device, Shape layers, bool affine = false)
     {
         for (size_t i = 1; i < layers.size(); i++)
         {
-            _layers.push_back({ device, layers[i - 1], layers[i] });
+            _layers.push_back({ device, layers[i - 1], layers[i], affine });
         }
     }
 

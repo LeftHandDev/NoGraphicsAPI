@@ -80,17 +80,26 @@ public:
         auto tensorIR = loadIR("shaders/learning/Tensor.spv");
         for (auto op : { "add", "sub", "mul", "div", "dot", "mT", "matmul",
                          "pow", "log", "cosh", "tanh", "relu", "relu_backward", "gelu", "gelu_backward",
-                         "adam" })
+                         "adam", "rand" })
         {
             std::string name = op;
             pipelines[name][Tensor::Type::float32] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), ("_" + name + "_f32").c_str());
             pipelines[name][Tensor::Type::float16] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), ("_" + name + "_f16").c_str());
         }
         // Cooperative-matrix matmul is fp16 input / fp32 accumulate only.
-        pipelines["matmul_wmma"][Tensor::Type::float16] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_matmul_wmma");
+        // The CoopMat ops use Subgroup memory scope and assume a 32-wide
+        // subgroup, so pin the pipeline's required subgroup size to 32.
+        pipelines["matmul_wmma"][Tensor::Type::float16] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_matmul_wmma", 32);
+        // Fused affine (matmul + bias) via cooperative matrices; same 32-wide
+        // subgroup requirement as the wmma matmul.
+        pipelines["affine"][Tensor::Type::float16] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_affine", 32);
         // Type-conversion kernels, keyed by destination type.
         pipelines["cast"][Tensor::Type::float32] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_fp32_fp16");
         pipelines["cast"][Tensor::Type::float16] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_fp16_fp32");
+
+        // Seed the GPU RNG counter non-deterministically so runs differ.
+        std::random_device rd;
+        rand_seed = (static_cast<uint64_t>(rd()) << 32) | rd();
     }
 
     ~Device_impl()
@@ -133,22 +142,26 @@ public:
 
     virtual Tensor rand(Shape shape, Tensor::Type type = Tensor::Type::float32) override
     {
-        std::random_device rd;
-        std::mt19937 gen(rd());
-        std::uniform_real_distribution<float> dis(0.f, 1.f);
+        // Uniform [0, 1) generated on the GPU: a stateless hash PRNG seeded by
+        // a per-call counter avoids ~millions of host-side std::mt19937 calls
+        // and the host->device upload of the resulting buffer.
+        auto size = flatten(shape);
+        auto allocation = alloc(size, type);
 
-        std::vector<float> data(flatten(shape));
-        for (size_t i = 0; i < data.size(); i++)
-        {
-            data[i] = dis(gen);
-        }
+        auto tensor_data = struct_data<TensorData>();
+        tensor_data.cpu->n = size;
+        tensor_data.cpu->m = rand_seed++;
+        tensor_data.cpu->x = nullptr;
+        tensor_data.cpu->y = nullptr;
+        tensor_data.cpu->z = allocation.gpu;
 
-        if (type == Tensor::Type::float16)
-        {
-            return Tensor(this, data, {}, shape).float16();
-        }
+        auto cmd = record();
+        gpuSetPipeline(cmd, pipelines["rand"][type]);
+        gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
 
-        return Tensor(this, data, {}, shape);
+        auto out = Tensor(this, allocation, {}, shape, type);
+        tensors_pending_writes[STAGE_COMPUTE].insert(out);
+        return out;
     }
 
     virtual Tensor zeros(Shape shape, Tensor::Type type = Tensor::Type::float32) override
@@ -321,6 +334,7 @@ public:
     GpuCommandBuffer cmd = nullptr;
     GpuSemaphore semaphore = nullptr;
     uint64_t frame = 1;
+    uint64_t rand_seed = 0;
     TensorAllocator* tensor_allocator = {};
     StructAllocator* struct_allocator[FRAMES_IN_FLIGHT] = {};
     ReadbackAllocator* readback_allocator[FRAMES_IN_FLIGHT] = {};
@@ -435,6 +449,11 @@ void Tensor::zero() const
 Shape Tensor::shape() const
 {
     return _shape;
+}
+
+Tensor::Type Tensor::type() const
+{
+    return _type;
 }
 
 uint64_t Tensor::numel() const
@@ -586,7 +605,7 @@ Tensor Tensor::operator+(const Tensor& other) const
         {
             auto inner = static_cast<unsigned int>(flatten(other._shape));
             auto rows = grad.reshape({ broadcast, inner });
-            auto reduced = self._self->_device->ones({ 1, broadcast }).matmul(rows);
+            auto reduced = self._self->_device->ones({ 1, broadcast }, rows._type).matmul(rows);
             other._self->grad = (other._self->grad + reduced.reshape(other._shape)).detach();
         }
         else
@@ -927,13 +946,10 @@ Tensor Tensor::matmul(const Tensor& other) const
         throw std::runtime_error(error);
     }
 
-    bool wmma = _shape.front() % 16 == 0 && _shape.back() % 16 == 0 && other._shape.back() % 16 == 0;
-    auto out_type = wmma ? Type::float32 : _type;
-
     Shape res_shape = { _shape.front(), other._shape.back() };
     auto size = flatten(res_shape);
 
-    auto allocation = _self->_device->alloc(size, out_type);
+    auto allocation = _self->_device->alloc(size, _type);
 
     auto tensor_data = _self->_device->struct_data<TensorMatMulData>();
     tensor_data.cpu->n = size;
@@ -946,39 +962,89 @@ Tensor Tensor::matmul(const Tensor& other) const
 
     auto cmd = _self->_device->record();
 
-    gpuSetPipeline(cmd, wmma
-                            ? _self->_device->pipelines["matmul_wmma"][Type::float16]
-                            : _self->_device->pipelines["matmul"][_type]);
+    gpuSetPipeline(cmd, _self->_device->pipelines["matmul"][_type]);
+    _self->_device->barrier(STAGE_COMPUTE, { *this, other });
+    gpuDispatch(cmd, tensor_data.gpu, { (uint)(size + 63) / 64, 1, 1 });
 
-    if (wmma)
-    {
-        auto lhs = float16();
-        auto rhs = other.float16();
-        tensor_data.cpu->x = lhs._self->_allocation.gpu;
-        tensor_data.cpu->y = rhs._self->_allocation.gpu;
-        auto tiles = (uint)((res_shape.front() / 16) * (res_shape.back() / 16));
-        _self->_device->barrier(STAGE_COMPUTE, { lhs, rhs });
-        gpuDispatch(cmd, tensor_data.gpu, { tiles, 1, 1 });
-    }
-    else
-    {
-        _self->_device->barrier(STAGE_COMPUTE, { *this, other });
-        gpuDispatch(cmd, tensor_data.gpu, { (uint)(size + 63) / 64, 1, 1 });
-    }
-
-    auto out = Tensor(_self->_device, allocation, { *this, other }, res_shape, out_type);
+    auto out = Tensor(_self->_device, allocation, { *this, other }, res_shape, _type);
     tensors_pending_writes[STAGE_COMPUTE].insert(out);
-
-    if (wmma && _type == Type::float16)
-    {
-        out = out.float16();
-    }
 
     Tensor self = *this;
     out._self->_backward = [self, other](const Tensor& grad)
     {
         self._self->grad = (self._self->grad + grad.matmul(other.mT())).detach();
         other._self->grad = (other._self->grad + self.mT().matmul(grad)).detach();
+    };
+    return out;
+}
+
+Tensor Tensor::affine(const Tensor& weights, const Tensor& biases) const
+{
+    if (_type != Type::float16 || weights._type != Type::float16 || biases._type != Type::float32)
+    {
+        throw std::runtime_error("affine requires fp16 activations and weights, and fp32 biases");
+    }
+
+    if (_shape.size() != 2 || weights._shape.size() != 2 || biases._shape.size() != 2)
+    {
+        throw std::runtime_error("batched affine not yet implemented");
+    }
+
+    // (a,b) @ (b,c) -> (a,c), with biases broadcast as (1,c).
+    if (_shape.back() != weights._shape.front() || weights._shape.back() != biases._shape.back())
+    {
+        auto error = "cannot apply affine transformation of weights of shape " + to_string(weights._shape) + " to activations of shape " + to_string(_shape) + " with biases of shape " + to_string(biases._shape);
+        throw std::runtime_error(error);
+    }
+
+    bool wmma = _shape.front() % 16 == 0 && _shape.back() % 16 == 0 && weights._shape.back() % 16 == 0;
+
+    // No cooperative-matrix path for these shapes: fall back to a plain matmul
+    // followed by a (broadcast) bias add.
+    if (!wmma)
+    {
+        return matmul(weights) + biases.float16();
+    }
+
+    Shape res_shape = { _shape.front(), weights._shape.back() };
+    auto size = flatten(res_shape);
+
+    auto allocation = _self->_device->alloc(size, Type::float16);
+
+    auto tensor_data = _self->_device->struct_data<TensorAffineData>();
+    tensor_data.cpu->n = size;
+    tensor_data.cpu->a = _shape.front();
+    tensor_data.cpu->b = _shape.back();
+    tensor_data.cpu->c = weights._shape.back();
+    tensor_data.cpu->x = _self->_allocation.gpu;         // activations (fp16)
+    tensor_data.cpu->y = weights._self->_allocation.gpu; // weights (fp16)
+    tensor_data.cpu->z = biases._self->_allocation.gpu;  // biases (fp32)
+    tensor_data.cpu->w = allocation.gpu;                 // output (fp16)
+
+    auto cmd = _self->_device->record();
+    uint tiles_row = res_shape.front() / 16;
+    uint tiles_col = res_shape.back() / 16;
+    gpuSetPipeline(cmd, _self->_device->pipelines["affine"][Type::float16]);
+    _self->_device->barrier(STAGE_COMPUTE, { *this, weights, biases });
+    gpuDispatch(cmd, tensor_data.gpu, { tiles_row * tiles_col, 1, 1 });
+
+    auto out = Tensor(_self->_device, allocation, { *this, weights, biases }, res_shape, Type::float16);
+    tensors_pending_writes[STAGE_COMPUTE].insert(out);
+
+    Tensor self = *this;
+    Tensor w = weights;
+    Tensor b = biases;
+    uint rows = res_shape.front();
+    out._self->_backward = [self, w, b, rows](const Tensor& grad)
+    {
+        self._self->grad = (self._self->grad + grad.matmul(w.mT())).detach();
+        w._self->grad = (w._self->grad + self.mT().matmul(grad)).detach();
+
+        auto inner = static_cast<uint>(flatten(b._shape));
+        auto ones = self._self->_device->ones({ 1, rows }, grad._type);
+        auto reduced = ones.matmul(grad.reshape({ rows, inner })).reshape(b._shape);
+        reduced = (b._type == Type::float16) ? reduced.float16() : reduced.float32();
+        b._self->grad = (b._self->grad + reduced).detach();
     };
     return out;
 }
@@ -1037,7 +1103,14 @@ Tensor Tensor::pow(float x) const
 Tensor Tensor::mse(const Tensor& other) const
 {
     auto dif = *this - other;
-    return (dif * dif).sum() / flatten(dif._shape);
+    auto squared = dif * dif;
+    // Reduce in fp32: both the sum-of-squares and the element count overflow
+    // fp16 (max 65504) for non-trivial tensors, which yields inf/0/NaN losses.
+    if (squared._type == Type::float16)
+    {
+        squared = squared.float32();
+    }
+    return squared.sum() / static_cast<float>(flatten(dif._shape));
 }
 
 Tensor Tensor::sum() const

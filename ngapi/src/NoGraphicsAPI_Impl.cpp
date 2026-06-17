@@ -482,6 +482,9 @@ struct VulkanDevice
     VkPhysicalDeviceMemoryProperties memoryProperties = {};
     VkPhysicalDeviceProperties2 physicalDeviceProperties2 = {};
     VkPhysicalDeviceDescriptorBufferPropertiesEXT descriptorBufferProperties = {};
+    // Subgroup-size limits; cooperative-matrix pipelines pin a required,
+    // fully-populated subgroup size and must stay within [min, max].
+    VkPhysicalDeviceSubgroupSizeControlProperties subgroupSizeControlProperties = {};
 
     // Allocation tracking
     std::vector<Allocation> allocations;
@@ -561,6 +564,10 @@ struct VulkanDevice
         physicalDeviceVulkan13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
         physicalDeviceVulkan13Features.synchronization2 = VK_TRUE;
         physicalDeviceVulkan13Features.dynamicRendering = VK_TRUE;
+        // Required to pin a fixed, fully-populated subgroup size on the
+        // cooperative-matrix (CoopMat) compute pipeline.
+        physicalDeviceVulkan13Features.subgroupSizeControl = VK_TRUE;
+        physicalDeviceVulkan13Features.computeFullSubgroups = VK_TRUE;
 
         VkPhysicalDeviceVulkan12Features physicalDeviceVulkan12Features = {};
         physicalDeviceVulkan12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
@@ -583,6 +590,8 @@ struct VulkanDevice
         vulkanInstance->instanceDispatchTable.getPhysicalDeviceMemoryProperties(vulkanDevice->physicalDevice, &vulkanDevice->memoryProperties);
 
         vulkanDevice->descriptorBufferProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT;
+        vulkanDevice->subgroupSizeControlProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES;
+        vulkanDevice->descriptorBufferProperties.pNext = &vulkanDevice->subgroupSizeControlProperties;
         vulkanDevice->physicalDeviceProperties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
         vulkanDevice->physicalDeviceProperties2.pNext = &vulkanDevice->descriptorBufferProperties;
         vulkanInstance->instanceDispatchTable.getPhysicalDeviceProperties2(vulkanDevice->physicalDevice, &vulkanDevice->physicalDeviceProperties2);
@@ -1649,7 +1658,7 @@ struct StaticSamplerStage
     }
 };
 
-GpuPipeline gpuCreateComputePipeline(GpuDevice device, ByteSpan computeIR, const char* entry)
+GpuPipeline gpuCreateComputePipeline(GpuDevice device, ByteSpan computeIR, const char* entry, uint32_t requiredSubgroupSize)
 {
     VulkanDevice* vulkanDevice = device->vulkanDevice;
     VkShaderModuleCreateInfo shaderModuleCreateInfo = {};
@@ -1672,6 +1681,21 @@ GpuPipeline gpuCreateComputePipeline(GpuDevice device, ByteSpan computeIR, const
     pipelineCreateInfo.stage.module = shaderModule;
     pipelineCreateInfo.stage.pSpecializationInfo = samplerSpecInfo;
     pipelineCreateInfo.stage.pName = entry;
+
+    // Cooperative-matrix shaders use Subgroup memory scope and require a fixed,
+    // fully-populated subgroup size; pin it (clamped to the device's supported
+    // range) so the dispatch doesn't fault on hardware whose default subgroup
+    // size differs from what the shader was compiled for.
+    VkPipelineShaderStageRequiredSubgroupSizeCreateInfo requiredSubgroupSizeInfo = {};
+    const VkPhysicalDeviceSubgroupSizeControlProperties& subgroupLimits = vulkanDevice->subgroupSizeControlProperties;
+    if (requiredSubgroupSize != 0 && (subgroupLimits.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT))
+    {
+        uint32_t clamped = std::clamp(requiredSubgroupSize, subgroupLimits.minSubgroupSize, subgroupLimits.maxSubgroupSize);
+        requiredSubgroupSizeInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO;
+        requiredSubgroupSizeInfo.requiredSubgroupSize = clamped;
+        pipelineCreateInfo.stage.pNext = &requiredSubgroupSizeInfo;
+        pipelineCreateInfo.stage.flags |= VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT;
+    }
 
     VkPipeline pipeline;
     vulkanDevice->dispatchTable.createComputePipelines(VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &pipeline);

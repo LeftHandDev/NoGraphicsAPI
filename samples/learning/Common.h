@@ -33,6 +33,18 @@ struct alignas(16) TensorMatMulData
     uint8_t* z; // output
 };
 
+struct alignas(16) TensorAffineData
+{
+    uint64_t n; // number of elements in w
+    uint a;     // number of rows in x
+    uint b;     // number of columns in x, number of rows in y
+    uint c;     // number of columns in y
+    uint8_t* x; // input (activations)
+    uint8_t* y; // input (weights)
+    uint8_t* z; // input (biases)
+    uint8_t* w; // output
+};
+
 struct alignas(16) TensorAdamData
 {
     uint64_t n; // number of elements

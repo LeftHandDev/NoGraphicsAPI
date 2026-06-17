@@ -12,6 +12,7 @@ void learningSample()
 {
     Instance instance;
     auto device = instance.device(1);
+
     // try
     // {
     std::vector<float> gt;
@@ -62,30 +63,40 @@ void learningSample()
 
     } autoencoder(device);
 
-    Adam optimizer(autoencoder.parameters(), 0.001f);
+    Adam optimizer(autoencoder.parameters(), 0.001);
 
-    size_t steps = 100;
+    size_t steps = 10;
     auto y = device->tensor({ gt });
 
     float noise_ratio = 0.25;
 
+    auto shape = y.shape();
+    unsigned int batch = 256;
+    shape.insert(shape.begin(), { batch });
+
+    auto start = std::chrono::high_resolution_clock::now();
+
     for (size_t i = 0; i < steps; i++)
     {
+        auto a = (device->rand(shape) * 2.f - 1.f) * noise_ratio + y;
+        auto b = (device->rand(shape) * 2.f - 1.f) * noise_ratio + y;
+
         optimizer.zero_grad();
-        auto a = y + (device->rand(y.shape()) * 2.f - 1.f) * noise_ratio;
-        auto b = y + (device->rand(y.shape()) * 2.f - 1.f) * noise_ratio;
         auto z = autoencoder.forward(a.detach());
         auto L = z.mse(b.detach());
         L.backward();
         optimizer.step();
         device->submit();
         L.cpu([&](std::vector<float> data)
-              { std::cout << "MSE " << data.front() << "\t" << i << "/" << steps << "\t" << std::endl; });
+              { if (i >= steps) return; std::cout << "MSE " << data.front() << "\t" << i << "/" << steps << "\t" << std::endl; });
     }
-
     std::cout << std::endl;
 
-    auto a = y + (device->rand(y.shape()) * 2.f - 1.f) * noise_ratio;
+    auto end = std::chrono::high_resolution_clock::now() - start;
+
+    std::cout << "Training took: " << std::chrono::duration_cast<std::chrono::seconds>(end).count() << " seconds";
+
+    auto a = (device->rand(y.shape()) * 2.f - 1.f) * noise_ratio + y;
     auto z = autoencoder.forward(a);
     stbi_write_hdr("input.exr", 256, 256, 3, a.pow(2.2).cpu().data());
     stbi_write_hdr("output.exr", 256, 256, 3, z.pow(2.2).cpu().data());
@@ -95,7 +106,6 @@ void learningSample()
     // {
     //     std::cerr << e.what() << '\n';
     // }
-
     return;
 }
 

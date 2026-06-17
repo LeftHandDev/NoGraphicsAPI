@@ -455,7 +455,7 @@ GpuTextureDescriptor gpuTextureViewDescriptor(GpuTexture texture, GpuViewDesc de
 GpuTextureDescriptor gpuRWTextureViewDescriptor(GpuTexture texture, GpuViewDesc desc);
 
 // Pipelines
-GpuPipeline gpuCreateComputePipeline(GpuDevice device, ByteSpan computeIR, const char* entry = "main");
+GpuPipeline gpuCreateComputePipeline(GpuDevice device, ByteSpan computeIR, const char* entry = "main", uint32_t requiredSubgroupSize = 0);
 GpuPipeline gpuCreateGraphicsPipeline(GpuDevice device, ByteSpan vertexIR, ByteSpan pixelIR, GpuRasterDesc desc);
 GpuPipeline gpuCreateGraphicsMeshletPipeline(GpuDevice device, ByteSpan meshletIR, ByteSpan pixelIR, GpuRasterDesc desc);
 void gpuFreePipeline(GpuPipeline pipeline);

@@ -2,7 +2,7 @@
 #define SAMPLES_SHADER_RAYTRACING_H
 
 #include "NoGraphicsAPI.h"
-#include "Random.h"
+#include "../common/Random.h"
 
 void raytracingSample();
 
