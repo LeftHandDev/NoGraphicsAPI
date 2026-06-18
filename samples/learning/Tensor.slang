@@ -209,6 +209,30 @@ void _pow_impl_f16(uint t, TensorData* data)
     z[t] = pow(x[t], y[t % data->m]);
 }
 
+void _exp_impl_f32(uint t, TensorData* data)
+{
+    if (t >= data->n)
+    {
+        return;
+    }    
+    float* x = (float*)data->x;
+    float* z = (float*)data->z;
+
+    z[t] = exp(x[t]);
+}
+
+void _exp_impl_f16(uint t, TensorData* data)
+{
+    if (t >= data->n)
+    {
+        return;
+    }    
+    half* x = (half*)data->x;
+    half* z = (half*)data->z;
+
+    z[t] = exp(x[t]);
+}
+
 void _log_impl_f32(uint t, TensorData* data)
 {
     if (t >= data->n)
@@ -231,7 +255,7 @@ void _log_impl_f16(uint t, TensorData* data)
     z[t] = log(x[t]);
 }
 
-void _tanh_impl_f32(uint t, TensorData* data)
+void _sin_impl_f32(uint t, TensorData* data)
 {
     if (t >= data->n)
     {
@@ -239,10 +263,10 @@ void _tanh_impl_f32(uint t, TensorData* data)
     }
     float* x = (float*)data->x;
     float* z = (float*)data->z;
-    z[t] = tanh(x[t]);
+    z[t] = sin(x[t]);
 }
 
-void _tanh_impl_f16(uint t, TensorData* data)
+void _sin_impl_f16(uint t, TensorData* data)
 {
     if (t >= data->n)
     {
@@ -250,7 +274,51 @@ void _tanh_impl_f16(uint t, TensorData* data)
     }
     half* x = (half*)data->x;
     half* z = (half*)data->z;
-    z[t] = tanh(x[t]);
+    z[t] = sin(x[t]);
+}
+
+void _cos_impl_f32(uint t, TensorData* data)
+{
+    if (t >= data->n)
+    {
+        return;
+    }
+    float* x = (float*)data->x;
+    float* z = (float*)data->z;
+    z[t] = cos(x[t]);
+}
+
+void _cos_impl_f16(uint t, TensorData* data)
+{
+    if (t >= data->n)
+    {
+        return;
+    }
+    half* x = (half*)data->x;
+    half* z = (half*)data->z;
+    z[t] = cos(x[t]);
+}
+
+void _tan_impl_f32(uint t, TensorData* data)
+{
+    if (t >= data->n)
+    {
+        return;
+    }
+    float* x = (float*)data->x;
+    float* z = (float*)data->z;
+    z[t] = tan(x[t]);
+}
+
+void _tan_impl_f16(uint t, TensorData* data)
+{
+    if (t >= data->n)
+    {
+        return;
+    }
+    half* x = (half*)data->x;
+    half* z = (half*)data->z;
+    z[t] = tan(x[t]);
 }
 
 void _cosh_impl_f32(uint t, TensorData* data)
@@ -273,6 +341,28 @@ void _cosh_impl_f16(uint t, TensorData* data)
     half* x = (half*)data->x;
     half* z = (half*)data->z;
     z[t] = cosh(x[t]);
+}
+
+void _tanh_impl_f32(uint t, TensorData* data)
+{
+    if (t >= data->n)
+    {
+        return;
+    }
+    float* x = (float*)data->x;
+    float* z = (float*)data->z;
+    z[t] = tanh(x[t]);
+}
+
+void _tanh_impl_f16(uint t, TensorData* data)
+{
+    if (t >= data->n)
+    {
+        return;
+    }
+    half* x = (half*)data->x;
+    half* z = (half*)data->z;
+    z[t] = tanh(x[t]);
 }
 
 void _relu_impl_f32(uint t, TensorData* data)
@@ -492,8 +582,20 @@ void _fp16_fp32(uint t : SV_DispatchThreadID, TensorData* data)
 [numthreads(64, 1, 1)] void _pow_f32(uint t : SV_DispatchThreadID, TensorData* data){ _pow_impl_f32(t, data); }
 [numthreads(64, 1, 1)] void _pow_f16(uint t : SV_DispatchThreadID, TensorData* data){ _pow_impl_f16(t, data); }
 
+[numthreads(64, 1, 1)] void _exp_f32(uint t : SV_DispatchThreadID, TensorData* data){ _exp_impl_f32(t, data); }
+[numthreads(64, 1, 1)] void _exp_f16(uint t : SV_DispatchThreadID, TensorData* data){ _exp_impl_f16(t, data); }
+
 [numthreads(64, 1, 1)] void _log_f32(uint t : SV_DispatchThreadID, TensorData* data){ _log_impl_f32(t, data); }
 [numthreads(64, 1, 1)] void _log_f16(uint t : SV_DispatchThreadID, TensorData* data){ _log_impl_f16(t, data); }
+
+[numthreads(64, 1, 1)] void _sin_f32(uint t : SV_DispatchThreadID, TensorData* data){ _sin_impl_f32(t, data); }
+[numthreads(64, 1, 1)] void _sin_f16(uint t : SV_DispatchThreadID, TensorData* data){ _sin_impl_f16(t, data); }
+
+[numthreads(64, 1, 1)] void _cos_f32(uint t : SV_DispatchThreadID, TensorData* data){ _cos_impl_f32(t, data); }
+[numthreads(64, 1, 1)] void _cos_f16(uint t : SV_DispatchThreadID, TensorData* data){ _cos_impl_f16(t, data); }
+
+[numthreads(64, 1, 1)] void _tan_f32(uint t : SV_DispatchThreadID, TensorData* data){ _tan_impl_f32(t, data); }
+[numthreads(64, 1, 1)] void _tan_f16(uint t : SV_DispatchThreadID, TensorData* data){ _tan_impl_f16(t, data); }
 
 [numthreads(64, 1, 1)] void _cosh_f32(uint t : SV_DispatchThreadID, TensorData* data){ _cosh_impl_f32(t, data); }
 [numthreads(64, 1, 1)] void _cosh_f16(uint t : SV_DispatchThreadID, TensorData* data){ _cosh_impl_f16(t, data); }

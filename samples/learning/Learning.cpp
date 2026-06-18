@@ -65,13 +65,13 @@ void learningSample()
 
     Adam optimizer(autoencoder.parameters(), 0.001);
 
-    size_t steps = 10;
+    size_t steps = 100;
     auto y = device->tensor({ gt });
 
     float noise_ratio = 0.25;
 
     auto shape = y.shape();
-    unsigned int batch = 256;
+    unsigned int batch = 16;
     shape.insert(shape.begin(), { batch });
 
     auto start = std::chrono::high_resolution_clock::now();

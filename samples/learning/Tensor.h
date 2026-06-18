@@ -84,6 +84,9 @@ public:
     Tensor expm1() const;
     Tensor log() const;
     Tensor log1p() const;
+    Tensor sin() const;
+    Tensor cos() const;
+    Tensor tan() const;
     Tensor cosh() const;
     Tensor tanh() const;
     Tensor sech() const;

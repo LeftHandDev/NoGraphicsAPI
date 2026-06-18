@@ -79,7 +79,8 @@ public:
 
         auto tensorIR = loadIR("shaders/learning/Tensor.spv");
         for (auto op : { "add", "sub", "mul", "div", "dot", "mT", "matmul",
-                         "pow", "log", "cosh", "tanh", "relu", "relu_backward", "gelu", "gelu_backward",
+                         "pow", "exp", "log", "sin", "cos", "tan", "cosh", "tanh",
+                         "relu", "relu_backward", "gelu", "gelu_backward",
                          "adam", "rand" })
         {
             std::string name = op;
@@ -1092,6 +1093,13 @@ Tensor Tensor::pow(const Tensor& other) const
 
     tensors_pending_writes[STAGE_COMPUTE].insert(out);
 
+    Tensor self = *this;
+    Tensor result = out.detach();
+    out._self->_backward = [self, other, result](const Tensor& grad)
+    {
+        self._self->grad = (self._self->grad + grad * other * self.pow(other - 1.f)).detach();
+        other._self->grad = (other._self->grad + grad * result * self.log()).detach();
+    };
     return out;
 }
 
@@ -1130,7 +1138,30 @@ Tensor Tensor::rcp() const
 
 Tensor Tensor::exp() const
 {
-    return _self->_device->repeat(e, _shape).pow(*this);
+    auto size = flatten(_shape);
+    auto allocation = _self->_device->alloc(size, _type);
+
+    auto tensor_data = _self->_device->struct_data<TensorData>();
+    tensor_data.cpu->n = size;
+    tensor_data.cpu->x = _self->_allocation.gpu;
+    tensor_data.cpu->y = nullptr;
+    tensor_data.cpu->z = allocation.gpu;
+
+    auto cmd = _self->_device->record();
+    gpuSetPipeline(cmd, _self->_device->pipelines["exp"][_type]);
+    _self->_device->barrier(STAGE_COMPUTE, { *this });
+    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+
+    auto out = Tensor(_self->_device, allocation, { *this }, _shape, _type);
+
+    tensors_pending_writes[STAGE_COMPUTE].insert(out);
+
+    Tensor self = *this;
+    out._self->_backward = [self](const Tensor& grad)
+    {
+        self._self->grad = (self._self->grad + grad * self.exp()).detach();
+    };
+    return out;
 }
 
 Tensor Tensor::expm1() const
@@ -1158,12 +1189,101 @@ Tensor Tensor::log() const
 
     tensors_pending_writes[STAGE_COMPUTE].insert(out);
 
+    Tensor self = *this;
+    out._self->_backward = [self](const Tensor& grad)
+    {
+        self._self->grad = (self._self->grad + grad / self).detach();
+    };
     return out;
 }
 
 Tensor Tensor::log1p() const
 {
     return (*this + 1).log();
+}
+
+Tensor Tensor::sin() const
+{
+    auto size = flatten(_shape);
+    auto allocation = _self->_device->alloc(size, _type);
+
+    auto tensor_data = _self->_device->struct_data<TensorData>();
+    tensor_data.cpu->n = size;
+    tensor_data.cpu->x = _self->_allocation.gpu;
+    tensor_data.cpu->y = nullptr;
+    tensor_data.cpu->z = allocation.gpu;
+
+    auto cmd = _self->_device->record();
+    gpuSetPipeline(cmd, _self->_device->pipelines["sin"][_type]);
+    _self->_device->barrier(STAGE_COMPUTE, { *this });
+    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+
+    auto out = Tensor(_self->_device, allocation, { *this }, _shape, _type);
+
+    tensors_pending_writes[STAGE_COMPUTE].insert(out);
+
+    Tensor self = *this;
+    out._self->_backward = [self](const Tensor& grad)
+    {
+        self._self->grad = (self._self->grad + grad * self.cos()).detach();
+    };
+    return out;
+}
+
+Tensor Tensor::cos() const
+{
+    auto size = flatten(_shape);
+    auto allocation = _self->_device->alloc(size, _type);
+
+    auto tensor_data = _self->_device->struct_data<TensorData>();
+    tensor_data.cpu->n = size;
+    tensor_data.cpu->x = _self->_allocation.gpu;
+    tensor_data.cpu->y = nullptr;
+    tensor_data.cpu->z = allocation.gpu;
+
+    auto cmd = _self->_device->record();
+    gpuSetPipeline(cmd, _self->_device->pipelines["cos"][_type]);
+    _self->_device->barrier(STAGE_COMPUTE, { *this });
+    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+
+    auto out = Tensor(_self->_device, allocation, { *this }, _shape, _type);
+
+    tensors_pending_writes[STAGE_COMPUTE].insert(out);
+
+    Tensor self = *this;
+    out._self->_backward = [self](const Tensor& grad)
+    {
+        self._self->grad = (self._self->grad + grad * -self.sin()).detach();
+    };
+    return out;
+}
+
+Tensor Tensor::tan() const
+{
+    auto size = flatten(_shape);
+    auto allocation = _self->_device->alloc(size, _type);
+
+    auto tensor_data = _self->_device->struct_data<TensorData>();
+    tensor_data.cpu->n = size;
+    tensor_data.cpu->x = _self->_allocation.gpu;
+    tensor_data.cpu->y = nullptr;
+    tensor_data.cpu->z = allocation.gpu;
+
+    auto cmd = _self->_device->record();
+    gpuSetPipeline(cmd, _self->_device->pipelines["tan"][_type]);
+    _self->_device->barrier(STAGE_COMPUTE, { *this });
+    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+
+    auto out = Tensor(_self->_device, allocation, { *this }, _shape, _type);
+
+    tensors_pending_writes[STAGE_COMPUTE].insert(out);
+
+    Tensor self = *this;
+    out._self->_backward = [self](const Tensor& grad)
+    {
+        self._self->grad = (self._self->grad + grad / self.cos().pow(2.f)).detach();
+    };
+    return out;
 }
 
 Tensor Tensor::cosh() const
