@@ -8,6 +8,7 @@
 #include <iostream>
 #include <set>
 #include <chrono>
+#include <fstream>
 
 const uint64_t FRAMES_IN_FLIGHT = 2;
 std::vector<Device*> devices;
@@ -143,9 +144,6 @@ public:
 
     virtual Tensor rand(Shape shape, Tensor::Type type = Tensor::Type::float32) override
     {
-        // Uniform [0, 1) generated on the GPU: a stateless hash PRNG seeded by
-        // a per-call counter avoids ~millions of host-side std::mt19937 calls
-        // and the host->device upload of the resulting buffer.
         auto size = flatten(shape);
         auto allocation = alloc(size, type);
 
@@ -512,6 +510,11 @@ Tensor::operator std::string() const
     return to_string(readback, _shape);
 }
 
+Device* Tensor::device()
+{
+    return _self->_device;
+}
+
 std::vector<float> Tensor::cpu()
 {
     if (_type == Type::float16)
@@ -527,7 +530,7 @@ std::vector<float> Tensor::cpu()
     _self->_device->submit();
     _self->_device->flush();
 
-    std::vector<float> result(size, 0.f);
+    std::vector<float> result(size);
     memcpy(result.data(), readback.cpu, readback.size);
     return result;
 }
@@ -1622,5 +1625,69 @@ void Tensor::backward()
         {
             iter->_self->_backward(iter->_self->grad);
         }
+    }
+}
+
+void Module::save(std::filesystem::path path)
+{
+    std::ofstream file(path, std::ios::binary);
+    auto model = parameters();
+    for (auto tensor : model)
+    {
+        auto data = tensor.cpu();
+        file.write(reinterpret_cast<const char*>(data.data()), data.size() * sizeof(float));
+    }
+}
+
+void Module::load(std::filesystem::path path)
+{
+    std::ifstream file(path, std::ios::binary);
+    auto model = parameters();
+    for (auto tensor : model)
+    {
+        std::vector<float> data(tensor.numel());
+        file.read(reinterpret_cast<char*>(data.data()), data.size() * sizeof(float));
+        auto temp = tensor.device()->tensor(data, tensor.shape());
+        tensor.copy(tensor.type() == Tensor::Type::float32 ? temp : temp.float16());
+    }
+}
+
+void Adam::save(std::filesystem::path path)
+{
+    std::ofstream file(path, std::ios::binary);
+    file.write(reinterpret_cast<const char*>(&_steps), sizeof(uint64_t));
+
+    for (auto tensor : _mean)
+    {
+        auto data = tensor.cpu();
+        file.write(reinterpret_cast<const char*>(data.data()), data.size() * sizeof(float));
+    }
+
+    for (auto tensor : _variance)
+    {
+        auto data = tensor.cpu();
+        file.write(reinterpret_cast<const char*>(data.data()), data.size() * sizeof(float));
+    }
+}
+
+void Adam::load(std::filesystem::path path)
+{
+    std::ifstream file(path, std::ios::binary);
+    file.read(reinterpret_cast<char*>(&_steps), sizeof(uint64_t));
+
+    for (auto tensor : _mean)
+    {
+        std::vector<float> data(tensor.numel());
+        file.read(reinterpret_cast<char*>(data.data()), data.size() * sizeof(float));
+        auto temp = tensor.device()->tensor(data, tensor.shape());
+        tensor.copy(tensor.type() == Tensor::Type::float32 ? temp : temp.float16());
+    }
+
+    for (auto tensor : _variance)
+    {
+        std::vector<float> data(tensor.numel());
+        file.read(reinterpret_cast<char*>(data.data()), data.size() * sizeof(float));
+        auto temp = tensor.device()->tensor(data, tensor.shape());
+        tensor.copy(tensor.type() == Tensor::Type::float32 ? temp : temp.float16());
     }
 }

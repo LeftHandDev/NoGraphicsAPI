@@ -8,6 +8,7 @@
 #include <memory>
 #include <functional>
 #include <set>
+#include <filesystem>
 
 using Shape = std::vector<unsigned int>;
 
@@ -35,6 +36,8 @@ public:
     ~Tensor();
 
     operator std::string() const;
+
+    Device* device();
 
     std::vector<float> cpu();                          // blocking
     void cpu(std::function<void(std::vector<float>)>); // non-blocking
@@ -181,8 +184,10 @@ public:
     ~Module()
     {
     }
-    virtual Tensor forward(const Tensor& in) = 0;
+    virtual Tensor forward(const Tensor&) = 0;
     virtual std::vector<Tensor> parameters() = 0;
+    void save(std::filesystem::path);
+    void load(std::filesystem::path);
 };
 
 class Linear : public Module
@@ -324,6 +329,9 @@ public:
             _parameters[i].copy(_parameters[i] - _lr * _parameters[i].grad().adam(_mean[i], _variance[i], _steps));
         }
     }
+
+    void save(std::filesystem::path path);
+    void load(std::filesystem::path path);
 
 private:
     float _lr;

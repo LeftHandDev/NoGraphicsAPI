@@ -11,7 +11,7 @@
 void learningSample()
 {
     Instance instance;
-    auto device = instance.device(1);
+    auto device = instance.device();
 
     // try
     // {
@@ -63,9 +63,21 @@ void learningSample()
 
     } autoencoder(device);
 
+    std::filesystem::path model_path = "./model.bin";
+    if (std::filesystem::exists(model_path))
+    {
+        autoencoder.load(model_path);
+    }
+
     Adam optimizer(autoencoder.parameters(), 0.001);
 
-    size_t steps = 100;
+    std::filesystem::path opt_path = "./opt.bin";
+    if (std::filesystem::exists(opt_path))
+    {
+        optimizer.load(opt_path);
+    }
+
+    size_t steps = 1000;
     auto y = device->tensor({ gt });
 
     float noise_ratio = 0.25;
@@ -101,6 +113,8 @@ void learningSample()
     stbi_write_hdr("input.exr", 256, 256, 3, a.pow(2.2).cpu().data());
     stbi_write_hdr("output.exr", 256, 256, 3, z.pow(2.2).cpu().data());
     stbi_write_hdr("gt.exr", 256, 256, 3, y.pow(2.2).cpu().data());
+    autoencoder.save(model_path);
+    optimizer.save(opt_path);
     // }
     // catch (const std::exception& e)
     // {
