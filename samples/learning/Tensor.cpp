@@ -10,7 +10,7 @@
 #include <chrono>
 #include <fstream>
 
-const uint64_t FRAMES_IN_FLIGHT = 2;
+const uint64_t FRAMES_IN_FLIGHT = 1;
 std::vector<Device*> devices;
 std::map<STAGE, std::set<Tensor>> tensors_pending_writes;
 
@@ -79,7 +79,7 @@ public:
         }
 
         auto tensorIR = loadIR("shaders/learning/Tensor.spv");
-        for (auto op : { "add", "sub", "mul", "div", "dot", "mT", "matmul",
+        for (auto op : { "add", "sub", "mul", "div", "dot", "permute", "unfold", "unfold_backward", "reduce_sum", "expand", "mT", "matmul",
                          "pow", "exp", "log", "sin", "cos", "tan", "cosh", "tanh",
                          "relu", "relu_backward", "gelu", "gelu_backward",
                          "adam", "rand" })
@@ -228,6 +228,22 @@ public:
     Allocation<T> struct_data()
     {
         auto alloc = struct_allocator[ring()]->allocate<T>(1);
+
+        // submit command buffer if we run out of struct memory on the stack
+        if (struct_allocator[ring()]->fallback_owns<T>(alloc))
+        {
+            struct_allocator[ring()]->free<T>(alloc);
+            submit();
+            alloc = struct_allocator[ring()]->allocate<T>(1);
+        }
+
+        return alloc;
+    }
+
+    template <typename T>
+    Allocation<T> struct_data(size_t size)
+    {
+        auto alloc = struct_allocator[ring()]->allocate<T>(size);
 
         // submit command buffer if we run out of struct memory on the stack
         if (struct_allocator[ring()]->fallback_owns<T>(alloc))
@@ -609,7 +625,7 @@ Tensor Tensor::operator+(const Tensor& other) const
         {
             auto inner = static_cast<unsigned int>(flatten(other._shape));
             auto rows = grad.reshape({ broadcast, inner });
-            auto reduced = self._self->_device->ones({ 1, broadcast }, rows._type).matmul(rows);
+            auto reduced = rows.sum(0); // sum over the broadcast (leading) axis
             other._self->grad = (other._self->grad + reduced.reshape(other._shape)).detach();
         }
         else
@@ -687,7 +703,7 @@ Tensor Tensor::operator-(const Tensor& other) const
         {
             auto inner = static_cast<unsigned int>(flatten(other._shape));
             auto rows = grad.reshape({ broadcast, inner });
-            auto reduced = self._self->_device->ones({ 1, broadcast }).matmul(rows);
+            auto reduced = rows.sum(0); // sum over the broadcast (leading) axis
             other._self->grad = (other._self->grad - reduced.reshape(other._shape)).detach();
         }
         else
@@ -803,7 +819,7 @@ Tensor Tensor::operator/(const Tensor& other) const
             auto inner = static_cast<unsigned int>(flatten(other._shape));
             auto term = grad * (self / (other * other));
             auto rows = term.reshape({ broadcast, inner });
-            auto reduced = self._self->_device->ones({ 1, broadcast }).matmul(rows);
+            auto reduced = rows.sum(0); // sum over the broadcast (leading) axis
             other._self->grad = (other._self->grad - reduced.reshape(other._shape)).detach();
         }
         else
@@ -849,12 +865,273 @@ Tensor Tensor::operator[](unsigned int i) const
     allocation.cpu += (size * i * (_type == Type::float16 ? sizeof(short) : sizeof(float)));
     allocation.gpu += (size * i * (_type == Type::float16 ? sizeof(short) : sizeof(float)));
 
-    return Tensor(_self->_device, allocation, { *this }, res_shape, _type, true);
+    auto out = Tensor(_self->_device, allocation, { *this }, res_shape, _type, true);
+
+    Tensor self = *this;
+    out._self->_backward = [self, i](const Tensor& grad)
+    {
+        if (self._self->grad.null())
+        {
+            self._self->grad = self._self->_device->zeros(self._shape, self._type);
+        }
+
+        auto row = self._self->grad[i];
+        row.copy(row + grad);
+
+        // TODO: instead of slice bool, we should have a linked list in either Tensor or Tensor_Impl
+        // that let's us walk up the ownership chain of slices/views and insert pending writes for everything in the chain
+        tensors_pending_writes[STAGE_TRANSFER].insert(self._self->grad);
+    };
+
+    return out;
 }
 
 Tensor Tensor::repeat(const Tensor& tensor, Shape shape) const
 {
     return _self->_device->repeat(tensor, shape);
+}
+
+Tensor Tensor::unfold(unsigned int k, unsigned int pad) const
+{
+    if (_shape.size() != 3)
+    {
+        throw std::runtime_error("unfold expects a (H, W, C) tensor, got shape " + to_string(_shape));
+    }
+
+    auto H = _shape[0];
+    auto W = _shape[1];
+    auto C = _shape[2];
+
+    Shape out_shape = { H, W, C, k, k };
+    auto size = flatten(out_shape);
+    auto allocation = _self->_device->alloc(size, _type);
+
+    auto tensor_data = _self->_device->struct_data<TensorUnfoldData>();
+    tensor_data.cpu->n = size;
+    tensor_data.cpu->h = H;
+    tensor_data.cpu->w = W;
+    tensor_data.cpu->c = C;
+    tensor_data.cpu->k = k;
+    tensor_data.cpu->pad = pad;
+    tensor_data.cpu->x = _self->_allocation.gpu;
+    tensor_data.cpu->y = allocation.gpu;
+
+    auto cmd = _self->_device->record();
+    gpuSetPipeline(cmd, _self->_device->pipelines["unfold"][_type]);
+    _self->_device->barrier(STAGE_COMPUTE, { *this });
+    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+
+    auto out = Tensor(_self->_device, allocation, { *this }, out_shape, _type);
+
+    tensors_pending_writes[STAGE_COMPUTE].insert(out);
+
+    Tensor self = *this;
+    out._self->_backward = [self, k, pad](const Tensor& grad)
+    {
+        auto H = self._shape[0];
+        auto W = self._shape[1];
+        auto C = self._shape[2];
+        auto in_size = flatten(self._shape);
+        auto allocation = self._self->_device->alloc(in_size, self._type);
+
+        auto tensor_data = self._self->_device->struct_data<TensorUnfoldData>();
+        tensor_data.cpu->n = in_size;
+        tensor_data.cpu->h = H;
+        tensor_data.cpu->w = W;
+        tensor_data.cpu->c = C;
+        tensor_data.cpu->k = k;
+        tensor_data.cpu->pad = pad;
+        tensor_data.cpu->x = grad._self->_allocation.gpu; // grad_out (H,W,C,k,k)
+        tensor_data.cpu->y = allocation.gpu;              // grad_in  (H,W,C)
+
+        auto cmd = self._self->_device->record();
+        gpuSetPipeline(cmd, self._self->_device->pipelines["unfold_backward"][self._type]);
+        self._self->_device->barrier(STAGE_COMPUTE, { self, grad });
+        gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(in_size + 63) / 64, 1, 1 });
+
+        auto term = Tensor(self._self->_device, allocation, {}, self._shape, self._type);
+
+        tensors_pending_writes[STAGE_COMPUTE].insert(term);
+
+        self._self->grad = (self._self->grad + term).detach();
+    };
+
+    return out;
+}
+
+Tensor Tensor::sum(int dim, bool keepdim) const
+{
+    int rank = static_cast<int>(_shape.size());
+    if (dim < 0)
+    {
+        dim += rank;
+    }
+    if (dim < 0 || dim >= rank)
+    {
+        throw std::runtime_error("sum dim out of range for shape " + to_string(_shape));
+    }
+
+    uint64_t outer = 1;
+    for (int i = 0; i < dim; i++)
+    {
+        outer *= _shape[i];
+    }
+    uint64_t axis = _shape[dim];
+    uint64_t inner = 1;
+    for (int i = dim + 1; i < rank; i++)
+    {
+        inner *= _shape[i];
+    }
+
+    Shape out_shape;
+    for (int i = 0; i < rank; i++)
+    {
+        if (i == dim)
+        {
+            if (keepdim)
+            {
+                out_shape.push_back(1);
+            }
+        }
+        else
+        {
+            out_shape.push_back(_shape[i]);
+        }
+    }
+    if (out_shape.empty())
+    {
+        out_shape.push_back(1);
+    }
+
+    auto size = outer * inner; // == flatten(out_shape)
+    auto allocation = _self->_device->alloc(size, _type);
+
+    auto tensor_data = _self->_device->struct_data<TensorReduceData>();
+    tensor_data.cpu->n = size;
+    tensor_data.cpu->outer = outer;
+    tensor_data.cpu->axis = axis;
+    tensor_data.cpu->inner = inner;
+    tensor_data.cpu->x = _self->_allocation.gpu;
+    tensor_data.cpu->y = allocation.gpu;
+
+    auto cmd = _self->_device->record();
+    gpuSetPipeline(cmd, _self->_device->pipelines["reduce_sum"][_type]);
+    _self->_device->barrier(STAGE_COMPUTE, { *this });
+    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+
+    auto out = Tensor(_self->_device, allocation, { *this }, out_shape, _type);
+
+    tensors_pending_writes[STAGE_COMPUTE].insert(out);
+
+    Tensor self = *this;
+    out._self->_backward = [self, outer, axis, inner](const Tensor& grad)
+    {
+        // backward of sum is expand: broadcast grad back over the reduced axis
+        auto in_size = outer * axis * inner;
+        auto allocation = self._self->_device->alloc(in_size, self._type);
+
+        auto tensor_data = self._self->_device->struct_data<TensorReduceData>();
+        tensor_data.cpu->n = in_size;
+        tensor_data.cpu->outer = outer;
+        tensor_data.cpu->axis = axis;
+        tensor_data.cpu->inner = inner;
+        tensor_data.cpu->x = grad._self->_allocation.gpu;
+        tensor_data.cpu->y = allocation.gpu;
+
+        auto cmd = self._self->_device->record();
+        gpuSetPipeline(cmd, self._self->_device->pipelines["expand"][self._type]);
+        self._self->_device->barrier(STAGE_COMPUTE, { grad });
+        gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(in_size + 63) / 64, 1, 1 });
+
+        auto term = Tensor(self._self->_device, allocation, {}, self._shape, self._type);
+
+        tensors_pending_writes[STAGE_COMPUTE].insert(term);
+
+        self._self->grad = (self._self->grad + term).detach();
+    };
+
+    return out;
+}
+
+Tensor Tensor::broadcast(int dim, unsigned int size) const
+{
+    int rank = static_cast<int>(_shape.size());
+    if (dim < 0)
+    {
+        dim += rank;
+    }
+    if (dim < 0 || dim >= rank)
+    {
+        throw std::runtime_error("broadcast dim out of range for shape " + to_string(_shape));
+    }
+    if (_shape[dim] != 1)
+    {
+        throw std::runtime_error("broadcast expects size 1 along dim " + std::to_string(dim) + ", got shape " + to_string(_shape));
+    }
+
+    uint64_t outer = 1;
+    for (int i = 0; i < dim; i++)
+    {
+        outer *= _shape[i];
+    }
+    uint64_t inner = 1;
+    for (int i = dim + 1; i < rank; i++)
+    {
+        inner *= _shape[i];
+    }
+    uint64_t axis = size;
+
+    Shape out_shape = _shape;
+    out_shape[dim] = size;
+
+    auto out_size = outer * axis * inner;
+    auto allocation = _self->_device->alloc(out_size, _type);
+
+    auto tensor_data = _self->_device->struct_data<TensorReduceData>();
+    tensor_data.cpu->n = out_size;
+    tensor_data.cpu->outer = outer;
+    tensor_data.cpu->axis = axis;
+    tensor_data.cpu->inner = inner;
+    tensor_data.cpu->x = _self->_allocation.gpu;
+    tensor_data.cpu->y = allocation.gpu;
+
+    auto cmd = _self->_device->record();
+    gpuSetPipeline(cmd, _self->_device->pipelines["expand"][_type]);
+    _self->_device->barrier(STAGE_COMPUTE, { *this });
+    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(out_size + 63) / 64, 1, 1 });
+
+    auto out = Tensor(_self->_device, allocation, { *this }, out_shape, _type);
+
+    tensors_pending_writes[STAGE_COMPUTE].insert(out);
+
+    Tensor self = *this;
+    out._self->_backward = [self, outer, axis, inner](const Tensor& grad)
+    {
+        // backward of expand is sum: reduce grad over the broadcast axis
+        auto in_size = outer * inner;
+        auto allocation = self._self->_device->alloc(in_size, self._type);
+
+        auto tensor_data = self._self->_device->struct_data<TensorReduceData>();
+        tensor_data.cpu->n = in_size;
+        tensor_data.cpu->outer = outer;
+        tensor_data.cpu->axis = axis;
+        tensor_data.cpu->inner = inner;
+        tensor_data.cpu->x = grad._self->_allocation.gpu;
+        tensor_data.cpu->y = allocation.gpu;
+
+        auto cmd = self._self->_device->record();
+        gpuSetPipeline(cmd, self._self->_device->pipelines["reduce_sum"][self._type]);
+        self._self->_device->barrier(STAGE_COMPUTE, { grad });
+        gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(in_size + 63) / 64, 1, 1 });
+
+        auto term = Tensor(self._self->_device, allocation, {}, self._shape, self._type);
+
+        tensors_pending_writes[STAGE_COMPUTE].insert(term);
+
+        self._self->grad = (self._self->grad + term).detach();
+    };
+
+    return out;
 }
 
 Tensor Tensor::mT() const
@@ -1045,8 +1322,7 @@ Tensor Tensor::affine(const Tensor& weights, const Tensor& biases) const
         w._self->grad = (w._self->grad + self.mT().matmul(grad)).detach();
 
         auto inner = static_cast<uint>(flatten(b._shape));
-        auto ones = self._self->_device->ones({ 1, rows }, grad._type);
-        auto reduced = ones.matmul(grad.reshape({ rows, inner })).reshape(b._shape);
+        auto reduced = grad.reshape({ rows, inner }).sum(0).reshape(b._shape);
         reduced = (b._type == Type::float16) ? reduced.float16() : reduced.float32();
         b._self->grad = (b._self->grad + reduced).detach();
     };
@@ -1437,6 +1713,12 @@ Tensor Tensor::gelu() const
     return out;
 }
 
+Tensor Tensor::softmax() const
+{
+    auto ex = exp();
+    return ex / ex.sum();
+}
+
 Tensor Tensor::float16() const
 {
     if (_type == Type::float16)
@@ -1540,21 +1822,88 @@ Tensor Tensor::reshape(Shape shape) const
 {
     if (flatten(_shape) != flatten(shape))
     {
-        auto error = "cannot reshape tensor of shape " + to_string(_shape) + " into shape " + to_string(shape);
+        auto error = "cannot reshape tensor of shape " + to_string(_shape) + " as shape " + to_string(shape);
         throw std::runtime_error(error);
     }
 
+    auto out = Tensor(_self->_device, _self->_allocation, { *this }, shape, _type, true);
+
+    for (auto& [stage, tensors] : tensors_pending_writes)
+    {
+        if (tensors.count(*this) != 0)
+        {
+            tensors.insert(out);
+        }
+    }
+
+    Tensor self = *this;
+    out._self->_backward = [self](const Tensor& grad)
+    {
+        self._self->grad = (self._self->grad + grad.reshape(self._shape)).detach();
+    };
+
+    return out;
+}
+
+Tensor Tensor::permute(Shape permutation) const
+{
+    if (_shape.size() != permutation.size())
+    {
+        auto error = "cannot permute tensor of shape " + to_string(_shape) + " with permutation " + to_string(permutation);
+        throw std::runtime_error(error);
+    }
+
+    Shape shape;
+    std::vector<bool> seen(_shape.size(), false);
+    for (size_t i = 0; i < permutation.size(); i++)
+    {
+        auto axis = permutation[i];
+        if (axis >= _shape.size() || seen[axis])
+        {
+            auto error = "cannot permute tensor of shape " + to_string(_shape) + " with permutation " + to_string(permutation);
+            throw std::runtime_error(error);
+        }
+        seen[axis] = true;
+        shape.push_back(_shape[axis]);
+    }
+
     auto size = flatten(_shape);
-    auto byte_size = size * (_type == Type::float16 ? sizeof(short) : sizeof(float));
     auto allocation = _self->_device->alloc(size, _type);
 
+    auto shape_data = _self->_device->struct_data<uint32_t>(_shape.size());
+    memcpy(shape_data.cpu, _shape.data(), _shape.size() * sizeof(uint32_t));
+
+    auto permutation_data = _self->_device->struct_data<uint32_t>(permutation.size());
+    memcpy(permutation_data.cpu, permutation.data(), permutation.size() * sizeof(uint32_t));
+
+    auto tensor_data = _self->_device->struct_data<TensorPermuteData>();
+    tensor_data.cpu->n = size;
+    tensor_data.cpu->m = _shape.size();
+    tensor_data.cpu->s = shape_data.gpu;
+    tensor_data.cpu->t = permutation_data.gpu;
+    tensor_data.cpu->x = _self->_allocation.gpu;
+    tensor_data.cpu->y = allocation.gpu;
+
     auto cmd = _self->_device->record();
-    _self->_device->barrier(STAGE_TRANSFER, { *this });
-    gpuMemCpy(cmd, allocation.gpu, _self->_allocation.gpu, byte_size);
+    gpuSetPipeline(cmd, _self->_device->pipelines["permute"][_type]);
+    _self->_device->barrier(STAGE_COMPUTE, { *this });
+    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
 
     auto out = Tensor(_self->_device, allocation, { *this }, shape, _type);
 
-    tensors_pending_writes[STAGE_TRANSFER].insert(out);
+    tensors_pending_writes[STAGE_COMPUTE].insert(out);
+
+    Shape inverse(permutation.size());
+    for (size_t i = 0; i < permutation.size(); i++)
+    {
+        inverse[permutation[i]] = static_cast<unsigned int>(i);
+    }
+
+    Tensor self = *this;
+    out._self->_backward = [self, inverse](const Tensor& grad)
+    {
+        self._self->grad = (self._self->grad + grad.permute(inverse)).detach();
+    };
 
     return out;
 }

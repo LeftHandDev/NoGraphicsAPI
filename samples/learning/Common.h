@@ -13,6 +13,38 @@ struct alignas(16) TensorData
     uint8_t* z; // output
 };
 
+struct alignas(16) TensorPermuteData
+{
+    uint64_t n;  // number of elements in x and y
+    uint64_t m;  // number of elements in s and t
+    uint32_t* s; // input shape
+    uint32_t* t; // permutation of s
+    uint8_t* x;  // input
+    uint8_t* y;  // output
+};
+
+struct alignas(16) TensorUnfoldData
+{
+    uint64_t n; // forward: H*W*C*k*k output elements; backward: H*W*C input elements
+    uint h;     // image height
+    uint w;     // image width
+    uint c;     // channels
+    uint k;     // kernel size
+    uint pad;   // zero-pad radius
+    uint8_t* x; // input  (forward: image (H,W,C); backward: grad_out (H,W,C,k,k))
+    uint8_t* y; // output (forward: neighborhood (H,W,C,k,k); backward: grad_in (H,W,C))
+};
+
+struct alignas(16) TensorReduceData
+{
+    uint64_t n;     // number of output elements
+    uint64_t outer; // product of dims before the axis
+    uint64_t axis;  // size of the reduced (sum) / expanded (broadcast) axis
+    uint64_t inner; // product of dims after the axis
+    uint8_t* x;     // input
+    uint8_t* y;     // output
+};
+
 struct alignas(16) TensorTransposeData
 {
     uint64_t n; // number of elements in x and y

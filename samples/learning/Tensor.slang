@@ -93,6 +93,197 @@ void _dot_impl_f16(uint t, TensorData* data)
     z[0] = half(result);
 }
 
+void _permute_impl<T : IArithmetic>(uint t, TensorPermuteData *data)
+{
+    if (t >= data->n)
+    {
+        return;
+    }
+    T* x = (T*)data->x;
+    T* y = (T*)data->y;
+
+    int m = (int)data->m;
+
+    uint64_t dst = 0;
+    uint64_t dst_stride = 1;
+    for (int i = m - 1; i >= 0; i--)
+    {
+        uint a = data->t[i]; // input axis
+
+        uint64_t src_stride = 1;
+        for (uint k = a + 1; k < m; k++)
+        {
+            src_stride *= data->s[k];
+        }
+
+        uint coord = uint((t / src_stride) % data->s[a]);
+        dst += uint64_t(coord) * dst_stride;
+        dst_stride *= data->s[a];
+    }
+
+    y[dst] = x[t];
+}
+
+void _unfold_impl<T : IArithmetic>(uint t, TensorUnfoldData *data)
+{
+    if (t >= data->n)
+    {
+        return;
+    }
+    T* x = (T*)data->x; // (H, W, C)
+    T* y = (T*)data->y; // (H, W, C, k, k)
+
+    uint k = data->k;
+
+    // decode output index t over (H, W, C, k, k)
+    uint dx = t % k;
+    uint r1 = t / k;
+    uint dy = r1 % k;
+    uint r2 = r1 / k;
+    uint c = r2 % data->c;
+    uint r3 = r2 / data->c;
+    uint col = r3 % data->w;
+    uint row = r3 / data->w;
+
+    int sy = int(row) + int(dy) - int(data->pad);
+    int sx = int(col) + int(dx) - int(data->pad);
+
+    // zero padding: out-of-bounds neighbours contribute 0
+    if (sy < 0 || sy >= int(data->h) || sx < 0 || sx >= int(data->w))
+    {
+        y[t] = T(0);
+        return;
+    }
+
+    uint src = (uint(sy) * data->w + uint(sx)) * data->c + c;
+    y[t] = x[src];
+}
+
+void _unfold_backward_impl_f32(uint t, TensorUnfoldData *data)
+{
+    if (t >= data->n)
+    {
+        return;
+    }
+    float* x = (float*)data->x; // grad_out (H, W, C, k, k)
+    float* y = (float*)data->y; // grad_in  (H, W, C)
+
+    uint k = data->k;
+
+    // decode input index t over (H, W, C)
+    uint c = t % data->c;
+    uint r1 = t / data->c;
+    uint col = r1 % data->w;
+    uint row = r1 / data->w;
+
+    float acc = 0.f;
+    for (uint dy = 0; dy < k; dy++)
+    {
+        for (uint dx = 0; dx < k; dx++)
+        {
+            int oy = int(row) - int(dy) + int(data->pad);
+            int ox = int(col) - int(dx) + int(data->pad);
+            if (oy < 0 || oy >= int(data->h) || ox < 0 || ox >= int(data->w))
+            {
+                continue;
+            }
+            uint go = (((uint(oy) * data->w + uint(ox)) * data->c + c) * k + dy) * k + dx;
+            acc += x[go];
+        }
+    }
+    y[t] = acc;
+}
+
+void _unfold_backward_impl_f16(uint t, TensorUnfoldData *data)
+{
+    if (t >= data->n)
+    {
+        return;
+    }
+    half* x = (half*)data->x; // grad_out (H, W, C, k, k)
+    half* y = (half*)data->y; // grad_in  (H, W, C)
+
+    uint k = data->k;
+
+    // decode input index t over (H, W, C)
+    uint c = t % data->c;
+    uint r1 = t / data->c;
+    uint col = r1 % data->w;
+    uint row = r1 / data->w;
+
+    float acc = 0.f;
+    for (uint dy = 0; dy < k; dy++)
+    {
+        for (uint dx = 0; dx < k; dx++)
+        {
+            int oy = int(row) - int(dy) + int(data->pad);
+            int ox = int(col) - int(dx) + int(data->pad);
+            if (oy < 0 || oy >= int(data->h) || ox < 0 || ox >= int(data->w))
+            {
+                continue;
+            }
+            uint go = (((uint(oy) * data->w + uint(ox)) * data->c + c) * k + dy) * k + dx;
+            acc += x[go];
+        }
+    }
+    y[t] = (half)acc;
+}
+
+void _reduce_sum_impl_f32(uint t, TensorReduceData *data)
+{
+    if (t >= data->n)
+    {
+        return;
+    }
+    float* x = (float*)data->x;
+    float* y = (float*)data->y;
+
+    uint o = uint(t / data->inner);
+    uint j = uint(t % data->inner);
+
+    float acc = 0.f;
+    for (uint a = 0; a < data->axis; a++)
+    {
+        acc += x[(o * data->axis + a) * data->inner + j];
+    }
+    y[t] = acc;
+}
+
+void _reduce_sum_impl_f16(uint t, TensorReduceData *data)
+{
+    if (t >= data->n)
+    {
+        return;
+    }
+    half* x = (half*)data->x;
+    half* y = (half*)data->y;
+
+    uint o = uint(t / data->inner);
+    uint j = uint(t % data->inner);
+
+    float acc = 0.f;
+    for (uint a = 0; a < data->axis; a++)
+    {
+        acc += x[(o * data->axis + a) * data->inner + j];
+    }
+    y[t] = (half)acc;
+}
+
+void _expand_impl<T : IArithmetic>(uint t, TensorReduceData *data)
+{
+    if (t >= data->n)
+    {
+        return;
+    }
+    T* x = (T*)data->x;
+    T* y = (T*)data->y;
+
+    uint j = uint(t % data->inner);
+    uint o = uint(t / (data->axis * data->inner));
+
+    y[t] = x[o * data->inner + j];
+}
+
 void _mT_impl<T : IArithmetic>(uint t, TensorTransposeData *data)
 {
     if (t >= data->n)
@@ -569,6 +760,21 @@ void _fp16_fp32(uint t : SV_DispatchThreadID, TensorData* data)
 
 [numthreads(64, 1, 1)] void _div_f32(uint t : SV_DispatchThreadID, TensorData* data){ _div_impl<float>(t, data); }
 [numthreads(64, 1, 1)] void _div_f16(uint t : SV_DispatchThreadID, TensorData* data){ _div_impl<half>(t, data); }
+
+[numthreads(64, 1, 1)] void _permute_f32(uint t : SV_DispatchThreadID, TensorPermuteData* data){ _permute_impl<float>(t, data); }
+[numthreads(64, 1, 1)] void _permute_f16(uint t : SV_DispatchThreadID, TensorPermuteData* data){ _permute_impl<half>(t, data); }
+
+[numthreads(64, 1, 1)] void _unfold_f32(uint t : SV_DispatchThreadID, TensorUnfoldData* data){ _unfold_impl<float>(t, data); }
+[numthreads(64, 1, 1)] void _unfold_f16(uint t : SV_DispatchThreadID, TensorUnfoldData* data){ _unfold_impl<half>(t, data); }
+
+[numthreads(64, 1, 1)] void _unfold_backward_f32(uint t : SV_DispatchThreadID, TensorUnfoldData* data){ _unfold_backward_impl_f32(t, data); }
+[numthreads(64, 1, 1)] void _unfold_backward_f16(uint t : SV_DispatchThreadID, TensorUnfoldData* data){ _unfold_backward_impl_f16(t, data); }
+
+[numthreads(64, 1, 1)] void _reduce_sum_f32(uint t : SV_DispatchThreadID, TensorReduceData* data){ _reduce_sum_impl_f32(t, data); }
+[numthreads(64, 1, 1)] void _reduce_sum_f16(uint t : SV_DispatchThreadID, TensorReduceData* data){ _reduce_sum_impl_f16(t, data); }
+
+[numthreads(64, 1, 1)] void _expand_f32(uint t : SV_DispatchThreadID, TensorReduceData* data){ _expand_impl<float>(t, data); }
+[numthreads(64, 1, 1)] void _expand_f16(uint t : SV_DispatchThreadID, TensorReduceData* data){ _expand_impl<half>(t, data); }
 
 [numthreads(64, 1, 1)] void _mT_f32(uint t : SV_DispatchThreadID, TensorTransposeData* data){ _mT_impl<float>(t, data); }
 [numthreads(64, 1, 1)] void _mT_f16(uint t : SV_DispatchThreadID, TensorTransposeData* data){ _mT_impl<half>(t, data); }

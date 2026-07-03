@@ -51,9 +51,12 @@ public:
 
     Tensor grad() const;
     Tensor reshape(Shape) const;
+    Tensor permute(Shape) const;
     Tensor detach() const; // create a clone detached from the graph
 
     Tensor repeat(const Tensor&, Shape) const;
+    Tensor unfold(unsigned int, unsigned int) const; // im2col: (H,W,C) -> (H,W,C,k,k), zero padded
+
     void copy(const Tensor&) const; // copy from
     void backward();
 
@@ -81,6 +84,8 @@ public:
 
     Tensor mse(const Tensor&) const;
     Tensor sum() const;
+    Tensor sum(int dim, bool keepdim = false) const;    // reduce-sum over a single axis
+    Tensor broadcast(int dim, unsigned int size) const; // repeat a size-1 axis (dual of sum)
     Tensor sqrt() const;
     Tensor rcp() const;
     Tensor exp() const;
@@ -95,6 +100,7 @@ public:
     Tensor sech() const;
     Tensor relu(float = 0.f) const;
     Tensor gelu() const;
+    Tensor softmax() const;
 
     Tensor float16() const;
     Tensor float32() const;
