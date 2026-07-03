@@ -45,6 +45,9 @@ public:
     bool null() const;
     void zero() const; // zero the grad
 
+    bool requires_grad() const;
+    Tensor& requires_grad(bool value); // mark this tensor as a grad-tracking leaf
+
     Shape shape() const;
     Type type() const;
     uint64_t numel() const;
@@ -161,6 +164,19 @@ inline std::ostream& operator<<(std::ostream& os, const Tensor& t)
     return os << static_cast<std::string>(t);
 }
 
+// Scope disable grad tracking
+class NoGrad
+{
+public:
+    NoGrad();
+    ~NoGrad();
+    NoGrad(const NoGrad&) = delete;
+    NoGrad& operator=(const NoGrad&) = delete;
+
+private:
+    bool _previous;
+};
+
 class Device
 {
 public:
@@ -200,13 +216,16 @@ class Linear : public Module
 {
 public:
     Linear(Device* device, unsigned int in, unsigned int out, bool affine)
-        : _weights(((device->rand({ in, out }) * 2.f - 1.f) * sqrt(1.f / in)).detach()),
+        : _weights((device->rand({ in, out }) * 2.f - 1.f) * sqrt(1.f / in)),
           _biases(device->zeros({ 1, out }))
     {
         if (affine)
         {
             _weights = _weights.float16();
         }
+
+        _weights.requires_grad(true);
+        _biases.requires_grad(true);
     }
 
     virtual Tensor forward(const Tensor& in) override
@@ -305,6 +324,7 @@ public:
 
     virtual void step() override
     {
+        NoGrad no_grad;
         for (auto& p : _parameters)
         {
             p.copy(p - _lr * p.grad());
@@ -320,6 +340,7 @@ class Adam : public Optimizer
 public:
     Adam(std::vector<Tensor> parameters, float lr) : Optimizer(parameters), _lr(lr)
     {
+        NoGrad no_grad;
         for (auto p : parameters)
         {
             _mean.push_back(p * 0.f);
@@ -329,6 +350,7 @@ public:
 
     virtual void step() override
     {
+        NoGrad no_grad;
         ++_steps;
         for (size_t i = 0; i < _parameters.size(); i++)
         {

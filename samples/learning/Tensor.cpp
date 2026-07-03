@@ -358,6 +358,48 @@ public:
     std::map<uint64_t, std::vector<std::pair<Allocation<float>, std::function<void(std::vector<float>)>>>> cpu_callbacks;
 };
 
+// Prevents grad tracking in backward pass
+static bool g_grad_enabled = true;
+
+NoGrad::NoGrad() : _previous(g_grad_enabled)
+{
+    g_grad_enabled = false;
+}
+
+NoGrad::~NoGrad()
+{
+    g_grad_enabled = _previous;
+}
+
+// Proxy for a tensor's backward closure
+class GradFn
+{
+public:
+    bool _enabled = false;
+
+    GradFn& operator=(std::function<void(const Tensor&)> fn)
+    {
+        if (_enabled)
+        {
+            _fn = std::move(fn);
+        }
+        return *this;
+    }
+
+    explicit operator bool() const
+    {
+        return static_cast<bool>(_fn);
+    }
+
+    void operator()(const Tensor& grad) const
+    {
+        _fn(grad);
+    }
+
+private:
+    std::function<void(const Tensor&)> _fn;
+};
+
 class Tensor_impl
 {
 public:
@@ -371,9 +413,10 @@ public:
     Device_impl* _device = nullptr;
     Allocation<uint8_t> _allocation;
     bool _slice = false;
+    bool _requires_grad = false;
     Tensor grad;
     std::vector<Tensor> _prev;
-    std::function<void(const Tensor&)> _backward;
+    GradFn _backward;
 };
 
 Instance::Instance()
@@ -435,7 +478,29 @@ Tensor::Tensor(Device_impl* device, std::vector<float> data, std::vector<Tensor>
     _self->_device = device;
     _self->_allocation = _self->_device->alloc(data.size(), _type);
     _self->_slice = slice;
-    _self->_prev = std::move(prev);
+
+    bool requires_grad = false;
+    if (g_grad_enabled)
+    {
+        for (auto& p : prev)
+        {
+            if (p._self && p._self->_requires_grad)
+            {
+                requires_grad = true;
+                break;
+            }
+        }
+    }
+    _self->_requires_grad = requires_grad;
+    _self->_backward._enabled = requires_grad;
+
+    // Views must keep their parent alive so the shared buffer stays valid; other
+    // tensors only retain their inputs when a backward pass will actually need them.
+    if (requires_grad || slice)
+    {
+        _self->_prev = std::move(prev);
+    }
+
     memcpy(_self->_allocation.cpu, data.data(), _self->_allocation.size);
 
     if (type == Type::float16)
@@ -448,12 +513,45 @@ Tensor::Tensor(Device_impl* device, Allocation<uint8_t> allocation, std::vector<
     : _shape(shape), _type(type)
 {
     _self = std::make_shared<Tensor_impl>(device, allocation, slice);
-    _self->_prev = std::move(prev);
+
+    bool requires_grad = false;
+    if (g_grad_enabled)
+    {
+        for (auto& p : prev)
+        {
+            if (p._self && p._self->_requires_grad)
+            {
+                requires_grad = true;
+                break;
+            }
+        }
+    }
+    _self->_requires_grad = requires_grad;
+    _self->_backward._enabled = requires_grad;
+
+    // Views must keep their parent alive so the shared buffer stays valid; other
+    // tensors only retain their inputs when a backward pass will actually need them.
+    if (requires_grad || slice)
+    {
+        _self->_prev = std::move(prev);
+    }
 }
 
 bool Tensor::null() const
 {
     return _shape.empty();
+}
+
+bool Tensor::requires_grad() const
+{
+    return _self && _self->_requires_grad;
+}
+
+Tensor& Tensor::requires_grad(bool value)
+{
+    _self->_requires_grad = value;
+    _self->_backward._enabled = value;
+    return *this;
 }
 
 void Tensor::zero() const
@@ -619,18 +717,18 @@ Tensor Tensor::operator+(const Tensor& other) const
     Tensor self = *this;
     out._self->_backward = [self, other, broadcast](const Tensor& grad)
     {
-        self._self->grad = (self._self->grad + grad).detach();
+        self._self->grad = self._self->grad + grad;
 
         if (broadcast > 1)
         {
             auto inner = static_cast<unsigned int>(flatten(other._shape));
             auto rows = grad.reshape({ broadcast, inner });
             auto reduced = rows.sum(0); // sum over the broadcast (leading) axis
-            other._self->grad = (other._self->grad + reduced.reshape(other._shape)).detach();
+            other._self->grad = other._self->grad + reduced.reshape(other._shape);
         }
         else
         {
-            other._self->grad = (other._self->grad + grad).detach();
+            other._self->grad = other._self->grad + grad;
         }
     };
     return out;
@@ -697,18 +795,18 @@ Tensor Tensor::operator-(const Tensor& other) const
     Tensor self = *this;
     out._self->_backward = [self, other, broadcast](const Tensor& grad)
     {
-        self._self->grad = (self._self->grad + grad).detach();
+        self._self->grad = self._self->grad + grad;
 
         if (broadcast > 1)
         {
             auto inner = static_cast<unsigned int>(flatten(other._shape));
             auto rows = grad.reshape({ broadcast, inner });
             auto reduced = rows.sum(0); // sum over the broadcast (leading) axis
-            other._self->grad = (other._self->grad - reduced.reshape(other._shape)).detach();
+            other._self->grad = other._self->grad - reduced.reshape(other._shape);
         }
         else
         {
-            other._self->grad = (other._self->grad - grad).detach();
+            other._self->grad = other._self->grad - grad;
         }
     };
     return out;
@@ -760,8 +858,8 @@ Tensor Tensor::operator*(const Tensor& other) const
     Tensor self = *this;
     out._self->_backward = [self, other](const Tensor& grad)
     {
-        self._self->grad = (self._self->grad + (grad * other)).detach();
-        other._self->grad = (other._self->grad + (grad * self)).detach();
+        self._self->grad = self._self->grad + (grad * other);
+        other._self->grad = other._self->grad + (grad * self);
     };
     return out;
 }
@@ -812,7 +910,7 @@ Tensor Tensor::operator/(const Tensor& other) const
     Tensor self = *this;
     out._self->_backward = [self, other, broadcast](const Tensor& grad)
     {
-        self._self->grad = (self._self->grad + (grad / other)).detach();
+        self._self->grad = self._self->grad + (grad / other);
 
         if (broadcast > 1)
         {
@@ -820,11 +918,11 @@ Tensor Tensor::operator/(const Tensor& other) const
             auto term = grad * (self / (other * other));
             auto rows = term.reshape({ broadcast, inner });
             auto reduced = rows.sum(0); // sum over the broadcast (leading) axis
-            other._self->grad = (other._self->grad - reduced.reshape(other._shape)).detach();
+            other._self->grad = other._self->grad - reduced.reshape(other._shape);
         }
         else
         {
-            other._self->grad = (other._self->grad - grad * (self / (other * other))).detach();
+            other._self->grad = other._self->grad - grad * (self / (other * other));
         }
     };
     return out;
@@ -953,7 +1051,7 @@ Tensor Tensor::unfold(unsigned int k, unsigned int pad) const
 
         tensors_pending_writes[STAGE_COMPUTE].insert(term);
 
-        self._self->grad = (self._self->grad + term).detach();
+        self._self->grad = self._self->grad + term;
     };
 
     return out;
@@ -1047,7 +1145,7 @@ Tensor Tensor::sum(int dim, bool keepdim) const
 
         tensors_pending_writes[STAGE_COMPUTE].insert(term);
 
-        self._self->grad = (self._self->grad + term).detach();
+        self._self->grad = self._self->grad + term;
     };
 
     return out;
@@ -1128,7 +1226,7 @@ Tensor Tensor::broadcast(int dim, unsigned int size) const
 
         tensors_pending_writes[STAGE_COMPUTE].insert(term);
 
-        self._self->grad = (self._self->grad + term).detach();
+        self._self->grad = self._self->grad + term;
     };
 
     return out;
@@ -1201,8 +1299,8 @@ Tensor Tensor::dot(const Tensor& other) const
     Tensor self = *this;
     out._self->_backward = [self, other](const Tensor& grad)
     {
-        self._self->grad = (self._self->grad + other * grad).detach();
-        other._self->grad = (other._self->grad + self * grad).detach();
+        self._self->grad = self._self->grad + other * grad;
+        other._self->grad = other._self->grad + self * grad;
     };
     return out;
 }
@@ -1253,8 +1351,8 @@ Tensor Tensor::matmul(const Tensor& other) const
     Tensor self = *this;
     out._self->_backward = [self, other](const Tensor& grad)
     {
-        self._self->grad = (self._self->grad + grad.matmul(other.mT())).detach();
-        other._self->grad = (other._self->grad + self.mT().matmul(grad)).detach();
+        self._self->grad = self._self->grad + grad.matmul(other.mT());
+        other._self->grad = other._self->grad + self.mT().matmul(grad);
     };
     return out;
 }
@@ -1318,13 +1416,13 @@ Tensor Tensor::affine(const Tensor& weights, const Tensor& biases) const
     uint rows = res_shape.front();
     out._self->_backward = [self, w, b, rows](const Tensor& grad)
     {
-        self._self->grad = (self._self->grad + grad.matmul(w.mT())).detach();
-        w._self->grad = (w._self->grad + self.mT().matmul(grad)).detach();
+        self._self->grad = self._self->grad + grad.matmul(w.mT());
+        w._self->grad = w._self->grad + self.mT().matmul(grad);
 
         auto inner = static_cast<uint>(flatten(b._shape));
         auto reduced = grad.reshape({ rows, inner }).sum(0).reshape(b._shape);
         reduced = (b._type == Type::float16) ? reduced.float16() : reduced.float32();
-        b._self->grad = (b._self->grad + reduced).detach();
+        b._self->grad = b._self->grad + reduced;
     };
     return out;
 }
@@ -1376,8 +1474,8 @@ Tensor Tensor::pow(const Tensor& other) const
     Tensor result = out.detach();
     out._self->_backward = [self, other, result](const Tensor& grad)
     {
-        self._self->grad = (self._self->grad + grad * other * self.pow(other - 1.f)).detach();
-        other._self->grad = (other._self->grad + grad * result * self.log()).detach();
+        self._self->grad = self._self->grad + grad * other * self.pow(other - 1.f);
+        other._self->grad = other._self->grad + grad * result * self.log();
     };
     return out;
 }
@@ -1438,7 +1536,7 @@ Tensor Tensor::exp() const
     Tensor self = *this;
     out._self->_backward = [self](const Tensor& grad)
     {
-        self._self->grad = (self._self->grad + grad * self.exp()).detach();
+        self._self->grad = self._self->grad + grad * self.exp();
     };
     return out;
 }
@@ -1471,7 +1569,7 @@ Tensor Tensor::log() const
     Tensor self = *this;
     out._self->_backward = [self](const Tensor& grad)
     {
-        self._self->grad = (self._self->grad + grad / self).detach();
+        self._self->grad = self._self->grad + grad / self;
     };
     return out;
 }
@@ -1504,7 +1602,7 @@ Tensor Tensor::sin() const
     Tensor self = *this;
     out._self->_backward = [self](const Tensor& grad)
     {
-        self._self->grad = (self._self->grad + grad * self.cos()).detach();
+        self._self->grad = self._self->grad + grad * self.cos();
     };
     return out;
 }
@@ -1532,7 +1630,7 @@ Tensor Tensor::cos() const
     Tensor self = *this;
     out._self->_backward = [self](const Tensor& grad)
     {
-        self._self->grad = (self._self->grad + grad * -self.sin()).detach();
+        self._self->grad = self._self->grad + grad * -self.sin();
     };
     return out;
 }
@@ -1560,7 +1658,7 @@ Tensor Tensor::tan() const
     Tensor self = *this;
     out._self->_backward = [self](const Tensor& grad)
     {
-        self._self->grad = (self._self->grad + grad / self.cos().pow(2.f)).detach();
+        self._self->grad = self._self->grad + grad / self.cos().pow(2.f);
     };
     return out;
 }
@@ -1611,7 +1709,7 @@ Tensor Tensor::tanh() const
     Tensor self = *this;
     out._self->_backward = [self](const Tensor& grad)
     {
-        self._self->grad = (self._self->grad + grad / self.cosh().pow(2.f)).detach();
+        self._self->grad = self._self->grad + grad / self.cosh().pow(2.f);
     };
     return out;
 }
@@ -1663,7 +1761,7 @@ Tensor Tensor::relu(float alpha) const
 
         tensors_pending_writes[STAGE_COMPUTE].insert(term);
 
-        self._self->grad = (self._self->grad + term).detach();
+        self._self->grad = self._self->grad + term;
     };
     return out;
 }
@@ -1708,7 +1806,7 @@ Tensor Tensor::gelu() const
 
         tensors_pending_writes[STAGE_COMPUTE].insert(term);
 
-        self._self->grad = (self._self->grad + term).detach();
+        self._self->grad = self._self->grad + term;
     };
     return out;
 }
@@ -1747,7 +1845,7 @@ Tensor Tensor::float16() const
     Tensor self = *this;
     out._self->_backward = [self](const Tensor& grad)
     {
-        self._self->grad = (self._self->grad + grad.float32()).detach();
+        self._self->grad = self._self->grad + grad.float32();
     };
     return out;
 }
@@ -1780,7 +1878,7 @@ Tensor Tensor::float32() const
     Tensor self = *this;
     out._self->_backward = [self](const Tensor& grad)
     {
-        self._self->grad = (self._self->grad + grad.float16()).detach();
+        self._self->grad = self._self->grad + grad.float16();
     };
     return out;
 }
@@ -1839,7 +1937,7 @@ Tensor Tensor::reshape(Shape shape) const
     Tensor self = *this;
     out._self->_backward = [self](const Tensor& grad)
     {
-        self._self->grad = (self._self->grad + grad.reshape(self._shape)).detach();
+        self._self->grad = self._self->grad + grad.reshape(self._shape);
     };
 
     return out;
@@ -1902,7 +2000,7 @@ Tensor Tensor::permute(Shape permutation) const
     Tensor self = *this;
     out._self->_backward = [self, inverse](const Tensor& grad)
     {
-        self._self->grad = (self._self->grad + grad.permute(inverse)).detach();
+        self._self->grad = self._self->grad + grad.permute(inverse);
     };
 
     return out;
@@ -1968,6 +2066,9 @@ void Tensor::backward()
     build(*this, visited, graph);
 
     _self->grad = _self->_device->ones(_shape, _type);
+
+    // No grad scope lock to prevent grad accumulation in backward
+    NoGrad no_grad;
     for (auto iter = graph.rbegin(); iter != graph.rend(); iter++)
     {
         if (iter->_self->_backward)
