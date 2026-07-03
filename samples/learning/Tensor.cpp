@@ -79,7 +79,7 @@ public:
         }
 
         auto tensorIR = loadIR("shaders/learning/Tensor.spv");
-        for (auto op : { "add", "sub", "mul", "div", "dot", "permute", "unfold", "unfold_backward", "reduce_sum", "expand", "mT", "matmul",
+        for (auto op : { "add", "sub", "mul", "div", "dot", "permute", "unfold", "unfold_backward", "reduce_sum", "reduce_max", "reduce_max_backward", "expand", "mT", "matmul",
                          "pow", "exp", "log", "sin", "cos", "tan", "cosh", "tanh",
                          "relu", "relu_backward", "gelu", "gelu_backward",
                          "adam", "rand" })
@@ -989,7 +989,7 @@ Tensor Tensor::repeat(const Tensor& tensor, Shape shape) const
     return _self->_device->repeat(tensor, shape);
 }
 
-Tensor Tensor::unfold(unsigned int k, unsigned int pad) const
+Tensor Tensor::unfold(unsigned int k, unsigned int pad, Pad mode) const
 {
     if (_shape.size() != 3)
     {
@@ -1011,6 +1011,7 @@ Tensor Tensor::unfold(unsigned int k, unsigned int pad) const
     tensor_data.cpu->c = C;
     tensor_data.cpu->k = k;
     tensor_data.cpu->pad = pad;
+    tensor_data.cpu->mode = static_cast<unsigned int>(mode);
     tensor_data.cpu->x = _self->_allocation.gpu;
     tensor_data.cpu->y = allocation.gpu;
 
@@ -1024,7 +1025,7 @@ Tensor Tensor::unfold(unsigned int k, unsigned int pad) const
     tensors_pending_writes[STAGE_COMPUTE].insert(out);
 
     Tensor self = *this;
-    out._self->_backward = [self, k, pad](const Tensor& grad)
+    out._self->_backward = [self, k, pad, mode](const Tensor& grad)
     {
         auto H = self._shape[0];
         auto W = self._shape[1];
@@ -1039,6 +1040,7 @@ Tensor Tensor::unfold(unsigned int k, unsigned int pad) const
         tensor_data.cpu->c = C;
         tensor_data.cpu->k = k;
         tensor_data.cpu->pad = pad;
+        tensor_data.cpu->mode = static_cast<unsigned int>(mode);
         tensor_data.cpu->x = grad._self->_allocation.gpu; // grad_out (H,W,C,k,k)
         tensor_data.cpu->y = allocation.gpu;              // grad_in  (H,W,C)
 
@@ -1139,6 +1141,101 @@ Tensor Tensor::sum(int dim, bool keepdim) const
         auto cmd = self._self->_device->record();
         gpuSetPipeline(cmd, self._self->_device->pipelines["expand"][self._type]);
         self._self->_device->barrier(STAGE_COMPUTE, { grad });
+        gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(in_size + 63) / 64, 1, 1 });
+
+        auto term = Tensor(self._self->_device, allocation, {}, self._shape, self._type);
+
+        tensors_pending_writes[STAGE_COMPUTE].insert(term);
+
+        self._self->grad = self._self->grad + term;
+    };
+
+    return out;
+}
+
+Tensor Tensor::max(int dim, bool keepdim) const
+{
+    int rank = static_cast<int>(_shape.size());
+    if (dim < 0)
+    {
+        dim += rank;
+    }
+    if (dim < 0 || dim >= rank)
+    {
+        throw std::runtime_error("max dim out of range for shape " + to_string(_shape));
+    }
+
+    uint64_t outer = 1;
+    for (int i = 0; i < dim; i++)
+    {
+        outer *= _shape[i];
+    }
+    uint64_t axis = _shape[dim];
+    uint64_t inner = 1;
+    for (int i = dim + 1; i < rank; i++)
+    {
+        inner *= _shape[i];
+    }
+
+    Shape out_shape;
+    for (int i = 0; i < rank; i++)
+    {
+        if (i == dim)
+        {
+            if (keepdim)
+            {
+                out_shape.push_back(1);
+            }
+        }
+        else
+        {
+            out_shape.push_back(_shape[i]);
+        }
+    }
+    if (out_shape.empty())
+    {
+        out_shape.push_back(1);
+    }
+
+    auto size = outer * inner; // == flatten(out_shape)
+    auto allocation = _self->_device->alloc(size, _type);
+
+    auto tensor_data = _self->_device->struct_data<TensorReduceData>();
+    tensor_data.cpu->n = size;
+    tensor_data.cpu->outer = outer;
+    tensor_data.cpu->axis = axis;
+    tensor_data.cpu->inner = inner;
+    tensor_data.cpu->x = _self->_allocation.gpu;
+    tensor_data.cpu->y = allocation.gpu;
+
+    auto cmd = _self->_device->record();
+    gpuSetPipeline(cmd, _self->_device->pipelines["reduce_max"][_type]);
+    _self->_device->barrier(STAGE_COMPUTE, { *this });
+    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+
+    auto out = Tensor(_self->_device, allocation, { *this }, out_shape, _type);
+
+    tensors_pending_writes[STAGE_COMPUTE].insert(out);
+
+    Tensor self = *this;
+    out._self->_backward = [self, outer, axis, inner](const Tensor& grad)
+    {
+        // backward of max routes grad only to the (first) argmax element of each group
+        auto in_size = outer * axis * inner;
+        auto allocation = self._self->_device->alloc(in_size, self._type);
+
+        auto tensor_data = self._self->_device->struct_data<TensorReduceData>();
+        tensor_data.cpu->n = in_size;
+        tensor_data.cpu->outer = outer;
+        tensor_data.cpu->axis = axis;
+        tensor_data.cpu->inner = inner;
+        tensor_data.cpu->x = self._self->_allocation.gpu; // original input
+        tensor_data.cpu->y = allocation.gpu;              // grad_in
+        tensor_data.cpu->z = grad._self->_allocation.gpu; // grad_out
+
+        auto cmd = self._self->_device->record();
+        gpuSetPipeline(cmd, self._self->_device->pipelines["reduce_max_backward"][self._type]);
+        self._self->_device->barrier(STAGE_COMPUTE, { self, grad });
         gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(in_size + 63) / 64, 1, 1 });
 
         auto term = Tensor(self._self->_device, allocation, {}, self._shape, self._type);

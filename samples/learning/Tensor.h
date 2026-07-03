@@ -28,6 +28,12 @@ public:
         float32
     };
 
+    enum class Pad
+    {
+        zero,
+        reflect
+    };
+
     Tensor() = default;
     Tensor(Tensor&&) noexcept;
     Tensor& operator=(Tensor&&) noexcept;
@@ -58,7 +64,7 @@ public:
     Tensor detach() const; // create a clone detached from the graph
 
     Tensor repeat(const Tensor&, Shape) const;
-    Tensor unfold(unsigned int, unsigned int) const; // im2col: (H,W,C) -> (H,W,C,k,k), zero padded
+    Tensor unfold(unsigned int, unsigned int, Pad = Pad::zero) const; // im2col: (H,W,C) -> (H,W,C,k,k), zero or reflect padded
 
     void copy(const Tensor&) const; // copy from
     void backward();
@@ -88,6 +94,7 @@ public:
     Tensor mse(const Tensor&) const;
     Tensor sum() const;
     Tensor sum(int dim, bool keepdim = false) const;    // reduce-sum over a single axis
+    Tensor max(int dim, bool keepdim = false) const;    // reduce-max over a single axis
     Tensor broadcast(int dim, unsigned int size) const; // repeat a size-1 axis (dual of sum)
     Tensor sqrt() const;
     Tensor rcp() const;
@@ -288,6 +295,69 @@ public:
 
 private:
     std::vector<Linear> _layers;
+};
+
+class Conv2d : public Module
+{
+public:
+    // Stride-1, "same" padded 2D convolution. Input/output are (H, W, C).
+    Conv2d(Device* device, int in_channels, int out_channels, int kernel_size, bool affine = false, Tensor::Pad pad = Tensor::Pad::zero)
+        : _in_channels(in_channels),
+          _out_channels(out_channels),
+          _kernel_size(kernel_size),
+          _pad(pad),
+          _weights((device->rand({ static_cast<unsigned int>(in_channels * kernel_size * kernel_size), static_cast<unsigned int>(out_channels) }) * 2.f - 1.f) * sqrt(1.f / (in_channels * kernel_size * kernel_size))),
+          _biases(device->zeros({ 1, static_cast<unsigned int>(out_channels) }))
+    {
+        if (affine)
+        {
+            _weights = _weights.float16();
+        }
+
+        _weights.requires_grad(true);
+        _biases.requires_grad(true);
+    }
+
+    virtual Tensor forward(const Tensor& in) override
+    {
+        if (in.shape().size() != 3)
+        {
+            throw std::runtime_error("Conv2d expects a 3D (H, W, C) tensor");
+        }
+
+        const unsigned int H = in.shape()[0];
+        const unsigned int W = in.shape()[1];
+        const unsigned int C = in.shape()[2];
+
+        if (C != static_cast<unsigned int>(_in_channels))
+        {
+            throw std::runtime_error("Conv2d input channels mismatch");
+        }
+
+        const unsigned int patch = static_cast<unsigned int>(_in_channels * _kernel_size * _kernel_size);
+        const unsigned int out = static_cast<unsigned int>(_out_channels);
+
+        // im2col: (H, W, C) -> (H, W, C, k, k) -> (H*W, C*k*k). pad = k/2 keeps H,W ("same").
+        Tensor cols = in.unfold(_kernel_size, _kernel_size / 2, _pad).reshape({ H * W, patch });
+
+        // (H*W, C*k*k) x (C*k*k, out) -> (H*W, out) -> (H, W, out)
+        Tensor result = _weights.type() == Tensor::Type::float16 ? cols.affine(_weights, _biases) : cols.matmul(_weights) + _biases;
+
+        return result.reshape({ H, W, out });
+    }
+
+    virtual std::vector<Tensor> parameters() override
+    {
+        return { _weights, _biases };
+    }
+
+private:
+    int _in_channels;
+    int _out_channels;
+    int _kernel_size;
+    Tensor::Pad _pad;
+    Tensor _weights;
+    Tensor _biases;
 };
 
 class Optimizer

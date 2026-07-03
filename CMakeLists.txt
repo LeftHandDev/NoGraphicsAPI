@@ -176,6 +176,7 @@ compile_shader(SOURCE samples/learning/Tensor.slang STAGE compute OUTPUT learnin
           _dot_f32 _dot_f16 _permute_f32 _permute_f16 _mT_f32 _mT_f16 _matmul_f32 _matmul_f16 _affine
           _unfold_f32 _unfold_f16 _unfold_backward_f32 _unfold_backward_f16
           _reduce_sum_f32 _reduce_sum_f16 _expand_f32 _expand_f16
+          _reduce_max_f32 _reduce_max_f16 _reduce_max_backward_f32 _reduce_max_backward_f16
           _pow_f32 _pow_f16 _exp_f32 _exp_f16 _log_f32 _log_f16 
           _sin_f32 _sin_f16 _cos_f32 _cos_f16 _tan_f32 _tan_f16
           _cosh_f32 _cosh_f16 _tanh_f32 _tanh_f16

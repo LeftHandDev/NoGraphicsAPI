@@ -124,6 +124,27 @@ void _permute_impl<T : IArithmetic>(uint t, TensorPermuteData *data)
     y[dst] = x[t];
 }
 
+// reflect a coordinate back into [0, n) without repeating the edge pixel
+// (mirror boundary: -1 -> 1, n -> n-2). handles arbitrary out-of-range values.
+int _reflect(int p, int n)
+{
+    if (n <= 1)
+    {
+        return 0;
+    }
+    int period = 2 * (n - 1);
+    int m = p % period;
+    if (m < 0)
+    {
+        m += period;
+    }
+    if (m >= n)
+    {
+        m = period - m;
+    }
+    return m;
+}
+
 void _unfold_impl<T : IArithmetic>(uint t, TensorUnfoldData *data)
 {
     if (t >= data->n)
@@ -148,17 +169,28 @@ void _unfold_impl<T : IArithmetic>(uint t, TensorUnfoldData *data)
     int sy = int(row) + int(dy) - int(data->pad);
     int sx = int(col) + int(dx) - int(data->pad);
 
-    // zero padding: out-of-bounds neighbours contribute 0
-    if (sy < 0 || sy >= int(data->h) || sx < 0 || sx >= int(data->w))
+    bool oob = (sy < 0 || sy >= int(data->h) || sx < 0 || sx >= int(data->w));
+    if (oob)
     {
-        y[t] = T(0);
-        return;
+        if (data->mode == 1u) // reflect (no edge repeat)
+        {
+            sy = _reflect(sy, int(data->h));
+            sx = _reflect(sx, int(data->w));
+        }
+        else // zero padding: out-of-bounds neighbours contribute 0
+        {
+            y[t] = T(0);
+            return;
+        }
     }
 
     uint src = (uint(sy) * data->w + uint(sx)) * data->c + c;
     y[t] = x[src];
 }
 
+// accumulate grad_in[t] by gathering every output window that read this input
+// pixel. In reflect mode a boundary pixel is additionally read via mirrored
+// out-of-bounds neighbours, so we sum over direct + reflected source candidates.
 void _unfold_backward_impl_f32(uint t, TensorUnfoldData *data)
 {
     if (t >= data->n)
@@ -176,21 +208,79 @@ void _unfold_backward_impl_f32(uint t, TensorUnfoldData *data)
     uint col = r1 % data->w;
     uint row = r1 / data->w;
 
+    int H = int(data->h);
+    int W = int(data->w);
+    int pad = int(data->pad);
+    int i = int(row);
+    int j = int(col);
+
     float acc = 0.f;
-    for (uint dy = 0; dy < k; dy++)
+
+    if (data->mode == 1u) // reflect
     {
-        for (uint dx = 0; dx < k; dx++)
+        // source coords on each axis that map (directly or by mirroring) to i / j
+        int cy[3];
+        bool cy_ok[3];
+        cy[0] = i;               cy_ok[0] = true;          // in-bounds source
+        cy[1] = -i;              cy_ok[1] = (i > 0);       // top reflection (source < 0)
+        cy[2] = 2 * (H - 1) - i; cy_ok[2] = (i < H - 1);   // bottom reflection (source >= H)
+        int cx[3];
+        bool cx_ok[3];
+        cx[0] = j;               cx_ok[0] = true;
+        cx[1] = -j;              cx_ok[1] = (j > 0);
+        cx[2] = 2 * (W - 1) - j; cx_ok[2] = (j < W - 1);
+
+        for (uint dy = 0; dy < k; dy++)
         {
-            int oy = int(row) - int(dy) + int(data->pad);
-            int ox = int(col) - int(dx) + int(data->pad);
-            if (oy < 0 || oy >= int(data->h) || ox < 0 || ox >= int(data->w))
+            for (uint dx = 0; dx < k; dx++)
             {
-                continue;
+                for (int a = 0; a < 3; a++)
+                {
+                    if (!cy_ok[a])
+                    {
+                        continue;
+                    }
+                    int oy = cy[a] - int(dy) + pad;
+                    if (oy < 0 || oy >= H)
+                    {
+                        continue;
+                    }
+                    for (int b = 0; b < 3; b++)
+                    {
+                        if (!cx_ok[b])
+                        {
+                            continue;
+                        }
+                        int ox = cx[b] - int(dx) + pad;
+                        if (ox < 0 || ox >= W)
+                        {
+                            continue;
+                        }
+                        uint go = (((uint(oy) * data->w + uint(ox)) * data->c + c) * k + dy) * k + dx;
+                        acc += x[go];
+                    }
+                }
             }
-            uint go = (((uint(oy) * data->w + uint(ox)) * data->c + c) * k + dy) * k + dx;
-            acc += x[go];
         }
     }
+    else // zero padding
+    {
+        for (uint dy = 0; dy < k; dy++)
+        {
+            for (uint dx = 0; dx < k; dx++)
+            {
+                int oy = i - int(dy) + pad;
+                int ox = j - int(dx) + pad;
+                if (oy < 0 || oy >= H || ox < 0 || ox >= W)
+                {
+                    continue;
+                }
+                uint go = (((uint(oy) * data->w + uint(ox)) * data->c + c) * k + dy) * k + dx;
+                acc += x[go];
+            }
+        }
+    }
+
     y[t] = acc;
 }
 
@@ -211,21 +301,79 @@ void _unfold_backward_impl_f16(uint t, TensorUnfoldData *data)
     uint col = r1 % data->w;
     uint row = r1 / data->w;
 
+    int H = int(data->h);
+    int W = int(data->w);
+    int pad = int(data->pad);
+    int i = int(row);
+    int j = int(col);
+
     float acc = 0.f;
-    for (uint dy = 0; dy < k; dy++)
+
+    if (data->mode == 1u) // reflect
     {
-        for (uint dx = 0; dx < k; dx++)
+        // source coords on each axis that map (directly or by mirroring) to i / j
+        int cy[3];
+        bool cy_ok[3];
+        cy[0] = i;               cy_ok[0] = true;          // in-bounds source
+        cy[1] = -i;              cy_ok[1] = (i > 0);       // top reflection (source < 0)
+        cy[2] = 2 * (H - 1) - i; cy_ok[2] = (i < H - 1);   // bottom reflection (source >= H)
+        int cx[3];
+        bool cx_ok[3];
+        cx[0] = j;               cx_ok[0] = true;
+        cx[1] = -j;              cx_ok[1] = (j > 0);
+        cx[2] = 2 * (W - 1) - j; cx_ok[2] = (j < W - 1);
+
+        for (uint dy = 0; dy < k; dy++)
         {
-            int oy = int(row) - int(dy) + int(data->pad);
-            int ox = int(col) - int(dx) + int(data->pad);
-            if (oy < 0 || oy >= int(data->h) || ox < 0 || ox >= int(data->w))
+            for (uint dx = 0; dx < k; dx++)
             {
-                continue;
+                for (int a = 0; a < 3; a++)
+                {
+                    if (!cy_ok[a])
+                    {
+                        continue;
+                    }
+                    int oy = cy[a] - int(dy) + pad;
+                    if (oy < 0 || oy >= H)
+                    {
+                        continue;
+                    }
+                    for (int b = 0; b < 3; b++)
+                    {
+                        if (!cx_ok[b])
+                        {
+                            continue;
+                        }
+                        int ox = cx[b] - int(dx) + pad;
+                        if (ox < 0 || ox >= W)
+                        {
+                            continue;
+                        }
+                        uint go = (((uint(oy) * data->w + uint(ox)) * data->c + c) * k + dy) * k + dx;
+                        acc += float(x[go]);
+                    }
+                }
             }
-            uint go = (((uint(oy) * data->w + uint(ox)) * data->c + c) * k + dy) * k + dx;
-            acc += x[go];
         }
     }
+    else // zero padding
+    {
+        for (uint dy = 0; dy < k; dy++)
+        {
+            for (uint dx = 0; dx < k; dx++)
+            {
+                int oy = i - int(dy) + pad;
+                int ox = j - int(dx) + pad;
+                if (oy < 0 || oy >= H || ox < 0 || ox >= W)
+                {
+                    continue;
+                }
+                uint go = (((uint(oy) * data->w + uint(ox)) * data->c + c) * k + dy) * k + dx;
+                acc += float(x[go]);
+            }
+        }
+    }
+
     y[t] = (half)acc;
 }
 
@@ -267,6 +415,106 @@ void _reduce_sum_impl_f16(uint t, TensorReduceData *data)
         acc += x[(o * data->axis + a) * data->inner + j];
     }
     y[t] = (half)acc;
+}
+
+void _reduce_max_impl_f32(uint t, TensorReduceData *data)
+{
+    if (t >= data->n)
+    {
+        return;
+    }
+    float* x = (float*)data->x;
+    float* y = (float*)data->y;
+
+    uint o = uint(t / data->inner);
+    uint j = uint(t % data->inner);
+
+    float m = x[(o * data->axis + 0) * data->inner + j];
+    for (uint a = 1; a < data->axis; a++)
+    {
+        m = max(m, x[(o * data->axis + a) * data->inner + j]);
+    }
+    y[t] = m;
+}
+
+void _reduce_max_impl_f16(uint t, TensorReduceData *data)
+{
+    if (t >= data->n)
+    {
+        return;
+    }
+    half* x = (half*)data->x;
+    half* y = (half*)data->y;
+
+    uint o = uint(t / data->inner);
+    uint j = uint(t % data->inner);
+
+    float m = x[(o * data->axis + 0) * data->inner + j];
+    for (uint a = 1; a < data->axis; a++)
+    {
+        m = max(m, (float)x[(o * data->axis + a) * data->inner + j]);
+    }
+    y[t] = (half)m;
+}
+
+// backward of max: route grad only to the (first) argmax element of each group.
+// x = original input, y = grad_in (output), z = grad_out. n = input element count.
+void _reduce_max_backward_impl_f32(uint t, TensorReduceData *data)
+{
+    if (t >= data->n)
+    {
+        return;
+    }
+    float* x = (float*)data->x;
+    float* y = (float*)data->y;
+    float* g = (float*)data->z;
+
+    uint j = uint(t % data->inner);
+    uint a = uint((t / data->inner) % data->axis);
+    uint o = uint(t / (data->axis * data->inner));
+
+    float m = x[(o * data->axis + 0) * data->inner + j];
+    uint arg = 0;
+    for (uint aa = 1; aa < data->axis; aa++)
+    {
+        float v = x[(o * data->axis + aa) * data->inner + j];
+        if (v > m)
+        {
+            m = v;
+            arg = aa;
+        }
+    }
+
+    y[t] = (a == arg) ? g[o * data->inner + j] : 0.f;
+}
+
+void _reduce_max_backward_impl_f16(uint t, TensorReduceData *data)
+{
+    if (t >= data->n)
+    {
+        return;
+    }
+    half* x = (half*)data->x;
+    half* y = (half*)data->y;
+    half* g = (half*)data->z;
+
+    uint j = uint(t % data->inner);
+    uint a = uint((t / data->inner) % data->axis);
+    uint o = uint(t / (data->axis * data->inner));
+
+    float m = x[(o * data->axis + 0) * data->inner + j];
+    uint arg = 0;
+    for (uint aa = 1; aa < data->axis; aa++)
+    {
+        float v = x[(o * data->axis + aa) * data->inner + j];
+        if (v > m)
+        {
+            m = v;
+            arg = aa;
+        }
+    }
+
+    y[t] = (a == arg) ? g[o * data->inner + j] : (half)0.f;
 }
 
 void _expand_impl<T : IArithmetic>(uint t, TensorReduceData *data)
@@ -772,6 +1020,10 @@ void _fp16_fp32(uint t : SV_DispatchThreadID, TensorData* data)
 
 [numthreads(64, 1, 1)] void _reduce_sum_f32(uint t : SV_DispatchThreadID, TensorReduceData* data){ _reduce_sum_impl_f32(t, data); }
 [numthreads(64, 1, 1)] void _reduce_sum_f16(uint t : SV_DispatchThreadID, TensorReduceData* data){ _reduce_sum_impl_f16(t, data); }
+[numthreads(64, 1, 1)] void _reduce_max_f32(uint t : SV_DispatchThreadID, TensorReduceData* data){ _reduce_max_impl_f32(t, data); }
+[numthreads(64, 1, 1)] void _reduce_max_f16(uint t : SV_DispatchThreadID, TensorReduceData* data){ _reduce_max_impl_f16(t, data); }
+[numthreads(64, 1, 1)] void _reduce_max_backward_f32(uint t : SV_DispatchThreadID, TensorReduceData* data){ _reduce_max_backward_impl_f32(t, data); }
+[numthreads(64, 1, 1)] void _reduce_max_backward_f16(uint t : SV_DispatchThreadID, TensorReduceData* data){ _reduce_max_backward_impl_f16(t, data); }
 
 [numthreads(64, 1, 1)] void _expand_f32(uint t : SV_DispatchThreadID, TensorReduceData* data){ _expand_impl<float>(t, data); }
 [numthreads(64, 1, 1)] void _expand_f16(uint t : SV_DispatchThreadID, TensorReduceData* data){ _expand_impl<half>(t, data); }

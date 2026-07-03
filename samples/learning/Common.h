@@ -31,6 +31,7 @@ struct alignas(16) TensorUnfoldData
     uint c;     // channels
     uint k;     // kernel size
     uint pad;   // zero-pad radius
+    uint mode;  // padding mode: 0 = zero, 1 = reflect
     uint8_t* x; // input  (forward: image (H,W,C); backward: grad_out (H,W,C,k,k))
     uint8_t* y; // output (forward: neighborhood (H,W,C,k,k); backward: grad_in (H,W,C))
 };
@@ -43,6 +44,7 @@ struct alignas(16) TensorReduceData
     uint64_t inner; // product of dims after the axis
     uint8_t* x;     // input
     uint8_t* y;     // output
+    uint8_t* z;     // aux input (reduce_max backward: grad_out)
 };
 
 struct alignas(16) TensorTransposeData
