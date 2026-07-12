@@ -64,7 +64,7 @@ public:
     Tensor detach() const; // create a clone detached from the graph
 
     Tensor repeat(const Tensor&, Shape) const;
-    Tensor unfold(unsigned int, unsigned int, Pad = Pad::zero) const; // im2col: (H,W,C) -> (H,W,C,k,k), zero or reflect padded
+    Tensor unfold(unsigned int, unsigned int, Pad = Pad::zero, unsigned int stride = 1) const; // im2col: (H,W,C) -> (OH,OW,C,k,k), zero or reflect padded, strided
 
     void copy(const Tensor&) const; // copy from
     void backward();
@@ -96,6 +96,7 @@ public:
     Tensor sum(int dim, bool keepdim = false) const;    // reduce-sum over a single axis
     Tensor max(int dim, bool keepdim = false) const;    // reduce-max over a single axis
     Tensor broadcast(int dim, unsigned int size) const; // repeat a size-1 axis (dual of sum)
+    Tensor cat(const Tensor&, int dim) const;           // concatenate two tensors along an axis
     Tensor sqrt() const;
     Tensor rcp() const;
     Tensor exp() const;
@@ -300,11 +301,12 @@ private:
 class Conv2d : public Module
 {
 public:
-    // Stride-1, "same" padded 2D convolution. Input/output are (H, W, C).
-    Conv2d(Device* device, int in_channels, int out_channels, int kernel_size, bool affine = false, Tensor::Pad pad = Tensor::Pad::zero)
+    // 2D convolution with "same"-style k/2 padding. Input (H,W,C) -> output (OH,OW,out).
+    Conv2d(Device* device, int in_channels, int out_channels, int kernel_size, bool affine = false, Tensor::Pad pad = Tensor::Pad::zero, int stride = 1)
         : _in_channels(in_channels),
           _out_channels(out_channels),
           _kernel_size(kernel_size),
+          _stride(stride),
           _pad(pad),
           _weights((device->rand({ static_cast<unsigned int>(in_channels * kernel_size * kernel_size), static_cast<unsigned int>(out_channels) }) * 2.f - 1.f) * sqrt(1.f / (in_channels * kernel_size * kernel_size))),
           _biases(device->zeros({ 1, static_cast<unsigned int>(out_channels) }))
@@ -336,14 +338,19 @@ public:
 
         const unsigned int patch = static_cast<unsigned int>(_in_channels * _kernel_size * _kernel_size);
         const unsigned int out = static_cast<unsigned int>(_out_channels);
+        const unsigned int pad = static_cast<unsigned int>(_kernel_size / 2);
+        const unsigned int stride = static_cast<unsigned int>(_stride);
 
-        // im2col: (H, W, C) -> (H, W, C, k, k) -> (H*W, C*k*k). pad = k/2 keeps H,W ("same").
-        Tensor cols = in.unfold(_kernel_size, _kernel_size / 2, _pad).reshape({ H * W, patch });
+        const unsigned int OH = (H + 2 * pad - _kernel_size) / stride + 1;
+        const unsigned int OW = (W + 2 * pad - _kernel_size) / stride + 1;
 
-        // (H*W, C*k*k) x (C*k*k, out) -> (H*W, out) -> (H, W, out)
+        // im2col: (H, W, C) -> (OH, OW, C, k, k) -> (OH*OW, C*k*k).
+        Tensor cols = in.unfold(_kernel_size, pad, _pad, stride).reshape({ OH * OW, patch });
+
+        // (OH*OW, C*k*k) x (C*k*k, out) -> (OH*OW, out) -> (OH, OW, out)
         Tensor result = _weights.type() == Tensor::Type::float16 ? cols.affine(_weights, _biases) : cols.matmul(_weights) + _biases;
 
-        return result.reshape({ H, W, out });
+        return result.reshape({ OH, OW, out });
     }
 
     virtual std::vector<Tensor> parameters() override
@@ -355,9 +362,52 @@ private:
     int _in_channels;
     int _out_channels;
     int _kernel_size;
+    int _stride;
     Tensor::Pad _pad;
     Tensor _weights;
     Tensor _biases;
+};
+
+class MaxPool2d : public Module
+{
+public:
+    // Non-learnable max pooling. Input (H,W,C) -> output (OH,OW,C). Zero padding = 0.
+    // Matches PyTorch: stride defaults to kernel_size when left unset.
+    MaxPool2d(int kernel_size, int stride = 0)
+        : _kernel_size(kernel_size),
+          _stride(stride > 0 ? stride : kernel_size)
+    {
+    }
+
+    virtual Tensor forward(const Tensor& in) override
+    {
+        if (in.shape().size() != 3)
+        {
+            throw std::runtime_error("MaxPool2d expects a 3D (H, W, C) tensor");
+        }
+
+        const unsigned int H = in.shape()[0];
+        const unsigned int W = in.shape()[1];
+        const unsigned int C = in.shape()[2];
+        const unsigned int k = static_cast<unsigned int>(_kernel_size);
+        const unsigned int stride = static_cast<unsigned int>(_stride);
+
+        const unsigned int OH = (H - k) / stride + 1;
+        const unsigned int OW = (W - k) / stride + 1;
+
+        // im2col with no padding: (H, W, C) -> (OH, OW, C, k, k), then max over the k*k window.
+        Tensor cols = in.unfold(_kernel_size, 0, Tensor::Pad::zero, stride).reshape({ OH * OW * C, k * k });
+        return cols.max(1).reshape({ OH, OW, C });
+    }
+
+    virtual std::vector<Tensor> parameters() override
+    {
+        return {};
+    }
+
+private:
+    int _kernel_size;
+    int _stride;
 };
 
 class Optimizer

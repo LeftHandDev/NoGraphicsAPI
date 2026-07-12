@@ -10,7 +10,7 @@
 #include <chrono>
 #include <fstream>
 
-const uint64_t FRAMES_IN_FLIGHT = 1;
+const uint64_t FRAMES_IN_FLIGHT = 2;
 std::vector<Device*> devices;
 std::map<STAGE, std::set<Tensor>> tensors_pending_writes;
 
@@ -79,7 +79,7 @@ public:
         }
 
         auto tensorIR = loadIR("shaders/learning/Tensor.spv");
-        for (auto op : { "add", "sub", "mul", "div", "dot", "permute", "unfold", "unfold_backward", "reduce_sum", "reduce_max", "reduce_max_backward", "expand", "mT", "matmul",
+        for (auto op : { "add", "sub", "mul", "div", "dot", "permute", "unfold", "unfold_backward", "reduce_sum", "reduce_max", "reduce_max_backward", "concat_scatter", "concat_gather", "expand", "mT", "matmul",
                          "pow", "exp", "log", "sin", "cos", "tan", "cosh", "tanh",
                          "relu", "relu_backward", "gelu", "gelu_backward",
                          "adam", "rand" })
@@ -989,18 +989,30 @@ Tensor Tensor::repeat(const Tensor& tensor, Shape shape) const
     return _self->_device->repeat(tensor, shape);
 }
 
-Tensor Tensor::unfold(unsigned int k, unsigned int pad, Pad mode) const
+Tensor Tensor::unfold(unsigned int k, unsigned int pad, Pad mode, unsigned int stride) const
 {
     if (_shape.size() != 3)
     {
         throw std::runtime_error("unfold expects a (H, W, C) tensor, got shape " + to_string(_shape));
+    }
+    if (stride == 0)
+    {
+        throw std::runtime_error("unfold stride must be >= 1");
     }
 
     auto H = _shape[0];
     auto W = _shape[1];
     auto C = _shape[2];
 
-    Shape out_shape = { H, W, C, k, k };
+    if (H + 2 * pad < k || W + 2 * pad < k)
+    {
+        throw std::runtime_error("unfold kernel larger than padded input for shape " + to_string(_shape));
+    }
+
+    unsigned int OH = (H + 2 * pad - k) / stride + 1;
+    unsigned int OW = (W + 2 * pad - k) / stride + 1;
+
+    Shape out_shape = { OH, OW, C, k, k };
     auto size = flatten(out_shape);
     auto allocation = _self->_device->alloc(size, _type);
 
@@ -1012,6 +1024,9 @@ Tensor Tensor::unfold(unsigned int k, unsigned int pad, Pad mode) const
     tensor_data.cpu->k = k;
     tensor_data.cpu->pad = pad;
     tensor_data.cpu->mode = static_cast<unsigned int>(mode);
+    tensor_data.cpu->stride = stride;
+    tensor_data.cpu->oh = OH;
+    tensor_data.cpu->ow = OW;
     tensor_data.cpu->x = _self->_allocation.gpu;
     tensor_data.cpu->y = allocation.gpu;
 
@@ -1025,7 +1040,7 @@ Tensor Tensor::unfold(unsigned int k, unsigned int pad, Pad mode) const
     tensors_pending_writes[STAGE_COMPUTE].insert(out);
 
     Tensor self = *this;
-    out._self->_backward = [self, k, pad, mode](const Tensor& grad)
+    out._self->_backward = [self, k, pad, mode, stride, OH, OW](const Tensor& grad)
     {
         auto H = self._shape[0];
         auto W = self._shape[1];
@@ -1041,7 +1056,10 @@ Tensor Tensor::unfold(unsigned int k, unsigned int pad, Pad mode) const
         tensor_data.cpu->k = k;
         tensor_data.cpu->pad = pad;
         tensor_data.cpu->mode = static_cast<unsigned int>(mode);
-        tensor_data.cpu->x = grad._self->_allocation.gpu; // grad_out (H,W,C,k,k)
+        tensor_data.cpu->stride = stride;
+        tensor_data.cpu->oh = OH;
+        tensor_data.cpu->ow = OW;
+        tensor_data.cpu->x = grad._self->_allocation.gpu; // grad_out (OH,OW,C,k,k)
         tensor_data.cpu->y = allocation.gpu;              // grad_in  (H,W,C)
 
         auto cmd = self._self->_device->record();
@@ -1329,6 +1347,119 @@ Tensor Tensor::broadcast(int dim, unsigned int size) const
     return out;
 }
 
+Tensor Tensor::cat(const Tensor& other, int dim) const
+{
+    if (_type != other._type)
+    {
+        throw std::runtime_error("cat: type mismatch");
+    }
+    if (_shape.size() != other._shape.size())
+    {
+        throw std::runtime_error("cat: rank mismatch between " + to_string(_shape) + " and " + to_string(other._shape));
+    }
+
+    int rank = static_cast<int>(_shape.size());
+    if (dim < 0)
+    {
+        dim += rank;
+    }
+    if (dim < 0 || dim >= rank)
+    {
+        throw std::runtime_error("cat: dim out of range for shape " + to_string(_shape));
+    }
+    for (int i = 0; i < rank; i++)
+    {
+        if (i != dim && _shape[i] != other._shape[i])
+        {
+            throw std::runtime_error("cat: shapes must match except along dim, got " + to_string(_shape) + " and " + to_string(other._shape));
+        }
+    }
+
+    uint64_t outer = 1;
+    for (int i = 0; i < dim; i++)
+    {
+        outer *= _shape[i];
+    }
+    uint64_t inner = 1;
+    for (int i = dim + 1; i < rank; i++)
+    {
+        inner *= _shape[i];
+    }
+    uint64_t a_axis = _shape[dim];
+    uint64_t b_axis = other._shape[dim];
+    uint64_t total = a_axis + b_axis;
+
+    Shape out_shape = _shape;
+    out_shape[dim] = static_cast<unsigned int>(total);
+
+    auto size = flatten(out_shape);
+    auto allocation = _self->_device->alloc(size, _type);
+
+    // scatter this tensor into [0, a_axis) and `other` into [a_axis, total).
+    auto scatter = [&](const Tensor& src, uint64_t axis, uint64_t offset)
+    {
+        auto slab = outer * axis * inner;
+        auto tensor_data = _self->_device->struct_data<TensorConcatData>();
+        tensor_data.cpu->n = slab;
+        tensor_data.cpu->outer = outer;
+        tensor_data.cpu->inner = inner;
+        tensor_data.cpu->axis = axis;
+        tensor_data.cpu->total = total;
+        tensor_data.cpu->offset = offset;
+        tensor_data.cpu->x = src._self->_allocation.gpu;
+        tensor_data.cpu->y = allocation.gpu;
+
+        auto cmd = _self->_device->record();
+        gpuSetPipeline(cmd, _self->_device->pipelines["concat_scatter"][_type]);
+        _self->_device->barrier(STAGE_COMPUTE, { src });
+        gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(slab + 63) / 64, 1, 1 });
+    };
+
+    scatter(*this, a_axis, 0);
+    scatter(other, b_axis, a_axis);
+
+    auto out = Tensor(_self->_device, allocation, { *this, other }, out_shape, _type);
+
+    tensors_pending_writes[STAGE_COMPUTE].insert(out);
+
+    Tensor self = *this;
+    out._self->_backward = [self, other, outer, inner, a_axis, b_axis, total](const Tensor& grad)
+    {
+        // backward of concat is a slice: gather each slab of grad_out back to its input.
+        auto gather = [&](const Tensor& input, uint64_t axis, uint64_t offset)
+        {
+            auto slab = outer * axis * inner;
+            auto allocation = input._self->_device->alloc(slab, input._type);
+
+            auto tensor_data = input._self->_device->struct_data<TensorConcatData>();
+            tensor_data.cpu->n = slab;
+            tensor_data.cpu->outer = outer;
+            tensor_data.cpu->inner = inner;
+            tensor_data.cpu->axis = axis;
+            tensor_data.cpu->total = total;
+            tensor_data.cpu->offset = offset;
+            tensor_data.cpu->x = grad._self->_allocation.gpu; // grad_out (wide)
+            tensor_data.cpu->y = allocation.gpu;              // grad_in  (slab)
+
+            auto cmd = input._self->_device->record();
+            gpuSetPipeline(cmd, input._self->_device->pipelines["concat_gather"][input._type]);
+            input._self->_device->barrier(STAGE_COMPUTE, { grad });
+            gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(slab + 63) / 64, 1, 1 });
+
+            auto term = Tensor(input._self->_device, allocation, {}, input._shape, input._type);
+
+            tensors_pending_writes[STAGE_COMPUTE].insert(term);
+
+            input._self->grad = input._self->grad + term;
+        };
+
+        gather(self, a_axis, 0);
+        gather(other, b_axis, a_axis);
+    };
+
+    return out;
+}
+
 Tensor Tensor::mT() const
 {
     if (_shape.size() != 2)
@@ -1440,7 +1571,7 @@ Tensor Tensor::matmul(const Tensor& other) const
 
     gpuSetPipeline(cmd, _self->_device->pipelines["matmul"][_type]);
     _self->_device->barrier(STAGE_COMPUTE, { *this, other });
-    gpuDispatch(cmd, tensor_data.gpu, { (uint)(size + 63) / 64, 1, 1 });
+    gpuDispatch(cmd, tensor_data.gpu, { ((uint)other._shape.back() + 15) / 16, ((uint)_shape.front() + 15) / 16, 1 });
 
     auto out = Tensor(_self->_device, allocation, { *this, other }, res_shape, _type);
     tensors_pending_writes[STAGE_COMPUTE].insert(out);

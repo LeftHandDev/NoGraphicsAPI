@@ -25,15 +25,18 @@ struct alignas(16) TensorPermuteData
 
 struct alignas(16) TensorUnfoldData
 {
-    uint64_t n; // forward: H*W*C*k*k output elements; backward: H*W*C input elements
-    uint h;     // image height
-    uint w;     // image width
-    uint c;     // channels
-    uint k;     // kernel size
-    uint pad;   // zero-pad radius
-    uint mode;  // padding mode: 0 = zero, 1 = reflect
-    uint8_t* x; // input  (forward: image (H,W,C); backward: grad_out (H,W,C,k,k))
-    uint8_t* y; // output (forward: neighborhood (H,W,C,k,k); backward: grad_in (H,W,C))
+    uint64_t n;  // forward: H*W*C*k*k output elements; backward: H*W*C input elements
+    uint h;      // image height
+    uint w;      // image width
+    uint c;      // channels
+    uint k;      // kernel size
+    uint pad;    // zero-pad radius
+    uint mode;   // padding mode: 0 = zero, 1 = reflect
+    uint stride; // window stride
+    uint oh;     // output height = (h + 2*pad - k) / stride + 1
+    uint ow;     // output width  = (w + 2*pad - k) / stride + 1
+    uint8_t* x;  // input  (forward: image (H,W,C); backward: grad_out (OH,OW,C,k,k))
+    uint8_t* y;  // output (forward: neighborhood (OH,OW,C,k,k); backward: grad_in (H,W,C))
 };
 
 struct alignas(16) TensorReduceData
@@ -45,6 +48,18 @@ struct alignas(16) TensorReduceData
     uint8_t* x;     // input
     uint8_t* y;     // output
     uint8_t* z;     // aux input (reduce_max backward: grad_out)
+};
+
+struct alignas(16) TensorConcatData
+{
+    uint64_t n;      // elements this dispatch touches (= outer * axis * inner)
+    uint64_t outer;  // product of dims before the concat axis
+    uint64_t inner;  // product of dims after the concat axis
+    uint64_t axis;   // this slab's size along the axis
+    uint64_t total;  // combined axis size (a_axis + b_axis)
+    uint64_t offset; // start of this slab within the combined axis
+    uint8_t* x;      // forward: a slab input; backward: grad_out (wide)
+    uint8_t* y;      // forward: combined output (wide); backward: grad_in (slab)
 };
 
 struct alignas(16) TensorTransposeData

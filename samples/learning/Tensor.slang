@@ -152,22 +152,22 @@ void _unfold_impl<T : IArithmetic>(uint t, TensorUnfoldData *data)
         return;
     }
     T* x = (T*)data->x; // (H, W, C)
-    T* y = (T*)data->y; // (H, W, C, k, k)
+    T* y = (T*)data->y; // (OH, OW, C, k, k)
 
     uint k = data->k;
 
-    // decode output index t over (H, W, C, k, k)
+    // decode output index t over (OH, OW, C, k, k)
     uint dx = t % k;
     uint r1 = t / k;
     uint dy = r1 % k;
     uint r2 = r1 / k;
     uint c = r2 % data->c;
     uint r3 = r2 / data->c;
-    uint col = r3 % data->w;
-    uint row = r3 / data->w;
+    uint col = r3 % data->ow;
+    uint row = r3 / data->ow;
 
-    int sy = int(row) + int(dy) - int(data->pad);
-    int sx = int(col) + int(dx) - int(data->pad);
+    int sy = int(row) * int(data->stride) + int(dy) - int(data->pad);
+    int sx = int(col) * int(data->stride) + int(dx) - int(data->pad);
 
     bool oob = (sy < 0 || sy >= int(data->h) || sx < 0 || sx >= int(data->w));
     if (oob)
@@ -197,7 +197,7 @@ void _unfold_backward_impl_f32(uint t, TensorUnfoldData *data)
     {
         return;
     }
-    float* x = (float*)data->x; // grad_out (H, W, C, k, k)
+    float* x = (float*)data->x; // grad_out (OH, OW, C, k, k)
     float* y = (float*)data->y; // grad_in  (H, W, C)
 
     uint k = data->k;
@@ -210,73 +210,68 @@ void _unfold_backward_impl_f32(uint t, TensorUnfoldData *data)
 
     int H = int(data->h);
     int W = int(data->w);
+    int OH = int(data->oh);
+    int OW = int(data->ow);
     int pad = int(data->pad);
+    int stride = int(data->stride);
     int i = int(row);
     int j = int(col);
 
+    // source coords on each axis that map to this input pixel. candidate 0 is the
+    // direct (in-bounds) read; 1/2 are mirrored reads that only exist in reflect mode.
+    int cy[3];
+    bool cy_ok[3];
+    cy[0] = i;               cy_ok[0] = true;
+    cy[1] = -i;              cy_ok[1] = (data->mode == 1u) && (i > 0);
+    cy[2] = 2 * (H - 1) - i; cy_ok[2] = (data->mode == 1u) && (i < H - 1);
+    int cx[3];
+    bool cx_ok[3];
+    cx[0] = j;               cx_ok[0] = true;
+    cx[1] = -j;              cx_ok[1] = (data->mode == 1u) && (j > 0);
+    cx[2] = 2 * (W - 1) - j; cx_ok[2] = (data->mode == 1u) && (j < W - 1);
+
     float acc = 0.f;
 
-    if (data->mode == 1u) // reflect
+    for (uint dy = 0; dy < k; dy++)
     {
-        // source coords on each axis that map (directly or by mirroring) to i / j
-        int cy[3];
-        bool cy_ok[3];
-        cy[0] = i;               cy_ok[0] = true;          // in-bounds source
-        cy[1] = -i;              cy_ok[1] = (i > 0);       // top reflection (source < 0)
-        cy[2] = 2 * (H - 1) - i; cy_ok[2] = (i < H - 1);   // bottom reflection (source >= H)
-        int cx[3];
-        bool cx_ok[3];
-        cx[0] = j;               cx_ok[0] = true;
-        cx[1] = -j;              cx_ok[1] = (j > 0);
-        cx[2] = 2 * (W - 1) - j; cx_ok[2] = (j < W - 1);
-
-        for (uint dy = 0; dy < k; dy++)
+        for (uint dx = 0; dx < k; dx++)
         {
-            for (uint dx = 0; dx < k; dx++)
+            for (int a = 0; a < 3; a++)
             {
-                for (int a = 0; a < 3; a++)
-                {
-                    if (!cy_ok[a])
-                    {
-                        continue;
-                    }
-                    int oy = cy[a] - int(dy) + pad;
-                    if (oy < 0 || oy >= H)
-                    {
-                        continue;
-                    }
-                    for (int b = 0; b < 3; b++)
-                    {
-                        if (!cx_ok[b])
-                        {
-                            continue;
-                        }
-                        int ox = cx[b] - int(dx) + pad;
-                        if (ox < 0 || ox >= W)
-                        {
-                            continue;
-                        }
-                        uint go = (((uint(oy) * data->w + uint(ox)) * data->c + c) * k + dy) * k + dx;
-                        acc += x[go];
-                    }
-                }
-            }
-        }
-    }
-    else // zero padding
-    {
-        for (uint dy = 0; dy < k; dy++)
-        {
-            for (uint dx = 0; dx < k; dx++)
-            {
-                int oy = i - int(dy) + pad;
-                int ox = j - int(dx) + pad;
-                if (oy < 0 || oy >= H || ox < 0 || ox >= W)
+                if (!cy_ok[a])
                 {
                     continue;
                 }
-                uint go = (((uint(oy) * data->w + uint(ox)) * data->c + c) * k + dy) * k + dx;
-                acc += x[go];
+                // forward: source = oy*stride + dy - pad; invert for oy.
+                int numy = cy[a] - int(dy) + pad;
+                if (numy < 0 || (numy % stride) != 0)
+                {
+                    continue;
+                }
+                int oy = numy / stride;
+                if (oy < 0 || oy >= OH)
+                {
+                    continue;
+                }
+                for (int b = 0; b < 3; b++)
+                {
+                    if (!cx_ok[b])
+                    {
+                        continue;
+                    }
+                    int numx = cx[b] - int(dx) + pad;
+                    if (numx < 0 || (numx % stride) != 0)
+                    {
+                        continue;
+                    }
+                    int ox = numx / stride;
+                    if (ox < 0 || ox >= OW)
+                    {
+                        continue;
+                    }
+                    uint go = (((uint(oy) * data->ow + uint(ox)) * data->c + c) * k + dy) * k + dx;
+                    acc += x[go];
+                }
             }
         }
     }
@@ -290,7 +285,7 @@ void _unfold_backward_impl_f16(uint t, TensorUnfoldData *data)
     {
         return;
     }
-    half* x = (half*)data->x; // grad_out (H, W, C, k, k)
+    half* x = (half*)data->x; // grad_out (OH, OW, C, k, k)
     half* y = (half*)data->y; // grad_in  (H, W, C)
 
     uint k = data->k;
@@ -303,73 +298,65 @@ void _unfold_backward_impl_f16(uint t, TensorUnfoldData *data)
 
     int H = int(data->h);
     int W = int(data->w);
+    int OH = int(data->oh);
+    int OW = int(data->ow);
     int pad = int(data->pad);
+    int stride = int(data->stride);
     int i = int(row);
     int j = int(col);
 
+    int cy[3];
+    bool cy_ok[3];
+    cy[0] = i;               cy_ok[0] = true;
+    cy[1] = -i;              cy_ok[1] = (data->mode == 1u) && (i > 0);
+    cy[2] = 2 * (H - 1) - i; cy_ok[2] = (data->mode == 1u) && (i < H - 1);
+    int cx[3];
+    bool cx_ok[3];
+    cx[0] = j;               cx_ok[0] = true;
+    cx[1] = -j;              cx_ok[1] = (data->mode == 1u) && (j > 0);
+    cx[2] = 2 * (W - 1) - j; cx_ok[2] = (data->mode == 1u) && (j < W - 1);
+
     float acc = 0.f;
 
-    if (data->mode == 1u) // reflect
+    for (uint dy = 0; dy < k; dy++)
     {
-        // source coords on each axis that map (directly or by mirroring) to i / j
-        int cy[3];
-        bool cy_ok[3];
-        cy[0] = i;               cy_ok[0] = true;          // in-bounds source
-        cy[1] = -i;              cy_ok[1] = (i > 0);       // top reflection (source < 0)
-        cy[2] = 2 * (H - 1) - i; cy_ok[2] = (i < H - 1);   // bottom reflection (source >= H)
-        int cx[3];
-        bool cx_ok[3];
-        cx[0] = j;               cx_ok[0] = true;
-        cx[1] = -j;              cx_ok[1] = (j > 0);
-        cx[2] = 2 * (W - 1) - j; cx_ok[2] = (j < W - 1);
-
-        for (uint dy = 0; dy < k; dy++)
+        for (uint dx = 0; dx < k; dx++)
         {
-            for (uint dx = 0; dx < k; dx++)
+            for (int a = 0; a < 3; a++)
             {
-                for (int a = 0; a < 3; a++)
-                {
-                    if (!cy_ok[a])
-                    {
-                        continue;
-                    }
-                    int oy = cy[a] - int(dy) + pad;
-                    if (oy < 0 || oy >= H)
-                    {
-                        continue;
-                    }
-                    for (int b = 0; b < 3; b++)
-                    {
-                        if (!cx_ok[b])
-                        {
-                            continue;
-                        }
-                        int ox = cx[b] - int(dx) + pad;
-                        if (ox < 0 || ox >= W)
-                        {
-                            continue;
-                        }
-                        uint go = (((uint(oy) * data->w + uint(ox)) * data->c + c) * k + dy) * k + dx;
-                        acc += float(x[go]);
-                    }
-                }
-            }
-        }
-    }
-    else // zero padding
-    {
-        for (uint dy = 0; dy < k; dy++)
-        {
-            for (uint dx = 0; dx < k; dx++)
-            {
-                int oy = i - int(dy) + pad;
-                int ox = j - int(dx) + pad;
-                if (oy < 0 || oy >= H || ox < 0 || ox >= W)
+                if (!cy_ok[a])
                 {
                     continue;
                 }
-                uint go = (((uint(oy) * data->w + uint(ox)) * data->c + c) * k + dy) * k + dx;
-                acc += float(x[go]);
+                int numy = cy[a] - int(dy) + pad;
+                if (numy < 0 || (numy % stride) != 0)
+                {
+                    continue;
+                }
+                int oy = numy / stride;
+                if (oy < 0 || oy >= OH)
+                {
+                    continue;
+                }
+                for (int b = 0; b < 3; b++)
+                {
+                    if (!cx_ok[b])
+                    {
+                        continue;
+                    }
+                    int numx = cx[b] - int(dx) + pad;
+                    if (numx < 0 || (numx % stride) != 0)
+                    {
+                        continue;
+                    }
+                    int ox = numx / stride;
+                    if (ox < 0 || ox >= OW)
+                    {
+                        continue;
+                    }
+                    uint go = (((uint(oy) * data->ow + uint(ox)) * data->c + c) * k + dy) * k + dx;
+                    acc += float(x[go]);
+                }
             }
         }
     }
@@ -532,6 +519,42 @@ void _expand_impl<T : IArithmetic>(uint t, TensorReduceData *data)
     y[t] = x[o * data->inner + j];
 }
 
+// concat forward: scatter a narrow slab into the wide combined tensor at `offset`.
+void _concat_scatter_impl<T : IArithmetic>(uint t, TensorConcatData *data)
+{
+    if (t >= data->n)
+    {
+        return;
+    }
+    T* x = (T*)data->x; // slab   (outer, axis, inner)
+    T* y = (T*)data->y; // combined (outer, total, inner)
+
+    uint j = uint(t % data->inner);
+    uint k = uint((t / data->inner) % data->axis);
+    uint o = uint(t / (data->axis * data->inner));
+
+    uint64_t dst = (uint64_t(o) * data->total + (uint64_t(k) + data->offset)) * data->inner + uint64_t(j);
+    y[dst] = x[t];
+}
+
+// concat backward: gather this slab's grad back out of the wide grad_out at `offset`.
+void _concat_gather_impl<T : IArithmetic>(uint t, TensorConcatData *data)
+{
+    if (t >= data->n)
+    {
+        return;
+    }
+    T* x = (T*)data->x; // grad_out (outer, total, inner)
+    T* y = (T*)data->y; // grad_in  (outer, axis,  inner)
+
+    uint j = uint(t % data->inner);
+    uint k = uint((t / data->inner) % data->axis);
+    uint o = uint(t / (data->axis * data->inner));
+
+    uint64_t src = (uint64_t(o) * data->total + (uint64_t(k) + data->offset)) * data->inner + uint64_t(j);
+    y[t] = x[src];
+}
+
 void _mT_impl<T : IArithmetic>(uint t, TensorTransposeData *data)
 {
     if (t >= data->n)
@@ -576,50 +599,88 @@ void _affine(uint3 g : SV_GroupID, TensorAffineData* data)
     ch.Store<linalg::CoopMatMatrixLayout.RowMajor>(w, z_row * 16 * data->c + z_col * 16, data->c);
 }
 
-void _matmul_impl_f32(uint t, TensorMatMulData* data)
-{
-    if (t >= data->n)
-    {
-        return;
-    }
+// Shared-memory tiled GEMM: z(a,c) = x(a,b) * y(b,c), row-major.
+// 16x16 output tile per workgroup; accumulate in fp32 for both dtypes.
+#define MATMUL_TILE 16
+groupshared float g_matmul_tileA[MATMUL_TILE * MATMUL_TILE];
+groupshared float g_matmul_tileB[MATMUL_TILE * MATMUL_TILE];
 
+void _matmul_tiled_f32(uint3 gid, uint3 tid, TensorMatMulData* data)
+{
     float* x = (float*)data->x;
     float* y = (float*)data->y;
     float* z = (float*)data->z;
 
-    uint x_row = t / data->c;
-    uint y_col = t % data->c;
+    uint A = data->a;
+    uint B = data->b;
+    uint C = data->c;
 
-    float d = 0.f;
-    for (int i = 0; i < data->b; i++)
+    uint row = gid.y * MATMUL_TILE + tid.y; // output row in [0, A)
+    uint col = gid.x * MATMUL_TILE + tid.x; // output col in [0, C)
+
+    float acc = 0.f;
+    uint tiles = (B + MATMUL_TILE - 1) / MATMUL_TILE;
+    for (uint tt = 0; tt < tiles; tt++)
     {
-        d = d + (x[x_row * data->b + i] * y[data->c * i + y_col]);
+        uint aCol = tt * MATMUL_TILE + tid.x;
+        g_matmul_tileA[tid.y * MATMUL_TILE + tid.x] = (row < A && aCol < B) ? x[row * B + aCol] : 0.f;
+
+        uint bRow = tt * MATMUL_TILE + tid.y;
+        g_matmul_tileB[tid.y * MATMUL_TILE + tid.x] = (bRow < B && col < C) ? y[bRow * C + col] : 0.f;
+
+        GroupMemoryBarrierWithGroupSync();
+
+        for (uint kk = 0; kk < MATMUL_TILE; kk++)
+        {
+            acc += g_matmul_tileA[tid.y * MATMUL_TILE + kk] * g_matmul_tileB[kk * MATMUL_TILE + tid.x];
+        }
+
+        GroupMemoryBarrierWithGroupSync();
     }
 
-    z[t] = d;
+    if (row < A && col < C)
+    {
+        z[row * C + col] = acc;
+    }
 }
 
-void _matmul_impl_f16(uint t, TensorMatMulData* data)
+void _matmul_tiled_f16(uint3 gid, uint3 tid, TensorMatMulData* data)
 {
-    if (t >= data->n)
-    {
-        return;
-    }
-
     half* x = (half*)data->x;
     half* y = (half*)data->y;
     half* z = (half*)data->z;
 
-    uint x_row = t / data->c;
-    uint y_col = t % data->c;
+    uint A = data->a;
+    uint B = data->b;
+    uint C = data->c;
 
-    float d = 0.f;
-    for (int i = 0; i < data->b; i++)
+    uint row = gid.y * MATMUL_TILE + tid.y; // output row in [0, A)
+    uint col = gid.x * MATMUL_TILE + tid.x; // output col in [0, C)
+
+    float acc = 0.f;
+    uint tiles = (B + MATMUL_TILE - 1) / MATMUL_TILE;
+    for (uint tt = 0; tt < tiles; tt++)
     {
-        d = d + (float(x[x_row * data->b + i]) * float(y[data->c * i + y_col]));
+        uint aCol = tt * MATMUL_TILE + tid.x;
+        g_matmul_tileA[tid.y * MATMUL_TILE + tid.x] = (row < A && aCol < B) ? float(x[row * B + aCol]) : 0.f;
+
+        uint bRow = tt * MATMUL_TILE + tid.y;
+        g_matmul_tileB[tid.y * MATMUL_TILE + tid.x] = (bRow < B && col < C) ? float(y[bRow * C + col]) : 0.f;
+
+        GroupMemoryBarrierWithGroupSync();
+
+        for (uint kk = 0; kk < MATMUL_TILE; kk++)
+        {
+            acc += g_matmul_tileA[tid.y * MATMUL_TILE + kk] * g_matmul_tileB[kk * MATMUL_TILE + tid.x];
+        }
+
+        GroupMemoryBarrierWithGroupSync();
     }
 
-    z[t] = half(d);
+    if (row < A && col < C)
+    {
+        z[row * C + col] = half(acc);
+    }
 }
 
 void _pow_impl_f32(uint t, TensorData* data)
@@ -1028,11 +1089,16 @@ void _fp16_fp32(uint t : SV_DispatchThreadID, TensorData* data)
 [numthreads(64, 1, 1)] void _expand_f32(uint t : SV_DispatchThreadID, TensorReduceData* data){ _expand_impl<float>(t, data); }
 [numthreads(64, 1, 1)] void _expand_f16(uint t : SV_DispatchThreadID, TensorReduceData* data){ _expand_impl<half>(t, data); }
 
+[numthreads(64, 1, 1)] void _concat_scatter_f32(uint t : SV_DispatchThreadID, TensorConcatData* data){ _concat_scatter_impl<float>(t, data); }
+[numthreads(64, 1, 1)] void _concat_scatter_f16(uint t : SV_DispatchThreadID, TensorConcatData* data){ _concat_scatter_impl<half>(t, data); }
+[numthreads(64, 1, 1)] void _concat_gather_f32(uint t : SV_DispatchThreadID, TensorConcatData* data){ _concat_gather_impl<float>(t, data); }
+[numthreads(64, 1, 1)] void _concat_gather_f16(uint t : SV_DispatchThreadID, TensorConcatData* data){ _concat_gather_impl<half>(t, data); }
+
 [numthreads(64, 1, 1)] void _mT_f32(uint t : SV_DispatchThreadID, TensorTransposeData* data){ _mT_impl<float>(t, data); }
 [numthreads(64, 1, 1)] void _mT_f16(uint t : SV_DispatchThreadID, TensorTransposeData* data){ _mT_impl<half>(t, data); }
 
-[numthreads(64, 1, 1)] void _matmul_f32(uint t : SV_DispatchThreadID, TensorMatMulData* data){ _matmul_impl_f32(t, data); }
-[numthreads(64, 1, 1)] void _matmul_f16(uint t : SV_DispatchThreadID, TensorMatMulData* data){ _matmul_impl_f16(t, data); }
+[numthreads(16, 16, 1)] void _matmul_f32(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID, TensorMatMulData* data){ _matmul_tiled_f32(gid, tid, data); }
+[numthreads(16, 16, 1)] void _matmul_f16(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID, TensorMatMulData* data){ _matmul_tiled_f16(gid, tid, data); }
 
 [numthreads(1, 1, 1)] void _dot_f32(uint t : SV_DispatchThreadID, TensorData* data){ _dot_impl_f32(t, data); }
 [numthreads(1, 1, 1)] void _dot_f16(uint t : SV_DispatchThreadID, TensorData* data){ _dot_impl_f16(t, data); }
