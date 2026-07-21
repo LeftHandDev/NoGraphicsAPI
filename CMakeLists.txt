@@ -174,8 +174,10 @@ compile_shader(SOURCE samples/multithreading/Multithreading.slang STAGE compute 
 compile_shader(SOURCE samples/learning/Tensor.slang STAGE compute OUTPUT learning/Tensor.spv
     ENTRY _add_f32 _add_f16 _sub_f32 _sub_f16 _mul_f32 _mul_f16 _div_f32 _div_f16
           _dot_f32 _dot_f16 _permute_f32 _permute_f16 _mT_f32 _mT_f16 _matmul_f32 _matmul_f16 _affine
+          _matmul_splitk_f32 _matmul_splitk_f16
           _unfold_f32 _unfold_f16 _unfold_backward_f32 _unfold_backward_f16
           _reduce_sum_f32 _reduce_sum_f16 _expand_f32 _expand_f16
+          _reduce_block_f32 _reduce_block_f16
           _reduce_max_f32 _reduce_max_f16 _reduce_max_backward_f32 _reduce_max_backward_f16
           _concat_scatter_f32 _concat_scatter_f16 _concat_gather_f32 _concat_gather_f16
           _pow_f32 _pow_f16 _exp_f32 _exp_f16 _log_f32 _log_f16 

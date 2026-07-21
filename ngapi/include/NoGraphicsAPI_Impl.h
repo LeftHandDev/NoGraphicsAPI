@@ -498,6 +498,11 @@ void gpuBarrier(GpuCommandBuffer cb, STAGE before, STAGE after, HAZARD_FLAGS haz
 void gpuSignalAfter(GpuCommandBuffer cb, STAGE before, void* ptrGpu, uint64_t value, SIGNAL signal);
 void gpuWaitBefore(GpuCommandBuffer cb, STAGE after, void* ptrGpu, uint64_t value, OP op, HAZARD_FLAGS hazards = HAZARD_NONE, uint64_t mask = ~0);
 
+// No-ops unless the NGAPI_MARKERS environment variable is set at device creation
+void gpuBeginMarker(GpuCommandBuffer cb, const char* name, float3 color = { 1.f, 1.f, 1.f });
+void gpuEndMarker(GpuCommandBuffer cb);
+void gpuInsertMarker(GpuCommandBuffer cb, const char* name, float3 color = { 1.f, 1.f, 1.f });
+
 void gpuSetPipeline(GpuCommandBuffer cb, GpuPipeline pipeline);
 void gpuSetDepthStencilState(GpuCommandBuffer cb, GpuDepthStencilState state);
 void gpuSetBlendState(GpuCommandBuffer cb, GpuBlendState state);

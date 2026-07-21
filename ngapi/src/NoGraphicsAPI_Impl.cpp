@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <mutex>
 #include <shared_mutex>
+#include <string>
 #include <thread>
 #include "NoGraphicsAPI_Impl.h"
 
@@ -446,6 +447,14 @@ struct VulkanDevice
     vkb::Device device;
     vkb::DispatchTable dispatchTable;
 
+    // Debug-label commands (VK_EXT_debug_utils). Loaded only when NGAPI_MARKERS
+    // is set and the instance extension is present; otherwise null, and the
+    // gpu*Marker entry points become no-ops.
+    PFN_vkCmdBeginDebugUtilsLabelEXT cmdBeginDebugUtilsLabel = nullptr;
+    PFN_vkCmdEndDebugUtilsLabelEXT cmdEndDebugUtilsLabel = nullptr;
+    PFN_vkCmdInsertDebugUtilsLabelEXT cmdInsertDebugUtilsLabel = nullptr;
+    PFN_vkSetDebugUtilsObjectNameEXT setDebugUtilsObjectName = nullptr;
+
     // Vulkan objects
     // The device-level pool only backs the swapchains' present-transition
     // command buffers (serialized by submitMutex + per-swapchain external
@@ -610,6 +619,20 @@ struct VulkanDevice
         auto deviceRet = deviceBuilder.build();
         vulkanDevice->device = deviceRet.value();
         vulkanDevice->dispatchTable = vulkanDevice->device.make_table();
+
+        // VK_EXT_debug_utils is an instance extension whose command-buffer label
+        // functions are device-dispatchable. Load them lazily only when the user
+        // opts in via NGAPI_MARKERS; if the extension wasn't enabled the loader
+        // returns null and every marker call short-circuits.
+        if (std::getenv("NGAPI_MARKERS") != nullptr)
+        {
+            VkDevice vkDevice = vulkanDevice->device.device;
+            PFN_vkGetDeviceProcAddr getDeviceProcAddr = vulkanDevice->device.fp_vkGetDeviceProcAddr;
+            vulkanDevice->cmdBeginDebugUtilsLabel = reinterpret_cast<PFN_vkCmdBeginDebugUtilsLabelEXT>(getDeviceProcAddr(vkDevice, "vkCmdBeginDebugUtilsLabelEXT"));
+            vulkanDevice->cmdEndDebugUtilsLabel = reinterpret_cast<PFN_vkCmdEndDebugUtilsLabelEXT>(getDeviceProcAddr(vkDevice, "vkCmdEndDebugUtilsLabelEXT"));
+            vulkanDevice->cmdInsertDebugUtilsLabel = reinterpret_cast<PFN_vkCmdInsertDebugUtilsLabelEXT>(getDeviceProcAddr(vkDevice, "vkCmdInsertDebugUtilsLabelEXT"));
+            vulkanDevice->setDebugUtilsObjectName = reinterpret_cast<PFN_vkSetDebugUtilsObjectNameEXT>(getDeviceProcAddr(vkDevice, "vkSetDebugUtilsObjectNameEXT"));
+        }
 
         vulkanDevice->graphicsQueueFamily = vulkanDevice->device.get_queue_index(vkb::QueueType::graphics).value();
 
@@ -1670,7 +1693,11 @@ GpuPipeline gpuCreateComputePipeline(GpuDevice device, ByteSpan computeIR, const
     shaderModuleCreateInfo.codeSize = moduleIR.size();
     shaderModuleCreateInfo.pCode = reinterpret_cast<const uint32_t*>(moduleIR.data());
     VkShaderModule shaderModule;
-    vulkanDevice->dispatchTable.createShaderModule(&shaderModuleCreateInfo, nullptr, &shaderModule);
+    auto createResult = vulkanDevice->dispatchTable.createShaderModule(&shaderModuleCreateInfo, nullptr, &shaderModule);
+    if (createResult != VK_SUCCESS)
+    {
+        return nullptr;
+    }
 
     VkComputePipelineCreateInfo pipelineCreateInfo = {};
     pipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
@@ -1698,8 +1725,13 @@ GpuPipeline gpuCreateComputePipeline(GpuDevice device, ByteSpan computeIR, const
     }
 
     VkPipeline pipeline;
-    vulkanDevice->dispatchTable.createComputePipelines(VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &pipeline);
+    createResult = vulkanDevice->dispatchTable.createComputePipelines(VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &pipeline);
     vulkanDevice->dispatchTable.destroyShaderModule(shaderModule, nullptr);
+
+    if (createResult != VK_SUCCESS)
+    {
+        return nullptr;
+    }
 
     return new GpuPipeline_T{ pipeline, VK_PIPELINE_BIND_POINT_COMPUTE, device };
 }
@@ -2389,6 +2421,55 @@ void gpuBarrier(GpuCommandBuffer cb, STAGE before, STAGE after, HAZARD_FLAGS haz
         memoryBarrierCount, memoryBarriers,
         0, nullptr,
         0, nullptr);
+}
+
+void gpuBeginMarker(GpuCommandBuffer cb, const char* name, float3 color)
+{
+    VulkanDevice* vulkanDevice = cb->device->vulkanDevice;
+    if (vulkanDevice->cmdBeginDebugUtilsLabel == nullptr)
+    {
+        return;
+    }
+
+    VkDebugUtilsLabelEXT label = {};
+    label.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT;
+    label.pLabelName = name;
+    label.color[0] = color.x;
+    label.color[1] = color.y;
+    label.color[2] = color.z;
+    label.color[3] = 1.f;
+
+    vulkanDevice->cmdBeginDebugUtilsLabel(cb->commandBuffer, &label);
+}
+
+void gpuEndMarker(GpuCommandBuffer cb)
+{
+    VulkanDevice* vulkanDevice = cb->device->vulkanDevice;
+    if (vulkanDevice->cmdEndDebugUtilsLabel == nullptr)
+    {
+        return;
+    }
+
+    vulkanDevice->cmdEndDebugUtilsLabel(cb->commandBuffer);
+}
+
+void gpuInsertMarker(GpuCommandBuffer cb, const char* name, float3 color)
+{
+    VulkanDevice* vulkanDevice = cb->device->vulkanDevice;
+    if (vulkanDevice->cmdInsertDebugUtilsLabel == nullptr)
+    {
+        return;
+    }
+
+    VkDebugUtilsLabelEXT label = {};
+    label.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT;
+    label.pLabelName = name;
+    label.color[0] = color.x;
+    label.color[1] = color.y;
+    label.color[2] = color.z;
+    label.color[3] = 1.f;
+
+    vulkanDevice->cmdInsertDebugUtilsLabel(cb->commandBuffer, &label);
 }
 
 void gpuSignalAfter(GpuCommandBuffer cb, STAGE before, void* ptrGpu, uint64_t value, SIGNAL signal)

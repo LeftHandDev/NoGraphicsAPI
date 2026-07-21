@@ -86,6 +86,7 @@ public:
     Tensor mT() const;                                 // 2D matrix transpose, +3D batched matrix transpose
     Tensor dot(const Tensor&) const;                   // 1D dot product
     Tensor matmul(const Tensor&) const;                // 2D matrix multiplication, +3D batched matrix multiplcation
+    Tensor tmatmul(const Tensor&) const;               // fused this^T @ other (no materialized transpose); used by matmul backward
     Tensor affine(const Tensor&, const Tensor&) const; // Use wmma when possible, otherwise falls back to matmul(weights) + biases
 
     Tensor pow(const Tensor&) const;
@@ -196,6 +197,27 @@ public:
     virtual Tensor ones(Shape, Tensor::Type = Tensor::Type::float32) = 0;
     virtual Tensor repeat(float, Shape) = 0;
     virtual Tensor repeat(const Tensor&, Shape) = 0;
+
+    virtual void pushMarker(const char* name) = 0;
+    virtual void popMarker() = 0;
+};
+
+class GpuScope
+{
+public:
+    GpuScope(Device* device, const char* name) : _device(device)
+    {
+        _device->pushMarker(name);
+    }
+    ~GpuScope()
+    {
+        _device->popMarker();
+    }
+    GpuScope(const GpuScope&) = delete;
+    GpuScope& operator=(const GpuScope&) = delete;
+
+private:
+    Device* _device;
 };
 
 class Instance
@@ -344,10 +366,8 @@ public:
         const unsigned int OH = (H + 2 * pad - _kernel_size) / stride + 1;
         const unsigned int OW = (W + 2 * pad - _kernel_size) / stride + 1;
 
-        // im2col: (H, W, C) -> (OH, OW, C, k, k) -> (OH*OW, C*k*k).
         Tensor cols = in.unfold(_kernel_size, pad, _pad, stride).reshape({ OH * OW, patch });
 
-        // (OH*OW, C*k*k) x (C*k*k, out) -> (OH*OW, out) -> (OH, OW, out)
         Tensor result = _weights.type() == Tensor::Type::float16 ? cols.affine(_weights, _biases) : cols.matmul(_weights) + _biases;
 
         return result.reshape({ OH, OW, out });
@@ -371,8 +391,6 @@ private:
 class MaxPool2d : public Module
 {
 public:
-    // Non-learnable max pooling. Input (H,W,C) -> output (OH,OW,C). Zero padding = 0.
-    // Matches PyTorch: stride defaults to kernel_size when left unset.
     MaxPool2d(int kernel_size, int stride = 0)
         : _kernel_size(kernel_size),
           _stride(stride > 0 ? stride : kernel_size)
@@ -395,7 +413,6 @@ public:
         const unsigned int OH = (H - k) / stride + 1;
         const unsigned int OW = (W - k) / stride + 1;
 
-        // im2col with no padding: (H, W, C) -> (OH, OW, C, k, k), then max over the k*k window.
         Tensor cols = in.unfold(_kernel_size, 0, Tensor::Pad::zero, stride).reshape({ OH * OW * C, k * k });
         return cols.max(1).reshape({ OH, OW, C });
     }

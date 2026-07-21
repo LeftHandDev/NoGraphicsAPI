@@ -7,17 +7,13 @@
 #include <iostream>
 #include <random>
 #include <chrono>
+#include <filesystem>
 
-void learningSample()
+std::vector<float> load(std::string path)
 {
-    Instance instance;
-    auto device = instance.device();
-
-    // try
-    // {
-    std::vector<float> gt;
+    std::vector<float> res;
     int w, h, c;
-    auto ptr = stbi_load("assets/Default.png", &w, &h, &c, 3);
+    auto ptr = stbi_load(path.c_str(), &w, &h, &c, 3);
     if (!ptr)
     {
         throw std::runtime_error(std::string("failed to load image: ") + stbi_failure_reason());
@@ -27,12 +23,23 @@ void learningSample()
         for (int x = 0; x < w; x++)
         {
             size_t idx = (static_cast<size_t>(y) * w + x) * 3;
-            gt.push_back(ptr[idx + 0] / 255.0f);
-            gt.push_back(ptr[idx + 1] / 255.0f);
-            gt.push_back(ptr[idx + 2] / 255.0f);
+            res.push_back(ptr[idx + 0] / 255.0f);
+            res.push_back(ptr[idx + 1] / 255.0f);
+            res.push_back(ptr[idx + 2] / 255.0f);
         }
     }
     stbi_image_free(ptr);
+    return res;
+}
+
+void learningSample()
+{
+    Instance instance;
+    auto device = instance.device(1);
+
+    // try
+    // {
+    std::vector<float> gt = load("assets/Default.png");
 
     const unsigned int N = 256 * 256 * 3;
 
@@ -40,26 +47,63 @@ void learningSample()
     {
     public:
         Autoencoder(Device* device)
-            : enc1(device, 3, 16, 3, false, Tensor::Pad::reflect),
-              enc2(device, 16, 4, 3, false, Tensor::Pad::reflect), // bottleneck: 4 channels
-              dec1(device, 4, 16, 3, false, Tensor::Pad::reflect),
-              dec2(device, 16, 3, 3, false, Tensor::Pad::reflect)
+            : _device(device),
+              enc1(device, 3, 8, 3, false, Tensor::Pad::reflect),
+              enc2(device, 8, 16, 3, false, Tensor::Pad::reflect),
+              enc3(device, 16, 32, 3, false, Tensor::Pad::reflect), // bottleneck: 32 channels @ 240x135
+              dec1(device, 64, 16, 3, false, Tensor::Pad::reflect), // in = 32 (up) + 32 (skip s3)
+              dec2(device, 32, 8, 3, false, Tensor::Pad::reflect),  // in = 16 (up) + 16 (skip s2)
+              dec3(device, 16, 3, 3, false, Tensor::Pad::reflect),  // in =  8 (up) +  8 (skip s1)
+              pool(2)
         {
         }
 
         virtual Tensor forward(const Tensor& tensor) override
         {
             Tensor img = tensor.reshape({ 256, 256, 3 });
-            Tensor e = enc2.forward(enc1.forward(img).gelu()).gelu();
-            Tensor d = dec2.forward(dec1.forward(e).gelu());
+
+            // encoder: keep each pre-pool activation as a skip connection
+            Tensor s1, s2, s3, e;
+            {
+                GpuScope scope(_device, "enc1");
+                s1 = enc1.forward(img).gelu();
+            }
+            {
+                GpuScope scope(_device, "enc2");
+                s2 = enc2.forward(pool.forward(s1)).gelu();
+            }
+            {
+                GpuScope scope(_device, "enc3");
+                s3 = enc3.forward(pool.forward(s2)).gelu();
+            }
+            {
+                GpuScope scope(_device, "bottleneck");
+                e = pool.forward(s3);
+            }
+
+            // decoder: upsample, concat the matching-resolution skip along channels, then conv
+            Tensor d;
+            {
+                GpuScope scope(_device, "dec1");
+                d = dec1.forward(upsample2x(e).cat(s3, 2)).gelu();
+            }
+            {
+                GpuScope scope(_device, "dec2");
+                d = dec2.forward(upsample2x(d).cat(s2, 2)).gelu();
+            }
+            {
+                GpuScope scope(_device, "dec3");
+                d = dec3.forward(upsample2x(d).cat(s1, 2));
+            }
+
             return d.reshape({ 1, N });
         }
 
         virtual std::vector<Tensor> parameters() override
         {
             std::vector<Tensor> params;
-            for (Module* layer : { static_cast<Module*>(&enc1), static_cast<Module*>(&enc2),
-                                   static_cast<Module*>(&dec1), static_cast<Module*>(&dec2) })
+            for (Module* layer : { static_cast<Module*>(&enc1), static_cast<Module*>(&enc2), static_cast<Module*>(&enc3),
+                                   static_cast<Module*>(&dec1), static_cast<Module*>(&dec2), static_cast<Module*>(&dec3) })
             {
                 std::vector<Tensor> p = layer->parameters();
                 params.insert(params.end(), p.begin(), p.end());
@@ -68,17 +112,34 @@ void learningSample()
         }
 
     private:
+        // nearest-neighbour 2x upsample: (H,W,C) -> (2H,2W,C) via reshape + broadcast.
+        // dual of the pooling downsample; differentiable through broadcast's backward.
+        Tensor upsample2x(const Tensor& in)
+        {
+            const unsigned int H = in.shape()[0];
+            const unsigned int W = in.shape()[1];
+            const unsigned int C = in.shape()[2];
+            return in.reshape({ H, 1, W, 1, C })
+                .broadcast(1, 2)
+                .broadcast(3, 2)
+                .reshape({ H * 2, W * 2, C });
+        }
+
+        Device* _device;
         Conv2d enc1;
         Conv2d enc2;
+        Conv2d enc3;
         Conv2d dec1;
         Conv2d dec2;
+        Conv2d dec3;
+        MaxPool2d pool;
 
     } autoencoder(device);
 
     std::filesystem::path model_path = "./model.bin";
     if (std::filesystem::exists(model_path))
     {
-        // autoencoder.load(model_path);
+        autoencoder.load(model_path);
     }
 
     Adam optimizer(autoencoder.parameters(), 0.001);
@@ -86,47 +147,59 @@ void learningSample()
     std::filesystem::path opt_path = "./opt.bin";
     if (std::filesystem::exists(opt_path))
     {
-        // optimizer.load(opt_path);
+        optimizer.load(opt_path);
     }
 
     size_t steps = 10000;
-    auto y = device->tensor({ gt });
 
-    float noise_ratio = 0.25;
+    auto y = device->tensor(gt);
 
-    auto shape = y.shape();
-    unsigned int batch = 1; // Conv2d processes a single (H,W,C) image
-    shape.insert(shape.begin(), { batch });
-
-    auto start = std::chrono::high_resolution_clock::now();
-
-    for (size_t i = 0; i < steps; i++)
+    for (size_t i = 1; i < steps; i++)
     {
-        auto a = (device->rand(shape) * 2.f - 1.f) * noise_ratio + y;
-        auto b = (device->rand(shape) * 2.f - 1.f) * noise_ratio + y;
+        auto a = (device->rand(y.shape()) * 2.f - 1.f) + y;
+        auto b = (device->rand(y.shape()) * 2.f - 1.f) + y;
 
         optimizer.zero_grad();
-        auto z = autoencoder.forward(a.detach());
-        auto L = z.mse(b.detach());
-        L.backward();
-        optimizer.step();
+
+        Tensor L;
+        {
+            GpuScope step(device, "step");
+
+            Tensor z;
+            {
+                GpuScope scope(device, "forward");
+                z = autoencoder.forward(a);
+            }
+
+            L = z.mse(b);
+
+            {
+                GpuScope scope(device, "backward");
+                L.backward();
+            }
+            {
+                GpuScope scope(device, "optimizer");
+                optimizer.step();
+            }
+        }
+
         device->submit();
         L.cpu([&](std::vector<float> data)
-              { if (i >= steps) return; std::cout << "MSE " << data.front() << "\t" << i << "/" << steps << "\t" << std::endl; });
+              { 
+                if (i >= steps) 
+                {
+                    return;
+                } 
+                std::cout << "MSE " << data.front() << "\t" << i << "/" << steps << std::endl; });
     }
     std::cout << std::endl;
 
-    auto end = std::chrono::high_resolution_clock::now() - start;
-
-    std::cout << "Training took: " << std::chrono::duration_cast<std::chrono::seconds>(end).count() << " seconds";
-
-    auto a = (device->rand(y.shape()) * 2.f - 1.f) * noise_ratio + y;
+    auto a = (device->rand(y.shape()) * 2.f - 1.f) + y;
     auto z = autoencoder.forward(a);
     stbi_write_hdr("input.exr", 256, 256, 3, a.pow(2.2).cpu().data());
     stbi_write_hdr("output.exr", 256, 256, 3, z.pow(2.2).cpu().data());
-    stbi_write_hdr("gt.exr", 256, 256, 3, y.pow(2.2).cpu().data());
-    // autoencoder.save(model_path);
-    // optimizer.save(opt_path);
+    autoencoder.save(model_path);
+    optimizer.save(opt_path);
     // }
     // catch (const std::exception& e)
     // {
@@ -222,6 +295,24 @@ int tensorTests()
         auto q = device->tensor({ 1, 2, 3, 4, 5, 6 }, { 3, 2 });
         check("matmul_nonsquare", p.matmul(q).cpu(), { 22, 28, 49, 64 });
     }
+    {
+        // tmatmul = this^T @ other (splits == 1 -> transposed-A read path).
+        auto p = device->tensor({ 1, 2, 3, 4, 5, 6 }, { 3, 2 }); // (M=3, K=2)
+        auto q = device->tensor({ 1, 0, 0, 1, 1, 1 }, { 3, 2 }); // (M=3, N=2)
+        check("tmatmul", p.tmatmul(q).cpu(), { 6, 8, 8, 10 });
+        check("tmatmul_eq_mT", p.tmatmul(q).cpu(), p.mT().matmul(q).cpu());
+    }
+    {
+        // Split-K path: huge contraction, tiny output. With all-ones operands the
+        // result of a K-contraction equals the contraction length (M).
+        auto p = device->ones({ 16384, 2 }); // (M, K)
+        auto q = device->ones({ 16384, 3 }); // (M, N)
+        check("tmatmul_splitk", p.tmatmul(q).cpu(), { 16384, 16384, 16384, 16384, 16384, 16384 });
+
+        auto r = device->ones({ 2, 16384 }); // (a, b) small output, huge contraction
+        auto s = device->ones({ 16384, 3 }); // (b, c)
+        check("matmul_splitk", r.matmul(s).cpu(), { 16384, 16384, 16384, 16384, 16384, 16384 });
+    }
 
     // --- reductions / broadcast ---
     check("sum_global", a.sum().cpu(), { 10 });
@@ -282,6 +373,8 @@ int tensorTests()
     {
         auto x = device->tensor({ 1, 2, 3, 4 }, s22);
         auto y = device->tensor({ 5, 6, 7, 8 }, s22);
+        x.requires_grad(true); // leaves are no_grad by default; grads vanish without this
+        y.requires_grad(true);
         auto z = x * y;
         z.backward();
         check("grad_mul_dx", x.grad().cpu(), { 5, 6, 7, 8 }); // dz/dx = y
@@ -289,6 +382,7 @@ int tensorTests()
     }
     {
         auto x = device->tensor({ 1, 2, 3, 4 }, s22);
+        x.requires_grad(true);
         auto s = x.sum();
         s.backward();
         check("grad_sum", x.grad().cpu(), { 1, 1, 1, 1 }); // dsum/dx = 1
@@ -304,5 +398,6 @@ int tensorTests()
 int main()
 {
     learningSample();
+    // tensorTests();
     return 0;
 }

@@ -47,6 +47,16 @@ Shape append(Shape base, Shape ext)
     return base;
 }
 
+// Fold a 1D workgroup count into a 2D grid so no single dimension exceeds the limit
+static const unsigned int kMaxGroups = 65535u;
+inline uint3 grid1d(uint64_t elements, unsigned int local = 64u)
+{
+    uint64_t groups = (elements + local - 1) / local;
+    unsigned int gx = static_cast<unsigned int>(groups < kMaxGroups ? groups : kMaxGroups);
+    unsigned int gy = static_cast<unsigned int>((groups + kMaxGroups - 1) / kMaxGroups);
+    return { gx, gy, 1 };
+}
+
 using TensorAllocator =
     FallbackAllocator<
         FreeListAllocator<1024 * 1024 * 1024, MEMORY_DEFAULT>,
@@ -79,7 +89,7 @@ public:
         }
 
         auto tensorIR = loadIR("shaders/learning/Tensor.spv");
-        for (auto op : { "add", "sub", "mul", "div", "dot", "permute", "unfold", "unfold_backward", "reduce_sum", "reduce_max", "reduce_max_backward", "concat_scatter", "concat_gather", "expand", "mT", "matmul",
+        for (auto op : { "add", "sub", "mul", "div", "dot", "permute", "unfold", "unfold_backward", "reduce_sum", "reduce_block", "reduce_max", "reduce_max_backward", "concat_scatter", "concat_gather", "expand", "mT", "matmul", "matmul_splitk",
                          "pow", "exp", "log", "sin", "cos", "tan", "cosh", "tanh",
                          "relu", "relu_backward", "gelu", "gelu_backward",
                          "adam", "rand" })
@@ -156,7 +166,7 @@ public:
 
         auto cmd = record();
         gpuSetPipeline(cmd, pipelines["rand"][type]);
-        gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+        gpuDispatch(cmd, tensor_data.gpu, grid1d(size));
 
         auto out = Tensor(this, allocation, {}, shape, type);
         tensors_pending_writes[STAGE_COMPUTE].insert(out);
@@ -282,13 +292,25 @@ public:
         return cmd;
     }
 
+    virtual void pushMarker(const char* name) override
+    {
+        gpuBeginMarker(record(), name);
+    }
+
+    virtual void popMarker() override
+    {
+        if (cmd)
+        {
+            gpuEndMarker(cmd);
+        }
+    }
+
     virtual void submit() override
     {
         if (!cmd)
         {
             return; // no work to submit
         }
-
         if (!semaphore)
         {
             semaphore = gpuCreateSemaphore(device, 0);
@@ -342,6 +364,43 @@ public:
     void free(Allocation<uint8_t> allocation)
     {
         pending_free[frame].push_back(allocation);
+    }
+
+    Allocation<uint8_t> reduceAxis(uint64_t outer, uint64_t axis, uint64_t inner, Allocation<uint8_t> input, Tensor::Type type)
+    {
+        const uint64_t BLOCK = 256;
+        Allocation<uint8_t> cur = input;
+        uint64_t curAxis = axis;
+        bool first = true;
+        do
+        {
+            uint64_t groups = (curAxis + BLOCK - 1) / BLOCK;
+            auto out = alloc(outer * groups * inner, type);
+
+            auto data = struct_data<TensorReduceBlockData>();
+            data.cpu->outer = outer;
+            data.cpu->axis = curAxis;
+            data.cpu->inner = inner;
+            data.cpu->groups = groups;
+            data.cpu->x = cur.gpu;
+            data.cpu->y = out.gpu;
+
+            auto c = record();
+            if (!first)
+            {
+                // make the previous pass's partials visible to this one
+                gpuBarrier(c, STAGE_COMPUTE, STAGE_COMPUTE);
+                free(cur); // previous intermediate; freed deferred (after this frame)
+            }
+            gpuSetPipeline(c, pipelines["reduce_block"][type]);
+            gpuDispatch(c, data.gpu, { static_cast<unsigned int>(groups), static_cast<unsigned int>(outer * inner), 1 });
+
+            cur = out;
+            curAxis = groups;
+            first = false;
+        } while (curAxis > 1);
+
+        return cur;
     }
 
     GpuDevice device = nullptr;
@@ -708,7 +767,7 @@ Tensor Tensor::operator+(const Tensor& other) const
     auto cmd = _self->_device->record();
     gpuSetPipeline(cmd, _self->_device->pipelines["add"][_type]);
     _self->_device->barrier(STAGE_COMPUTE, { *this, other });
-    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+    gpuDispatch(cmd, tensor_data.gpu, grid1d(size));
 
     auto out = Tensor(_self->_device, allocation, { *this, other }, _shape, _type);
 
@@ -786,7 +845,7 @@ Tensor Tensor::operator-(const Tensor& other) const
     auto cmd = _self->_device->record();
     gpuSetPipeline(cmd, _self->_device->pipelines["sub"][_type]);
     _self->_device->barrier(STAGE_COMPUTE, { *this, other });
-    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+    gpuDispatch(cmd, tensor_data.gpu, grid1d(size));
 
     auto out = Tensor(_self->_device, allocation, { *this, other }, _shape, _type);
 
@@ -849,7 +908,7 @@ Tensor Tensor::operator*(const Tensor& other) const
     auto cmd = _self->_device->record();
     gpuSetPipeline(cmd, _self->_device->pipelines["mul"][_type]);
     _self->_device->barrier(STAGE_COMPUTE, { *this, other });
-    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+    gpuDispatch(cmd, tensor_data.gpu, grid1d(size));
 
     auto out = Tensor(_self->_device, allocation, { *this, other }, _shape, _type);
 
@@ -901,7 +960,7 @@ Tensor Tensor::operator/(const Tensor& other) const
     auto cmd = _self->_device->record();
     gpuSetPipeline(cmd, _self->_device->pipelines["div"][_type]);
     _self->_device->barrier(STAGE_COMPUTE, { *this, other });
-    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+    gpuDispatch(cmd, tensor_data.gpu, grid1d(size));
 
     auto out = Tensor(_self->_device, allocation, { *this, other }, _shape, _type);
 
@@ -1033,7 +1092,7 @@ Tensor Tensor::unfold(unsigned int k, unsigned int pad, Pad mode, unsigned int s
     auto cmd = _self->_device->record();
     gpuSetPipeline(cmd, _self->_device->pipelines["unfold"][_type]);
     _self->_device->barrier(STAGE_COMPUTE, { *this });
-    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+    gpuDispatch(cmd, tensor_data.gpu, grid1d(size));
 
     auto out = Tensor(_self->_device, allocation, { *this }, out_shape, _type);
 
@@ -1065,7 +1124,7 @@ Tensor Tensor::unfold(unsigned int k, unsigned int pad, Pad mode, unsigned int s
         auto cmd = self._self->_device->record();
         gpuSetPipeline(cmd, self._self->_device->pipelines["unfold_backward"][self._type]);
         self._self->_device->barrier(STAGE_COMPUTE, { self, grad });
-        gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(in_size + 63) / 64, 1, 1 });
+        gpuDispatch(cmd, tensor_data.gpu, grid1d(in_size));
 
         auto term = Tensor(self._self->_device, allocation, {}, self._shape, self._type);
 
@@ -1121,21 +1180,9 @@ Tensor Tensor::sum(int dim, bool keepdim) const
         out_shape.push_back(1);
     }
 
-    auto size = outer * inner; // == flatten(out_shape)
-    auto allocation = _self->_device->alloc(size, _type);
-
-    auto tensor_data = _self->_device->struct_data<TensorReduceData>();
-    tensor_data.cpu->n = size;
-    tensor_data.cpu->outer = outer;
-    tensor_data.cpu->axis = axis;
-    tensor_data.cpu->inner = inner;
-    tensor_data.cpu->x = _self->_allocation.gpu;
-    tensor_data.cpu->y = allocation.gpu;
-
-    auto cmd = _self->_device->record();
-    gpuSetPipeline(cmd, _self->_device->pipelines["reduce_sum"][_type]);
+    _self->_device->record();
     _self->_device->barrier(STAGE_COMPUTE, { *this });
-    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+    auto allocation = _self->_device->reduceAxis(outer, axis, inner, _self->_allocation, _type);
 
     auto out = Tensor(_self->_device, allocation, { *this }, out_shape, _type);
 
@@ -1159,7 +1206,7 @@ Tensor Tensor::sum(int dim, bool keepdim) const
         auto cmd = self._self->_device->record();
         gpuSetPipeline(cmd, self._self->_device->pipelines["expand"][self._type]);
         self._self->_device->barrier(STAGE_COMPUTE, { grad });
-        gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(in_size + 63) / 64, 1, 1 });
+        gpuDispatch(cmd, tensor_data.gpu, grid1d(in_size));
 
         auto term = Tensor(self._self->_device, allocation, {}, self._shape, self._type);
 
@@ -1229,7 +1276,7 @@ Tensor Tensor::max(int dim, bool keepdim) const
     auto cmd = _self->_device->record();
     gpuSetPipeline(cmd, _self->_device->pipelines["reduce_max"][_type]);
     _self->_device->barrier(STAGE_COMPUTE, { *this });
-    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+    gpuDispatch(cmd, tensor_data.gpu, grid1d(size));
 
     auto out = Tensor(_self->_device, allocation, { *this }, out_shape, _type);
 
@@ -1254,7 +1301,7 @@ Tensor Tensor::max(int dim, bool keepdim) const
         auto cmd = self._self->_device->record();
         gpuSetPipeline(cmd, self._self->_device->pipelines["reduce_max_backward"][self._type]);
         self._self->_device->barrier(STAGE_COMPUTE, { self, grad });
-        gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(in_size + 63) / 64, 1, 1 });
+        gpuDispatch(cmd, tensor_data.gpu, grid1d(in_size));
 
         auto term = Tensor(self._self->_device, allocation, {}, self._shape, self._type);
 
@@ -1311,7 +1358,7 @@ Tensor Tensor::broadcast(int dim, unsigned int size) const
     auto cmd = _self->_device->record();
     gpuSetPipeline(cmd, _self->_device->pipelines["expand"][_type]);
     _self->_device->barrier(STAGE_COMPUTE, { *this });
-    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(out_size + 63) / 64, 1, 1 });
+    gpuDispatch(cmd, tensor_data.gpu, grid1d(out_size));
 
     auto out = Tensor(_self->_device, allocation, { *this }, out_shape, _type);
 
@@ -1335,7 +1382,7 @@ Tensor Tensor::broadcast(int dim, unsigned int size) const
         auto cmd = self._self->_device->record();
         gpuSetPipeline(cmd, self._self->_device->pipelines["reduce_sum"][self._type]);
         self._self->_device->barrier(STAGE_COMPUTE, { grad });
-        gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(in_size + 63) / 64, 1, 1 });
+        gpuDispatch(cmd, tensor_data.gpu, grid1d(in_size));
 
         auto term = Tensor(self._self->_device, allocation, {}, self._shape, self._type);
 
@@ -1412,7 +1459,7 @@ Tensor Tensor::cat(const Tensor& other, int dim) const
         auto cmd = _self->_device->record();
         gpuSetPipeline(cmd, _self->_device->pipelines["concat_scatter"][_type]);
         _self->_device->barrier(STAGE_COMPUTE, { src });
-        gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(slab + 63) / 64, 1, 1 });
+        gpuDispatch(cmd, tensor_data.gpu, grid1d(slab));
     };
 
     scatter(*this, a_axis, 0);
@@ -1444,7 +1491,7 @@ Tensor Tensor::cat(const Tensor& other, int dim) const
             auto cmd = input._self->_device->record();
             gpuSetPipeline(cmd, input._self->_device->pipelines["concat_gather"][input._type]);
             input._self->_device->barrier(STAGE_COMPUTE, { grad });
-            gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(slab + 63) / 64, 1, 1 });
+            gpuDispatch(cmd, tensor_data.gpu, grid1d(slab));
 
             auto term = Tensor(input._self->_device, allocation, {}, input._shape, input._type);
 
@@ -1483,7 +1530,7 @@ Tensor Tensor::mT() const
     auto cmd = _self->_device->record();
     gpuSetPipeline(cmd, _self->_device->pipelines["mT"][_type]);
     _self->_device->barrier(STAGE_COMPUTE, { *this });
-    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+    gpuDispatch(cmd, tensor_data.gpu, grid1d(size));
 
     auto out = Tensor(_self->_device, allocation, { *this }, res_shape, _type);
 
@@ -1556,22 +1603,73 @@ Tensor Tensor::matmul(const Tensor& other) const
     Shape res_shape = { _shape.front(), other._shape.back() };
     auto size = flatten(res_shape);
 
-    auto allocation = _self->_device->alloc(size, _type);
+    const uint a = _shape.front();
+    const uint b = _shape.back();
+    const uint c = other._shape.back();
 
-    auto tensor_data = _self->_device->struct_data<TensorMatMulData>();
-    tensor_data.cpu->n = size;
-    tensor_data.cpu->a = _shape.front();
-    tensor_data.cpu->b = _shape.back();
-    tensor_data.cpu->c = other._shape.back();
-    tensor_data.cpu->x = _self->_allocation.gpu;
-    tensor_data.cpu->y = other._self->_allocation.gpu;
-    tensor_data.cpu->z = allocation.gpu;
+    // Split-K: when the output is too small to fill the GPU (few 16x16 tiles) but
+    // the contraction is huge, partition the contraction across grid.z workgroups
+    // into partial products, then sum the partials with the parallel reduction.
+    // This is the weight-gradient case (cols^T @ grad): the contraction M = H*W
+    // dwarfs the tiny K x N output, so the plain tiled matmul used only a handful
+    // of workgroups each looping the entire contraction serially.
+    const uint outTiles = ((a + 15) / 16) * ((c + 15) / 16);
+    uint splits = 1;
+    if (outTiles < 256 && b > 8192)
+    {
+        splits = (b + 8191) / 8192;
+        if (splits > 64)
+        {
+            splits = 64;
+        }
+    }
 
-    auto cmd = _self->_device->record();
+    Allocation<uint8_t> allocation;
+    if (splits > 1)
+    {
+        auto partials = _self->_device->alloc(static_cast<uint64_t>(splits) * a * c, _type);
 
-    gpuSetPipeline(cmd, _self->_device->pipelines["matmul"][_type]);
-    _self->_device->barrier(STAGE_COMPUTE, { *this, other });
-    gpuDispatch(cmd, tensor_data.gpu, { ((uint)other._shape.back() + 15) / 16, ((uint)_shape.front() + 15) / 16, 1 });
+        auto md = _self->_device->struct_data<TensorMatMulData>();
+        md.cpu->n = static_cast<uint64_t>(splits) * a * c;
+        md.cpu->a = a;
+        md.cpu->b = b;
+        md.cpu->c = c;
+        md.cpu->splits = splits;
+        md.cpu->transposeA = 0;
+        md.cpu->x = _self->_allocation.gpu;
+        md.cpu->y = other._self->_allocation.gpu;
+        md.cpu->z = partials.gpu;
+
+        auto cmd = _self->_device->record();
+        gpuSetPipeline(cmd, _self->_device->pipelines["matmul_splitk"][_type]);
+        _self->_device->barrier(STAGE_COMPUTE, { *this, other });
+        gpuDispatch(cmd, md.gpu, { (c + 15) / 16, (a + 15) / 16, splits });
+
+        // sum the `splits` partials (splits, a*c) down to the (a, c) result.
+        gpuBarrier(_self->_device->record(), STAGE_COMPUTE, STAGE_COMPUTE);
+        allocation = _self->_device->reduceAxis(1, splits, static_cast<uint64_t>(a) * c, partials, _type);
+        _self->_device->free(partials);
+    }
+    else
+    {
+        allocation = _self->_device->alloc(size, _type);
+
+        auto tensor_data = _self->_device->struct_data<TensorMatMulData>();
+        tensor_data.cpu->n = size;
+        tensor_data.cpu->a = a;
+        tensor_data.cpu->b = b;
+        tensor_data.cpu->c = c;
+        tensor_data.cpu->splits = 1;
+        tensor_data.cpu->x = _self->_allocation.gpu;
+        tensor_data.cpu->y = other._self->_allocation.gpu;
+        tensor_data.cpu->z = allocation.gpu;
+
+        auto cmd = _self->_device->record();
+        gpuSetPipeline(cmd, _self->_device->pipelines["matmul"][_type]);
+        _self->_device->barrier(STAGE_COMPUTE, { *this, other });
+        unsigned int rowTiles = (a + 15) / 16;
+        gpuDispatch(cmd, tensor_data.gpu, { (c + 15) / 16, rowTiles < kMaxGroups ? rowTiles : kMaxGroups, 1 });
+    }
 
     auto out = Tensor(_self->_device, allocation, { *this, other }, res_shape, _type);
     tensors_pending_writes[STAGE_COMPUTE].insert(out);
@@ -1580,8 +1678,91 @@ Tensor Tensor::matmul(const Tensor& other) const
     out._self->_backward = [self, other](const Tensor& grad)
     {
         self._self->grad = self._self->grad + grad.matmul(other.mT());
-        other._self->grad = other._self->grad + self.mT().matmul(grad);
+        // weight gradient cols^T @ grad, fused so cols^T is never materialized.
+        other._self->grad = other._self->grad + self.tmatmul(grad);
     };
+    return out;
+}
+
+Tensor Tensor::tmatmul(const Tensor& other) const
+{
+    if (_type != other._type)
+    {
+        throw std::runtime_error("Implicit type conversion not yet supported");
+    }
+    if (_shape.size() != 2 || other._shape.size() != 2)
+    {
+        throw std::runtime_error("tmatmul expects 2D tensors");
+    }
+    if (_shape.front() != other._shape.front())
+    {
+        throw std::runtime_error("tmatmul contraction mismatch between " + to_string(_shape) + " and " + to_string(other._shape));
+    }
+
+    const uint a = _shape.back();       // K (rows of result)
+    const uint b = _shape.front();      // M (contraction)
+    const uint c = other._shape.back(); // N (cols of result)
+
+    uint splits = (b + 8191) / 8192;
+    if (splits < 1)
+    {
+        splits = 1;
+    }
+    if (splits > 64)
+    {
+        splits = 64;
+    }
+
+    Shape res_shape = { a, c };
+
+    Allocation<uint8_t> allocation;
+    if (splits > 1)
+    {
+        auto partials = _self->_device->alloc(static_cast<uint64_t>(splits) * a * c, _type);
+
+        auto md = _self->_device->struct_data<TensorMatMulData>();
+        md.cpu->n = static_cast<uint64_t>(splits) * a * c;
+        md.cpu->a = a;
+        md.cpu->b = b;
+        md.cpu->c = c;
+        md.cpu->splits = splits;
+        md.cpu->transposeA = 1;
+        md.cpu->x = _self->_allocation.gpu;
+        md.cpu->y = other._self->_allocation.gpu;
+        md.cpu->z = partials.gpu;
+
+        auto cmd = _self->_device->record();
+        gpuSetPipeline(cmd, _self->_device->pipelines["matmul_splitk"][_type]);
+        _self->_device->barrier(STAGE_COMPUTE, { *this, other });
+        gpuDispatch(cmd, md.gpu, { (c + 15) / 16, (a + 15) / 16, splits });
+
+        gpuBarrier(_self->_device->record(), STAGE_COMPUTE, STAGE_COMPUTE);
+        allocation = _self->_device->reduceAxis(1, splits, static_cast<uint64_t>(a) * c, partials, _type);
+        _self->_device->free(partials);
+    }
+    else
+    {
+        allocation = _self->_device->alloc(static_cast<uint64_t>(a) * c, _type);
+
+        auto md = _self->_device->struct_data<TensorMatMulData>();
+        md.cpu->n = static_cast<uint64_t>(a) * c;
+        md.cpu->a = a;
+        md.cpu->b = b;
+        md.cpu->c = c;
+        md.cpu->splits = 1;
+        md.cpu->transposeA = 1;
+        md.cpu->x = _self->_allocation.gpu;
+        md.cpu->y = other._self->_allocation.gpu;
+        md.cpu->z = allocation.gpu;
+
+        auto cmd = _self->_device->record();
+        gpuSetPipeline(cmd, _self->_device->pipelines["matmul_splitk"][_type]);
+        _self->_device->barrier(STAGE_COMPUTE, { *this, other });
+        gpuDispatch(cmd, md.gpu, { (c + 15) / 16, (a + 15) / 16, 1 });
+    }
+
+    auto out = Tensor(_self->_device, allocation, {}, res_shape, _type);
+    tensors_pending_writes[STAGE_COMPUTE].insert(out);
     return out;
 }
 
@@ -1692,7 +1873,7 @@ Tensor Tensor::pow(const Tensor& other) const
     auto cmd = _self->_device->record();
     gpuSetPipeline(cmd, _self->_device->pipelines["pow"][_type]);
     _self->_device->barrier(STAGE_COMPUTE, { *this, other });
-    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+    gpuDispatch(cmd, tensor_data.gpu, grid1d(size));
 
     auto out = Tensor(_self->_device, allocation, { *this, other }, _shape, _type);
 
@@ -1717,8 +1898,6 @@ Tensor Tensor::mse(const Tensor& other) const
 {
     auto dif = *this - other;
     auto squared = dif * dif;
-    // Reduce in fp32: both the sum-of-squares and the element count overflow
-    // fp16 (max 65504) for non-trivial tensors, which yields inf/0/NaN losses.
     if (squared._type == Type::float16)
     {
         squared = squared.float32();
@@ -1728,7 +1907,23 @@ Tensor Tensor::mse(const Tensor& other) const
 
 Tensor Tensor::sum() const
 {
-    return dot(_self->_device->ones(_shape, _type));
+    auto size = flatten(_shape);
+
+    _self->_device->record();
+    _self->_device->barrier(STAGE_COMPUTE, { *this });
+    auto allocation = _self->_device->reduceAxis(1, size, 1, _self->_allocation, _type);
+
+    auto out = Tensor(_self->_device, allocation, { *this }, { 1 }, _type);
+
+    tensors_pending_writes[STAGE_COMPUTE].insert(out);
+
+    Tensor self = *this;
+    out._self->_backward = [self](const Tensor& grad)
+    {
+        auto ones = self._self->_device->ones(self._shape, self._type);
+        self._self->grad = self._self->grad + ones * grad;
+    };
+    return out;
 }
 
 Tensor Tensor::sqrt() const
@@ -1755,7 +1950,7 @@ Tensor Tensor::exp() const
     auto cmd = _self->_device->record();
     gpuSetPipeline(cmd, _self->_device->pipelines["exp"][_type]);
     _self->_device->barrier(STAGE_COMPUTE, { *this });
-    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+    gpuDispatch(cmd, tensor_data.gpu, grid1d(size));
 
     auto out = Tensor(_self->_device, allocation, { *this }, _shape, _type);
 
@@ -1788,7 +1983,7 @@ Tensor Tensor::log() const
     auto cmd = _self->_device->record();
     gpuSetPipeline(cmd, _self->_device->pipelines["log"][_type]);
     _self->_device->barrier(STAGE_COMPUTE, { *this });
-    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+    gpuDispatch(cmd, tensor_data.gpu, grid1d(size));
 
     auto out = Tensor(_self->_device, allocation, { *this }, _shape, _type);
 
@@ -1821,7 +2016,7 @@ Tensor Tensor::sin() const
     auto cmd = _self->_device->record();
     gpuSetPipeline(cmd, _self->_device->pipelines["sin"][_type]);
     _self->_device->barrier(STAGE_COMPUTE, { *this });
-    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+    gpuDispatch(cmd, tensor_data.gpu, grid1d(size));
 
     auto out = Tensor(_self->_device, allocation, { *this }, _shape, _type);
 
@@ -1849,7 +2044,7 @@ Tensor Tensor::cos() const
     auto cmd = _self->_device->record();
     gpuSetPipeline(cmd, _self->_device->pipelines["cos"][_type]);
     _self->_device->barrier(STAGE_COMPUTE, { *this });
-    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+    gpuDispatch(cmd, tensor_data.gpu, grid1d(size));
 
     auto out = Tensor(_self->_device, allocation, { *this }, _shape, _type);
 
@@ -1877,7 +2072,7 @@ Tensor Tensor::tan() const
     auto cmd = _self->_device->record();
     gpuSetPipeline(cmd, _self->_device->pipelines["tan"][_type]);
     _self->_device->barrier(STAGE_COMPUTE, { *this });
-    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+    gpuDispatch(cmd, tensor_data.gpu, grid1d(size));
 
     auto out = Tensor(_self->_device, allocation, { *this }, _shape, _type);
 
@@ -1905,7 +2100,7 @@ Tensor Tensor::cosh() const
     auto cmd = _self->_device->record();
     gpuSetPipeline(cmd, _self->_device->pipelines["cosh"][_type]);
     _self->_device->barrier(STAGE_COMPUTE, { *this });
-    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+    gpuDispatch(cmd, tensor_data.gpu, grid1d(size));
 
     auto out = Tensor(_self->_device, allocation, { *this }, _shape, _type);
 
@@ -1928,7 +2123,7 @@ Tensor Tensor::tanh() const
     auto cmd = _self->_device->record();
     gpuSetPipeline(cmd, _self->_device->pipelines["tanh"][_type]);
     _self->_device->barrier(STAGE_COMPUTE, { *this });
-    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+    gpuDispatch(cmd, tensor_data.gpu, grid1d(size));
 
     auto out = Tensor(_self->_device, allocation, { *this }, _shape, _type);
 
@@ -1962,7 +2157,7 @@ Tensor Tensor::relu(float alpha) const
     auto cmd = _self->_device->record();
     gpuSetPipeline(cmd, _self->_device->pipelines["relu"][_type]);
     _self->_device->barrier(STAGE_COMPUTE, { *this });
-    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+    gpuDispatch(cmd, tensor_data.gpu, grid1d(size));
 
     auto out = Tensor(_self->_device, allocation, { *this }, _shape, _type);
 
@@ -1983,7 +2178,7 @@ Tensor Tensor::relu(float alpha) const
         auto cmd = self._self->_device->record();
         gpuSetPipeline(cmd, self._self->_device->pipelines["relu_backward"][self._type]);
         self._self->_device->barrier(STAGE_COMPUTE, { self, grad });
-        gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+        gpuDispatch(cmd, tensor_data.gpu, grid1d(size));
 
         auto term = Tensor(self._self->_device, allocation, {}, self.shape(), self._type);
 
@@ -2008,7 +2203,7 @@ Tensor Tensor::gelu() const
     auto cmd = _self->_device->record();
     gpuSetPipeline(cmd, _self->_device->pipelines["gelu"][_type]);
     _self->_device->barrier(STAGE_COMPUTE, { *this });
-    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+    gpuDispatch(cmd, tensor_data.gpu, grid1d(size));
 
     auto out = Tensor(_self->_device, allocation, { *this }, _shape, _type);
 
@@ -2028,7 +2223,7 @@ Tensor Tensor::gelu() const
         auto cmd = self._self->_device->record();
         gpuSetPipeline(cmd, self._self->_device->pipelines["gelu_backward"][self._type]);
         self._self->_device->barrier(STAGE_COMPUTE, { self, grad });
-        gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+        gpuDispatch(cmd, tensor_data.gpu, grid1d(size));
 
         auto term = Tensor(self._self->_device, allocation, {}, self.shape(), self._type);
 
@@ -2064,7 +2259,7 @@ Tensor Tensor::float16() const
     auto cmd = _self->_device->record();
     gpuSetPipeline(cmd, _self->_device->pipelines["cast"][Type::float16]);
     _self->_device->barrier(STAGE_COMPUTE, { *this });
-    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+    gpuDispatch(cmd, tensor_data.gpu, grid1d(size));
 
     auto out = Tensor(_self->_device, allocation, { *this }, _shape, Type::float16);
 
@@ -2097,7 +2292,7 @@ Tensor Tensor::float32() const
     auto cmd = _self->_device->record();
     gpuSetPipeline(cmd, _self->_device->pipelines["cast"][Type::float32]);
     _self->_device->barrier(STAGE_COMPUTE, { *this });
-    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+    gpuDispatch(cmd, tensor_data.gpu, grid1d(size));
 
     auto out = Tensor(_self->_device, allocation, { *this }, _shape, Type::float32);
 
@@ -2135,7 +2330,7 @@ Tensor Tensor::adam(Tensor& mean, Tensor& variance, uint64_t steps, float b1, fl
     auto cmd = _self->_device->record();
     gpuSetPipeline(cmd, _self->_device->pipelines["adam"][_type]);
     _self->_device->barrier(STAGE_COMPUTE, { *this, mean, variance });
-    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+    gpuDispatch(cmd, tensor_data.gpu, grid1d(size));
 
     auto out = Tensor(_self->_device, allocation, { *this, mean, variance }, _shape, _type);
 
@@ -2213,7 +2408,7 @@ Tensor Tensor::permute(Shape permutation) const
     auto cmd = _self->_device->record();
     gpuSetPipeline(cmd, _self->_device->pipelines["permute"][_type]);
     _self->_device->barrier(STAGE_COMPUTE, { *this });
-    gpuDispatch(cmd, tensor_data.gpu, { static_cast<unsigned int>(size + 63) / 64, 1, 1 });
+    gpuDispatch(cmd, tensor_data.gpu, grid1d(size));
 
     auto out = Tensor(_self->_device, allocation, { *this }, shape, _type);
 

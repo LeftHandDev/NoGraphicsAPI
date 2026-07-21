@@ -3,6 +3,13 @@
 
 static const float PI = 3.1415926535897932384626433832795f;
 
+static const uint DISPATCH_X = 65535u * 64u;
+uint _lin(uint3 gtid)
+{
+    return gtid.x + gtid.y * DISPATCH_X;
+}
+
+
 float _rand_uniform(uint t, uint seed)
 {
     uint hash = xxhash32(uint3(t, seed, 1));
@@ -404,6 +411,77 @@ void _reduce_sum_impl_f16(uint t, TensorReduceData *data)
     y[t] = (half)acc;
 }
 
+
+groupshared float g_reduce_block[256];
+
+void _reduce_block_impl_f32(uint3 gid, uint3 tid, TensorReduceBlockData* data)
+{
+    uint t = tid.x;  // lane within the workgroup (0..255)
+    uint g = gid.x;  // axis group
+    uint s = gid.y;  // segment index = o * inner + j
+    uint o = uint(s / data->inner);
+    uint j = uint(s % data->inner);
+
+    uint a = g * 256 + t;
+    float v = 0.f;
+    if (a < data->axis)
+    {
+        uint64_t idx = (uint64_t(o) * data->axis + a) * data->inner + j;
+        v = ((float*)data->x)[idx];
+    }
+    g_reduce_block[t] = v;
+    GroupMemoryBarrierWithGroupSync();
+
+    for (uint stride = 128; stride > 0; stride >>= 1)
+    {
+        if (t < stride)
+        {
+            g_reduce_block[t] += g_reduce_block[t + stride];
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (t == 0)
+    {
+        uint64_t outIdx = (uint64_t(o) * data->groups + g) * data->inner + j;
+        ((float*)data->y)[outIdx] = g_reduce_block[0];
+    }
+}
+
+void _reduce_block_impl_f16(uint3 gid, uint3 tid, TensorReduceBlockData* data)
+{
+    uint t = tid.x;
+    uint g = gid.x;
+    uint s = gid.y;
+    uint o = uint(s / data->inner);
+    uint j = uint(s % data->inner);
+
+    uint a = g * 256 + t;
+    float v = 0.f;
+    if (a < data->axis)
+    {
+        uint64_t idx = (uint64_t(o) * data->axis + a) * data->inner + j;
+        v = float(((half*)data->x)[idx]);
+    }
+    g_reduce_block[t] = v;
+    GroupMemoryBarrierWithGroupSync();
+
+    for (uint stride = 128; stride > 0; stride >>= 1)
+    {
+        if (t < stride)
+        {
+            g_reduce_block[t] += g_reduce_block[t + stride];
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (t == 0)
+    {
+        uint64_t outIdx = (uint64_t(o) * data->groups + g) * data->inner + j;
+        ((half*)data->y)[outIdx] = half(g_reduce_block[0]);
+    }
+}
+
 void _reduce_max_impl_f32(uint t, TensorReduceData *data)
 {
     if (t >= data->n)
@@ -615,15 +693,128 @@ void _matmul_tiled_f32(uint3 gid, uint3 tid, TensorMatMulData* data)
     uint B = data->b;
     uint C = data->c;
 
-    uint row = gid.y * MATMUL_TILE + tid.y; // output row in [0, A)
     uint col = gid.x * MATMUL_TILE + tid.x; // output col in [0, C)
+    uint tiles = (B + MATMUL_TILE - 1) / MATMUL_TILE;
+
+    // Row tiles can exceed the 65535 grid.y limit; stride over them so a capped
+    // grid still covers every row (the host caps grid.y at the same value).
+    uint rowTiles = (A + MATMUL_TILE - 1) / MATMUL_TILE;
+    uint yStride = min(rowTiles, 65535u);
+    for (uint ry = gid.y; ry < rowTiles; ry += yStride)
+    {
+        uint row = ry * MATMUL_TILE + tid.y; // output row in [0, A)
+
+        float acc = 0.f;
+        for (uint tt = 0; tt < tiles; tt++)
+        {
+            uint aCol = tt * MATMUL_TILE + tid.x;
+            g_matmul_tileA[tid.y * MATMUL_TILE + tid.x] = (row < A && aCol < B) ? x[row * B + aCol] : 0.f;
+
+            uint bRow = tt * MATMUL_TILE + tid.y;
+            g_matmul_tileB[tid.y * MATMUL_TILE + tid.x] = (bRow < B && col < C) ? y[bRow * C + col] : 0.f;
+
+            GroupMemoryBarrierWithGroupSync();
+
+            for (uint kk = 0; kk < MATMUL_TILE; kk++)
+            {
+                acc += g_matmul_tileA[tid.y * MATMUL_TILE + kk] * g_matmul_tileB[kk * MATMUL_TILE + tid.x];
+            }
+
+            GroupMemoryBarrierWithGroupSync();
+        }
+
+        if (row < A && col < C)
+        {
+            z[row * C + col] = acc;
+        }
+    }
+}
+
+void _matmul_tiled_f16(uint3 gid, uint3 tid, TensorMatMulData* data)
+{
+    half* x = (half*)data->x;
+    half* y = (half*)data->y;
+    half* z = (half*)data->z;
+
+    uint A = data->a;
+    uint B = data->b;
+    uint C = data->c;
+
+    uint col = gid.x * MATMUL_TILE + tid.x; // output col in [0, C)
+    uint tiles = (B + MATMUL_TILE - 1) / MATMUL_TILE;
+
+    uint rowTiles = (A + MATMUL_TILE - 1) / MATMUL_TILE;
+    uint yStride = min(rowTiles, 65535u);
+    for (uint ry = gid.y; ry < rowTiles; ry += yStride)
+    {
+        uint row = ry * MATMUL_TILE + tid.y; // output row in [0, A)
+
+        float acc = 0.f;
+        for (uint tt = 0; tt < tiles; tt++)
+        {
+            uint aCol = tt * MATMUL_TILE + tid.x;
+            g_matmul_tileA[tid.y * MATMUL_TILE + tid.x] = (row < A && aCol < B) ? float(x[row * B + aCol]) : 0.f;
+
+            uint bRow = tt * MATMUL_TILE + tid.y;
+            g_matmul_tileB[tid.y * MATMUL_TILE + tid.x] = (bRow < B && col < C) ? float(y[bRow * C + col]) : 0.f;
+
+            GroupMemoryBarrierWithGroupSync();
+
+            for (uint kk = 0; kk < MATMUL_TILE; kk++)
+            {
+                acc += g_matmul_tileA[tid.y * MATMUL_TILE + kk] * g_matmul_tileB[kk * MATMUL_TILE + tid.x];
+            }
+
+            GroupMemoryBarrierWithGroupSync();
+        }
+
+        if (row < A && col < C)
+        {
+            z[row * C + col] = half(acc);
+        }
+    }
+}
+
+// Split-K GEMM: partitions the contraction (b) across grid.z workgroups, each
+// summing its slice into a partial at z[(split, a, c)]. A separate reduction
+// (reduce_block over the split axis) then sums the partials into the final
+// (a, c). Used when the output is too small to fill the GPU but the contraction
+// is huge (e.g. weight gradients: cols^T @ grad, contraction M = H*W).
+void _matmul_splitk_impl_f32(uint3 gid, uint3 tid, TensorMatMulData* data)
+{
+    float* x = (float*)data->x; // A (a, b)
+    float* y = (float*)data->y; // B (b, c)
+    float* z = (float*)data->z; // partials (splits, a, c)
+
+    uint A = data->a;
+    uint B = data->b;
+    uint C = data->c;
+    uint S = data->splits;
+    uint s = gid.z;
+
+    uint row = gid.y * MATMUL_TILE + tid.y;
+    uint col = gid.x * MATMUL_TILE + tid.x;
+
+    uint bTiles = (B + MATMUL_TILE - 1) / MATMUL_TILE;
+    uint tilesPerSplit = (bTiles + S - 1) / S;
+    uint startTile = s * tilesPerSplit;
+    uint endTile = min(startTile + tilesPerSplit, bTiles);
 
     float acc = 0.f;
-    uint tiles = (B + MATMUL_TILE - 1) / MATMUL_TILE;
-    for (uint tt = 0; tt < tiles; tt++)
+    for (uint tt = startTile; tt < endTile; tt++)
     {
         uint aCol = tt * MATMUL_TILE + tid.x;
-        g_matmul_tileA[tid.y * MATMUL_TILE + tid.x] = (row < A && aCol < B) ? x[row * B + aCol] : 0.f;
+        // transposeA: x is stored (b, a) (e.g. cols), so A[row, aCol] = x[aCol*a + row].
+        float av = 0.f;
+        if (data->transposeA != 0u)
+        {
+            av = (row < A && aCol < B) ? x[aCol * A + row] : 0.f;
+        }
+        else
+        {
+            av = (row < A && aCol < B) ? x[row * B + aCol] : 0.f;
+        }
+        g_matmul_tileA[tid.y * MATMUL_TILE + tid.x] = av;
 
         uint bRow = tt * MATMUL_TILE + tid.y;
         g_matmul_tileB[tid.y * MATMUL_TILE + tid.x] = (bRow < B && col < C) ? y[bRow * C + col] : 0.f;
@@ -640,11 +831,12 @@ void _matmul_tiled_f32(uint3 gid, uint3 tid, TensorMatMulData* data)
 
     if (row < A && col < C)
     {
-        z[row * C + col] = acc;
+        uint64_t outIdx = (uint64_t(s) * A + row) * C + col;
+        z[outIdx] = acc;
     }
 }
 
-void _matmul_tiled_f16(uint3 gid, uint3 tid, TensorMatMulData* data)
+void _matmul_splitk_impl_f16(uint3 gid, uint3 tid, TensorMatMulData* data)
 {
     half* x = (half*)data->x;
     half* y = (half*)data->y;
@@ -653,16 +845,31 @@ void _matmul_tiled_f16(uint3 gid, uint3 tid, TensorMatMulData* data)
     uint A = data->a;
     uint B = data->b;
     uint C = data->c;
+    uint S = data->splits;
+    uint s = gid.z;
 
-    uint row = gid.y * MATMUL_TILE + tid.y; // output row in [0, A)
-    uint col = gid.x * MATMUL_TILE + tid.x; // output col in [0, C)
+    uint row = gid.y * MATMUL_TILE + tid.y;
+    uint col = gid.x * MATMUL_TILE + tid.x;
+
+    uint bTiles = (B + MATMUL_TILE - 1) / MATMUL_TILE;
+    uint tilesPerSplit = (bTiles + S - 1) / S;
+    uint startTile = s * tilesPerSplit;
+    uint endTile = min(startTile + tilesPerSplit, bTiles);
 
     float acc = 0.f;
-    uint tiles = (B + MATMUL_TILE - 1) / MATMUL_TILE;
-    for (uint tt = 0; tt < tiles; tt++)
+    for (uint tt = startTile; tt < endTile; tt++)
     {
         uint aCol = tt * MATMUL_TILE + tid.x;
-        g_matmul_tileA[tid.y * MATMUL_TILE + tid.x] = (row < A && aCol < B) ? float(x[row * B + aCol]) : 0.f;
+        float av = 0.f;
+        if (data->transposeA != 0u)
+        {
+            av = (row < A && aCol < B) ? float(x[aCol * A + row]) : 0.f;
+        }
+        else
+        {
+            av = (row < A && aCol < B) ? float(x[row * B + aCol]) : 0.f;
+        }
+        g_matmul_tileA[tid.y * MATMUL_TILE + tid.x] = av;
 
         uint bRow = tt * MATMUL_TILE + tid.y;
         g_matmul_tileB[tid.y * MATMUL_TILE + tid.x] = (bRow < B && col < C) ? float(y[bRow * C + col]) : 0.f;
@@ -679,7 +886,8 @@ void _matmul_tiled_f16(uint3 gid, uint3 tid, TensorMatMulData* data)
 
     if (row < A && col < C)
     {
-        z[row * C + col] = half(acc);
+        uint64_t outIdx = (uint64_t(s) * A + row) * C + col;
+        z[outIdx] = half(acc);
     }
 }
 
@@ -1015,8 +1223,9 @@ void _adam_impl_f16(uint t, TensorAdamData* data)
 }
 
 [numthreads(64, 1, 1)]
-void _fp32_fp16(uint t : SV_DispatchThreadID, TensorData* data)
+void _fp32_fp16(uint3 _g : SV_DispatchThreadID, TensorData* data)
 {
+    uint t = _lin(_g);
     if (t >= data->n)
     {
         return;
@@ -1027,8 +1236,9 @@ void _fp32_fp16(uint t : SV_DispatchThreadID, TensorData* data)
 }
 
 [numthreads(64, 1, 1)]
-void _fp16_fp32(uint t : SV_DispatchThreadID, TensorData* data)
+void _fp16_fp32(uint3 _g : SV_DispatchThreadID, TensorData* data)
 {
+    uint t = _lin(_g);
     if (t >= data->n)
     {
         return;
@@ -1038,8 +1248,9 @@ void _fp16_fp32(uint t : SV_DispatchThreadID, TensorData* data)
     z[t] = (half)x[t];
 }
 
-[numthreads(64, 1, 1)] void _rand_f32(uint t : SV_DispatchThreadID, TensorData* data)
+[numthreads(64, 1, 1)] void _rand_f32(uint3 _g : SV_DispatchThreadID, TensorData* data)
 {
+    uint t = _lin(_g);
     if (t >= data->n)
     {
         return;
@@ -1048,8 +1259,9 @@ void _fp16_fp32(uint t : SV_DispatchThreadID, TensorData* data)
     z[t] = _rand_uniform(t, (uint)data->m);
 }
 
-[numthreads(64, 1, 1)] void _rand_f16(uint t : SV_DispatchThreadID, TensorData* data)
+[numthreads(64, 1, 1)] void _rand_f16(uint3 _g : SV_DispatchThreadID, TensorData* data)
 {
+    uint t = _lin(_g);
     if (t >= data->n)
     {
         return;
@@ -1058,86 +1270,90 @@ void _fp16_fp32(uint t : SV_DispatchThreadID, TensorData* data)
     z[t] = (half)_rand_uniform(t, (uint)data->m);
 }
 
-[numthreads(64, 1, 1)] void _add_f32(uint t : SV_DispatchThreadID, TensorData* data){ _add_impl<float>(t, data); }
-[numthreads(64, 1, 1)] void _add_f16(uint t : SV_DispatchThreadID, TensorData* data){ _add_impl<half>(t, data); }
+[numthreads(64, 1, 1)] void _add_f32(uint3 _g : SV_DispatchThreadID, TensorData* data){ _add_impl<float>(_lin(_g), data); }
+[numthreads(64, 1, 1)] void _add_f16(uint3 _g : SV_DispatchThreadID, TensorData* data){ _add_impl<half>(_lin(_g), data); }
 
-[numthreads(64, 1, 1)] void _sub_f32(uint t : SV_DispatchThreadID, TensorData* data){ _sub_impl<float>(t, data); }
-[numthreads(64, 1, 1)] void _sub_f16(uint t : SV_DispatchThreadID, TensorData* data){ _sub_impl<half>(t, data); }
+[numthreads(64, 1, 1)] void _sub_f32(uint3 _g : SV_DispatchThreadID, TensorData* data){ _sub_impl<float>(_lin(_g), data); }
+[numthreads(64, 1, 1)] void _sub_f16(uint3 _g : SV_DispatchThreadID, TensorData* data){ _sub_impl<half>(_lin(_g), data); }
 
-[numthreads(64, 1, 1)] void _mul_f32(uint t : SV_DispatchThreadID, TensorData* data){ _mul_impl<float>(t, data); }
-[numthreads(64, 1, 1)] void _mul_f16(uint t : SV_DispatchThreadID, TensorData* data){ _mul_impl<half>(t, data); }
+[numthreads(64, 1, 1)] void _mul_f32(uint3 _g : SV_DispatchThreadID, TensorData* data){ _mul_impl<float>(_lin(_g), data); }
+[numthreads(64, 1, 1)] void _mul_f16(uint3 _g : SV_DispatchThreadID, TensorData* data){ _mul_impl<half>(_lin(_g), data); }
 
-[numthreads(64, 1, 1)] void _div_f32(uint t : SV_DispatchThreadID, TensorData* data){ _div_impl<float>(t, data); }
-[numthreads(64, 1, 1)] void _div_f16(uint t : SV_DispatchThreadID, TensorData* data){ _div_impl<half>(t, data); }
+[numthreads(64, 1, 1)] void _div_f32(uint3 _g : SV_DispatchThreadID, TensorData* data){ _div_impl<float>(_lin(_g), data); }
+[numthreads(64, 1, 1)] void _div_f16(uint3 _g : SV_DispatchThreadID, TensorData* data){ _div_impl<half>(_lin(_g), data); }
 
-[numthreads(64, 1, 1)] void _permute_f32(uint t : SV_DispatchThreadID, TensorPermuteData* data){ _permute_impl<float>(t, data); }
-[numthreads(64, 1, 1)] void _permute_f16(uint t : SV_DispatchThreadID, TensorPermuteData* data){ _permute_impl<half>(t, data); }
+[numthreads(64, 1, 1)] void _permute_f32(uint3 _g : SV_DispatchThreadID, TensorPermuteData* data){ _permute_impl<float>(_lin(_g), data); }
+[numthreads(64, 1, 1)] void _permute_f16(uint3 _g : SV_DispatchThreadID, TensorPermuteData* data){ _permute_impl<half>(_lin(_g), data); }
 
-[numthreads(64, 1, 1)] void _unfold_f32(uint t : SV_DispatchThreadID, TensorUnfoldData* data){ _unfold_impl<float>(t, data); }
-[numthreads(64, 1, 1)] void _unfold_f16(uint t : SV_DispatchThreadID, TensorUnfoldData* data){ _unfold_impl<half>(t, data); }
+[numthreads(64, 1, 1)] void _unfold_f32(uint3 _g : SV_DispatchThreadID, TensorUnfoldData* data){ _unfold_impl<float>(_lin(_g), data); }
+[numthreads(64, 1, 1)] void _unfold_f16(uint3 _g : SV_DispatchThreadID, TensorUnfoldData* data){ _unfold_impl<half>(_lin(_g), data); }
 
-[numthreads(64, 1, 1)] void _unfold_backward_f32(uint t : SV_DispatchThreadID, TensorUnfoldData* data){ _unfold_backward_impl_f32(t, data); }
-[numthreads(64, 1, 1)] void _unfold_backward_f16(uint t : SV_DispatchThreadID, TensorUnfoldData* data){ _unfold_backward_impl_f16(t, data); }
+[numthreads(64, 1, 1)] void _unfold_backward_f32(uint3 _g : SV_DispatchThreadID, TensorUnfoldData* data){ _unfold_backward_impl_f32(_lin(_g), data); }
+[numthreads(64, 1, 1)] void _unfold_backward_f16(uint3 _g : SV_DispatchThreadID, TensorUnfoldData* data){ _unfold_backward_impl_f16(_lin(_g), data); }
 
-[numthreads(64, 1, 1)] void _reduce_sum_f32(uint t : SV_DispatchThreadID, TensorReduceData* data){ _reduce_sum_impl_f32(t, data); }
-[numthreads(64, 1, 1)] void _reduce_sum_f16(uint t : SV_DispatchThreadID, TensorReduceData* data){ _reduce_sum_impl_f16(t, data); }
-[numthreads(64, 1, 1)] void _reduce_max_f32(uint t : SV_DispatchThreadID, TensorReduceData* data){ _reduce_max_impl_f32(t, data); }
-[numthreads(64, 1, 1)] void _reduce_max_f16(uint t : SV_DispatchThreadID, TensorReduceData* data){ _reduce_max_impl_f16(t, data); }
-[numthreads(64, 1, 1)] void _reduce_max_backward_f32(uint t : SV_DispatchThreadID, TensorReduceData* data){ _reduce_max_backward_impl_f32(t, data); }
-[numthreads(64, 1, 1)] void _reduce_max_backward_f16(uint t : SV_DispatchThreadID, TensorReduceData* data){ _reduce_max_backward_impl_f16(t, data); }
+[numthreads(64, 1, 1)] void _reduce_sum_f32(uint3 _g : SV_DispatchThreadID, TensorReduceData* data){ _reduce_sum_impl_f32(_lin(_g), data); }
+[numthreads(64, 1, 1)] void _reduce_sum_f16(uint3 _g : SV_DispatchThreadID, TensorReduceData* data){ _reduce_sum_impl_f16(_lin(_g), data); }
+[numthreads(256, 1, 1)] void _reduce_block_f32(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID, TensorReduceBlockData* data){ _reduce_block_impl_f32(gid, tid, data); }
+[numthreads(256, 1, 1)] void _reduce_block_f16(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID, TensorReduceBlockData* data){ _reduce_block_impl_f16(gid, tid, data); }
+[numthreads(64, 1, 1)] void _reduce_max_f32(uint3 _g : SV_DispatchThreadID, TensorReduceData* data){ _reduce_max_impl_f32(_lin(_g), data); }
+[numthreads(64, 1, 1)] void _reduce_max_f16(uint3 _g : SV_DispatchThreadID, TensorReduceData* data){ _reduce_max_impl_f16(_lin(_g), data); }
+[numthreads(64, 1, 1)] void _reduce_max_backward_f32(uint3 _g : SV_DispatchThreadID, TensorReduceData* data){ _reduce_max_backward_impl_f32(_lin(_g), data); }
+[numthreads(64, 1, 1)] void _reduce_max_backward_f16(uint3 _g : SV_DispatchThreadID, TensorReduceData* data){ _reduce_max_backward_impl_f16(_lin(_g), data); }
 
-[numthreads(64, 1, 1)] void _expand_f32(uint t : SV_DispatchThreadID, TensorReduceData* data){ _expand_impl<float>(t, data); }
-[numthreads(64, 1, 1)] void _expand_f16(uint t : SV_DispatchThreadID, TensorReduceData* data){ _expand_impl<half>(t, data); }
+[numthreads(64, 1, 1)] void _expand_f32(uint3 _g : SV_DispatchThreadID, TensorReduceData* data){ _expand_impl<float>(_lin(_g), data); }
+[numthreads(64, 1, 1)] void _expand_f16(uint3 _g : SV_DispatchThreadID, TensorReduceData* data){ _expand_impl<half>(_lin(_g), data); }
 
-[numthreads(64, 1, 1)] void _concat_scatter_f32(uint t : SV_DispatchThreadID, TensorConcatData* data){ _concat_scatter_impl<float>(t, data); }
-[numthreads(64, 1, 1)] void _concat_scatter_f16(uint t : SV_DispatchThreadID, TensorConcatData* data){ _concat_scatter_impl<half>(t, data); }
-[numthreads(64, 1, 1)] void _concat_gather_f32(uint t : SV_DispatchThreadID, TensorConcatData* data){ _concat_gather_impl<float>(t, data); }
-[numthreads(64, 1, 1)] void _concat_gather_f16(uint t : SV_DispatchThreadID, TensorConcatData* data){ _concat_gather_impl<half>(t, data); }
+[numthreads(64, 1, 1)] void _concat_scatter_f32(uint3 _g : SV_DispatchThreadID, TensorConcatData* data){ _concat_scatter_impl<float>(_lin(_g), data); }
+[numthreads(64, 1, 1)] void _concat_scatter_f16(uint3 _g : SV_DispatchThreadID, TensorConcatData* data){ _concat_scatter_impl<half>(_lin(_g), data); }
+[numthreads(64, 1, 1)] void _concat_gather_f32(uint3 _g : SV_DispatchThreadID, TensorConcatData* data){ _concat_gather_impl<float>(_lin(_g), data); }
+[numthreads(64, 1, 1)] void _concat_gather_f16(uint3 _g : SV_DispatchThreadID, TensorConcatData* data){ _concat_gather_impl<half>(_lin(_g), data); }
 
-[numthreads(64, 1, 1)] void _mT_f32(uint t : SV_DispatchThreadID, TensorTransposeData* data){ _mT_impl<float>(t, data); }
-[numthreads(64, 1, 1)] void _mT_f16(uint t : SV_DispatchThreadID, TensorTransposeData* data){ _mT_impl<half>(t, data); }
+[numthreads(64, 1, 1)] void _mT_f32(uint3 _g : SV_DispatchThreadID, TensorTransposeData* data){ _mT_impl<float>(_lin(_g), data); }
+[numthreads(64, 1, 1)] void _mT_f16(uint3 _g : SV_DispatchThreadID, TensorTransposeData* data){ _mT_impl<half>(_lin(_g), data); }
 
 [numthreads(16, 16, 1)] void _matmul_f32(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID, TensorMatMulData* data){ _matmul_tiled_f32(gid, tid, data); }
 [numthreads(16, 16, 1)] void _matmul_f16(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID, TensorMatMulData* data){ _matmul_tiled_f16(gid, tid, data); }
+[numthreads(16, 16, 1)] void _matmul_splitk_f32(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID, TensorMatMulData* data){ _matmul_splitk_impl_f32(gid, tid, data); }
+[numthreads(16, 16, 1)] void _matmul_splitk_f16(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID, TensorMatMulData* data){ _matmul_splitk_impl_f16(gid, tid, data); }
 
 [numthreads(1, 1, 1)] void _dot_f32(uint t : SV_DispatchThreadID, TensorData* data){ _dot_impl_f32(t, data); }
 [numthreads(1, 1, 1)] void _dot_f16(uint t : SV_DispatchThreadID, TensorData* data){ _dot_impl_f16(t, data); }
 
-[numthreads(64, 1, 1)] void _pow_f32(uint t : SV_DispatchThreadID, TensorData* data){ _pow_impl_f32(t, data); }
-[numthreads(64, 1, 1)] void _pow_f16(uint t : SV_DispatchThreadID, TensorData* data){ _pow_impl_f16(t, data); }
+[numthreads(64, 1, 1)] void _pow_f32(uint3 _g : SV_DispatchThreadID, TensorData* data){ _pow_impl_f32(_lin(_g), data); }
+[numthreads(64, 1, 1)] void _pow_f16(uint3 _g : SV_DispatchThreadID, TensorData* data){ _pow_impl_f16(_lin(_g), data); }
 
-[numthreads(64, 1, 1)] void _exp_f32(uint t : SV_DispatchThreadID, TensorData* data){ _exp_impl_f32(t, data); }
-[numthreads(64, 1, 1)] void _exp_f16(uint t : SV_DispatchThreadID, TensorData* data){ _exp_impl_f16(t, data); }
+[numthreads(64, 1, 1)] void _exp_f32(uint3 _g : SV_DispatchThreadID, TensorData* data){ _exp_impl_f32(_lin(_g), data); }
+[numthreads(64, 1, 1)] void _exp_f16(uint3 _g : SV_DispatchThreadID, TensorData* data){ _exp_impl_f16(_lin(_g), data); }
 
-[numthreads(64, 1, 1)] void _log_f32(uint t : SV_DispatchThreadID, TensorData* data){ _log_impl_f32(t, data); }
-[numthreads(64, 1, 1)] void _log_f16(uint t : SV_DispatchThreadID, TensorData* data){ _log_impl_f16(t, data); }
+[numthreads(64, 1, 1)] void _log_f32(uint3 _g : SV_DispatchThreadID, TensorData* data){ _log_impl_f32(_lin(_g), data); }
+[numthreads(64, 1, 1)] void _log_f16(uint3 _g : SV_DispatchThreadID, TensorData* data){ _log_impl_f16(_lin(_g), data); }
 
-[numthreads(64, 1, 1)] void _sin_f32(uint t : SV_DispatchThreadID, TensorData* data){ _sin_impl_f32(t, data); }
-[numthreads(64, 1, 1)] void _sin_f16(uint t : SV_DispatchThreadID, TensorData* data){ _sin_impl_f16(t, data); }
+[numthreads(64, 1, 1)] void _sin_f32(uint3 _g : SV_DispatchThreadID, TensorData* data){ _sin_impl_f32(_lin(_g), data); }
+[numthreads(64, 1, 1)] void _sin_f16(uint3 _g : SV_DispatchThreadID, TensorData* data){ _sin_impl_f16(_lin(_g), data); }
 
-[numthreads(64, 1, 1)] void _cos_f32(uint t : SV_DispatchThreadID, TensorData* data){ _cos_impl_f32(t, data); }
-[numthreads(64, 1, 1)] void _cos_f16(uint t : SV_DispatchThreadID, TensorData* data){ _cos_impl_f16(t, data); }
+[numthreads(64, 1, 1)] void _cos_f32(uint3 _g : SV_DispatchThreadID, TensorData* data){ _cos_impl_f32(_lin(_g), data); }
+[numthreads(64, 1, 1)] void _cos_f16(uint3 _g : SV_DispatchThreadID, TensorData* data){ _cos_impl_f16(_lin(_g), data); }
 
-[numthreads(64, 1, 1)] void _tan_f32(uint t : SV_DispatchThreadID, TensorData* data){ _tan_impl_f32(t, data); }
-[numthreads(64, 1, 1)] void _tan_f16(uint t : SV_DispatchThreadID, TensorData* data){ _tan_impl_f16(t, data); }
+[numthreads(64, 1, 1)] void _tan_f32(uint3 _g : SV_DispatchThreadID, TensorData* data){ _tan_impl_f32(_lin(_g), data); }
+[numthreads(64, 1, 1)] void _tan_f16(uint3 _g : SV_DispatchThreadID, TensorData* data){ _tan_impl_f16(_lin(_g), data); }
 
-[numthreads(64, 1, 1)] void _cosh_f32(uint t : SV_DispatchThreadID, TensorData* data){ _cosh_impl_f32(t, data); }
-[numthreads(64, 1, 1)] void _cosh_f16(uint t : SV_DispatchThreadID, TensorData* data){ _cosh_impl_f16(t, data); }
+[numthreads(64, 1, 1)] void _cosh_f32(uint3 _g : SV_DispatchThreadID, TensorData* data){ _cosh_impl_f32(_lin(_g), data); }
+[numthreads(64, 1, 1)] void _cosh_f16(uint3 _g : SV_DispatchThreadID, TensorData* data){ _cosh_impl_f16(_lin(_g), data); }
 
-[numthreads(64, 1, 1)] void _tanh_f32(uint t : SV_DispatchThreadID, TensorData* data){ _tanh_impl_f32(t, data); }
-[numthreads(64, 1, 1)] void _tanh_f16(uint t : SV_DispatchThreadID, TensorData* data){ _tanh_impl_f16(t, data); }
+[numthreads(64, 1, 1)] void _tanh_f32(uint3 _g : SV_DispatchThreadID, TensorData* data){ _tanh_impl_f32(_lin(_g), data); }
+[numthreads(64, 1, 1)] void _tanh_f16(uint3 _g : SV_DispatchThreadID, TensorData* data){ _tanh_impl_f16(_lin(_g), data); }
 
-[numthreads(64, 1, 1)] void _relu_f32(uint t : SV_DispatchThreadID, TensorData* data){ _relu_impl_f32(t, data); }
-[numthreads(64, 1, 1)] void _relu_f16(uint t : SV_DispatchThreadID, TensorData* data){ _relu_impl_f16(t, data); }
+[numthreads(64, 1, 1)] void _relu_f32(uint3 _g : SV_DispatchThreadID, TensorData* data){ _relu_impl_f32(_lin(_g), data); }
+[numthreads(64, 1, 1)] void _relu_f16(uint3 _g : SV_DispatchThreadID, TensorData* data){ _relu_impl_f16(_lin(_g), data); }
 
-[numthreads(64, 1, 1)] void _relu_backward_f32(uint t : SV_DispatchThreadID, TensorData* data){ _relu_backward_impl_f32(t, data); }
-[numthreads(64, 1, 1)] void _relu_backward_f16(uint t : SV_DispatchThreadID, TensorData* data){ _relu_backward_impl_f16(t, data); }
+[numthreads(64, 1, 1)] void _relu_backward_f32(uint3 _g : SV_DispatchThreadID, TensorData* data){ _relu_backward_impl_f32(_lin(_g), data); }
+[numthreads(64, 1, 1)] void _relu_backward_f16(uint3 _g : SV_DispatchThreadID, TensorData* data){ _relu_backward_impl_f16(_lin(_g), data); }
 
-[numthreads(64, 1, 1)] void _gelu_f32(uint t : SV_DispatchThreadID, TensorData* data){ _gelu_impl_f32(t, data); }
-[numthreads(64, 1, 1)] void _gelu_f16(uint t : SV_DispatchThreadID, TensorData* data){ _gelu_impl_f16(t, data); }
+[numthreads(64, 1, 1)] void _gelu_f32(uint3 _g : SV_DispatchThreadID, TensorData* data){ _gelu_impl_f32(_lin(_g), data); }
+[numthreads(64, 1, 1)] void _gelu_f16(uint3 _g : SV_DispatchThreadID, TensorData* data){ _gelu_impl_f16(_lin(_g), data); }
 
-[numthreads(64, 1, 1)] void _gelu_backward_f32(uint t : SV_DispatchThreadID, TensorData* data){ _gelu_backward_impl_f32(t, data); }
-[numthreads(64, 1, 1)] void _gelu_backward_f16(uint t : SV_DispatchThreadID, TensorData* data){ _gelu_backward_impl_f16(t, data); }
+[numthreads(64, 1, 1)] void _gelu_backward_f32(uint3 _g : SV_DispatchThreadID, TensorData* data){ _gelu_backward_impl_f32(_lin(_g), data); }
+[numthreads(64, 1, 1)] void _gelu_backward_f16(uint3 _g : SV_DispatchThreadID, TensorData* data){ _gelu_backward_impl_f16(_lin(_g), data); }
 
-[numthreads(64, 1, 1)] void _adam_f32(uint t : SV_DispatchThreadID, TensorAdamData* data){ _adam_impl_f32(t, data); }
-[numthreads(64, 1, 1)] void _adam_f16(uint t : SV_DispatchThreadID, TensorAdamData* data){ _adam_impl_f16(t, data); }
+[numthreads(64, 1, 1)] void _adam_f32(uint3 _g : SV_DispatchThreadID, TensorAdamData* data){ _adam_impl_f32(_lin(_g), data); }
+[numthreads(64, 1, 1)] void _adam_f16(uint3 _g : SV_DispatchThreadID, TensorAdamData* data){ _adam_impl_f16(_lin(_g), data); }

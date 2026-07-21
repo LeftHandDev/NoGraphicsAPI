@@ -50,6 +50,16 @@ struct alignas(16) TensorReduceData
     uint8_t* z;     // aux input (reduce_max backward: grad_out)
 };
 
+struct alignas(16) TensorReduceBlockData
+{
+    uint64_t outer;  // segments before the reduced axis
+    uint64_t axis;   // current length of the reduced axis (this pass's input)
+    uint64_t inner;  // segments after the reduced axis
+    uint64_t groups; // output axis length = ceil(axis / block size)
+    uint8_t* x;      // input  (outer, axis,   inner)
+    uint8_t* y;      // output (outer, groups, inner)
+};
+
 struct alignas(16) TensorConcatData
 {
     uint64_t n;      // elements this dispatch touches (= outer * axis * inner)
@@ -73,13 +83,15 @@ struct alignas(16) TensorTransposeData
 
 struct alignas(16) TensorMatMulData
 {
-    uint64_t n; // number of elements in z
-    uint a;     // number of rows in x
-    uint b;     // number of columns in x, number of rows in y
-    uint c;     // number of columns in y
-    uint8_t* x; // input
-    uint8_t* y; // input
-    uint8_t* z; // output
+    uint64_t n;      // number of elements in z
+    uint a;          // number of rows in x
+    uint b;          // number of columns in x, number of rows in y
+    uint c;          // number of columns in y
+    uint splits;     // split-K: contraction partitions (partials are (splits, a, c))
+    uint transposeA; // split-K: if set, x is stored (b, a) and read transposed (avoids a materialized mT)
+    uint8_t* x;      // input
+    uint8_t* y;      // input
+    uint8_t* z;      // output
 };
 
 struct alignas(16) TensorAffineData
