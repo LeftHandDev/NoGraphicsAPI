@@ -184,13 +184,10 @@ void learningSample()
         }
 
         device->submit();
-        L.cpu([&](std::vector<float> data)
-              { 
-                if (i >= steps) 
-                {
-                    return;
-                } 
-                std::cout << "MSE " << data.front() << "\t" << i << "/" << steps << std::endl; });
+        L.cpu([i, steps](std::vector<float> data)
+              {
+                  std::cout << "MSE " << data.front() << "\t" << i << "/" << steps << std::endl;
+              });
     }
     std::cout << std::endl;
 
