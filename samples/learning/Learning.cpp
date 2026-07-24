@@ -7,8 +7,8 @@
 #include <iostream>
 #include <random>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
-
 std::vector<float> load(std::string path)
 {
     std::vector<float> res;
