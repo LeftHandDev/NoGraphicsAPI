@@ -168,24 +168,9 @@ compile_shader(SOURCE samples/samplerbench/SamplerBench.slang STAGE compute OUTP
 compile_shader(SOURCE samples/multithreading/Multithreading.slang STAGE compute OUTPUT multithreading/Multithreading.spv
     EXTRA_DEPENDS ${COMMON_SHADER_DEPS} "${CMAKE_CURRENT_SOURCE_DIR}/samples/multithreading/Multithreading.h")
 
-# The learning sample's tensor ops are nine compute entry points in one .slang;
-# compile them all into a single Tensor.spv (Device_impl builds a pipeline per
-# entry point from that one module).
+# The learning sample's tensor ops are dozens of compute entry points
 compile_shader(SOURCE samples/learning/Tensor.slang STAGE compute OUTPUT learning/Tensor.spv
-    ENTRY _add_f32 _add_f16 _sub_f32 _sub_f16 _mul_f32 _mul_f16 _div_f32 _div_f16
-          _dot_f32 _dot_f16 _permute_f32 _permute_f16 _mT_f32 _mT_f16 _matmul_f32 _matmul_f16 _affine
-          _matmul_splitk_f32 _matmul_splitk_f16
-          _unfold_f32 _unfold_f16 _unfold_backward_f32 _unfold_backward_f16
-          _reduce_sum_f32 _reduce_sum_f16 _expand_f32 _expand_f16
-          _reduce_block_f32 _reduce_block_f16
-          _reduce_max_f32 _reduce_max_f16 _reduce_max_backward_f32 _reduce_max_backward_f16
-          _concat_scatter_f32 _concat_scatter_f16 _concat_gather_f32 _concat_gather_f16
-          _pow_f32 _pow_f16 _exp_f32 _exp_f16 _log_f32 _log_f16 
-          _sin_f32 _sin_f16 _cos_f32 _cos_f16 _tan_f32 _tan_f16
-          _cosh_f32 _cosh_f16 _tanh_f32 _tanh_f16
-          _relu_f32 _relu_f16 _relu_backward_f32 _relu_backward_f16 
-          _gelu_f32 _gelu_f16 _gelu_backward_f32 _gelu_backward_f16 
-          _adam_f32 _adam_f16 _fp32_fp16 _fp16_fp32 _rand_f32 _rand_f16
+    ALL_ENTRIES
     EXTRA_DEPENDS ${COMMON_SHADER_DEPS} 
     "${CMAKE_CURRENT_SOURCE_DIR}/samples/learning/Common.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/samples/common/Random.h")

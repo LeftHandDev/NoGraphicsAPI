@@ -139,7 +139,7 @@ void learningSample()
     std::filesystem::path model_path = "./model.bin";
     if (std::filesystem::exists(model_path))
     {
-        autoencoder.load(model_path);
+        // autoencoder.load(model_path);
     }
 
     Adam optimizer(autoencoder.parameters(), 0.001);
@@ -147,7 +147,7 @@ void learningSample()
     std::filesystem::path opt_path = "./opt.bin";
     if (std::filesystem::exists(opt_path))
     {
-        optimizer.load(opt_path);
+        // optimizer.load(opt_path);
     }
 
     size_t steps = 1000;
@@ -198,8 +198,8 @@ void learningSample()
     auto z = autoencoder.forward(a);
     stbi_write_hdr("input.exr", 256, 256, 3, a.pow(2.2).cpu().data());
     stbi_write_hdr("output.exr", 256, 256, 3, z.pow(2.2).cpu().data());
-    autoencoder.save(model_path);
-    optimizer.save(opt_path);
+    // autoencoder.save(model_path);
+    // optimizer.save(opt_path);
     // }
     // catch (const std::exception& e)
     // {

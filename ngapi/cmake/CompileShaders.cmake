@@ -9,12 +9,15 @@
 #   NGAPI_SHADER_INCLUDE_DIR  - include search path passed to slangc (-I);
 #                             defaults to ngapi's public include directory
 #
-# compile_shader(SOURCE <path> STAGE <stage> OUTPUT <rel.spv> [ENTRY <name>...] [EXTRA_DEPENDS ...])
+# compile_shader(SOURCE <path> STAGE <stage> OUTPUT <rel.spv> [ENTRY <name>...] [ALL_ENTRIES] [EXTRA_DEPENDS ...])
 #   SOURCE        - .slang path, absolute or relative to the calling CMakeLists
 #   STAGE         - SPIR-V stage (compute, vertex, fragment, ...)
 #   OUTPUT        - output .spv path relative to NGAPI_SHADER_OUTPUT_DIR
 #   ENTRY         - optional entry point(s) (defaults to "main"); pass several
 #                   names to compile multiple entry points into a single .spv
+#   ALL_ENTRIES   - compile every entry point marked with a [shader("...")]
+#                   attribute; slangc discovers them, so no ENTRY/STAGE is
+#                   needed (used by the learning sample's many tensor ops)
 #   EXTRA_DEPENDS - additional files that should trigger a recompile
 #
 # Appends the produced output path to NGAPI_SHADER_OUTPUTS in the caller's scope.
@@ -29,7 +32,7 @@ if(NOT SLANGC)
 endif()
 
 function(compile_shader)
-    cmake_parse_arguments(S "" "SOURCE;STAGE;OUTPUT" "ENTRY;EXTRA_DEPENDS" ${ARGN})
+    cmake_parse_arguments(S "ALL_ENTRIES" "SOURCE;STAGE;OUTPUT" "ENTRY;EXTRA_DEPENDS" ${ARGN})
 
     # An empty COMMAND would be dropped silently, producing a rule that never
     # compiles anything — fail loudly instead.
@@ -40,13 +43,19 @@ function(compile_shader)
     # Pair each entry point with the stage; slangc requires the -stage option to
     # follow the -entry it applies to, so this lets a single .spv hold several
     # entry points (e.g. the tensor ops in the learning sample).
-    if(NOT S_ENTRY)
-        set(S_ENTRY main)
-    endif()
+    #
+    # With ALL_ENTRIES we pass neither: slangc auto-discovers every entry point
+    # from its [shader("...")] attribute (and takes the stage from there too),
+    # so the .slang file owns the list instead of it being duplicated here.
     set(STAGE_ENTRY_ARGS "")
-    foreach(entry IN LISTS S_ENTRY)
-        list(APPEND STAGE_ENTRY_ARGS -entry ${entry} -stage ${S_STAGE})
-    endforeach()
+    if(NOT S_ALL_ENTRIES)
+        if(NOT S_ENTRY)
+            set(S_ENTRY main)
+        endif()
+        foreach(entry IN LISTS S_ENTRY)
+            list(APPEND STAGE_ENTRY_ARGS -entry ${entry} -stage ${S_STAGE})
+        endforeach()
+    endif()
 
     if(NOT IS_ABSOLUTE "${S_SOURCE}")
         set(S_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/${S_SOURCE}")
