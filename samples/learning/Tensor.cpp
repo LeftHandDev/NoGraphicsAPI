@@ -2504,11 +2504,19 @@ void Tensor::backward()
 void Module::save(std::filesystem::path path)
 {
     std::ofstream file(path, std::ios::binary);
+    if (!file)
+    {
+        throw std::runtime_error("failed to open model file for writing: " + path.string());
+    }
     auto model = parameters();
     for (auto tensor : model)
     {
         auto data = tensor.cpu();
         file.write(reinterpret_cast<const char*>(data.data()), data.size() * sizeof(float));
+    }
+    if (!file)
+    {
+        throw std::runtime_error("failed while writing model file: " + path.string());
     }
 }
 
