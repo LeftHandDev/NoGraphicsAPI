@@ -50,7 +50,7 @@ void learningSample()
             : _device(device),
               enc1(device, 3, 8, 3, false, Tensor::Pad::reflect),
               enc2(device, 8, 16, 3, false, Tensor::Pad::reflect),
-              enc3(device, 16, 32, 3, false, Tensor::Pad::reflect), // bottleneck: 32 channels @ 240x135
+              enc3(device, 16, 32, 3, false, Tensor::Pad::reflect), // bottleneck: 32 channels
               dec1(device, 64, 16, 3, false, Tensor::Pad::reflect), // in = 32 (up) + 32 (skip s3)
               dec2(device, 32, 8, 3, false, Tensor::Pad::reflect),  // in = 16 (up) + 16 (skip s2)
               dec3(device, 16, 3, 3, false, Tensor::Pad::reflect),  // in =  8 (up) +  8 (skip s1)
@@ -150,7 +150,7 @@ void learningSample()
         optimizer.load(opt_path);
     }
 
-    size_t steps = 10000;
+    size_t steps = 1000;
 
     auto y = device->tensor(gt);
 
