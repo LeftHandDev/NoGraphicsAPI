@@ -113,7 +113,7 @@ struct GpuAccelerationStructure_T
 };
 #endif // GPU_RAY_TRACING_EXTENSION
 
-VkPipelineStageFlagBits gpuStageToVkStage(STAGE stage)
+VkPipelineStageFlags gpuStageToVkStage(STAGE stage)
 {
     switch (stage)
     {
@@ -122,7 +122,14 @@ VkPipelineStageFlagBits gpuStageToVkStage(STAGE stage)
     case STAGE_COMPUTE:
         return VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
     case STAGE_RASTER_COLOR_OUT:
-        return VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        // Color attachment output PLUS the depth fragment-test stages. The STAGE enum
+        // has no depth entry, so STAGE_RASTER_COLOR_OUT is the only stage a caller can
+        // name as the producer of a depth write -- and HAZARD_DEPTH_STENCIL barriers
+        // use VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, which is supported only by
+        // the fragment-test stages. Without them a STAGE_RASTER_COLOR_OUT ->
+        // STAGE_PIXEL_SHADER barrier is invalid and misses the depth writes.
+        return VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+               VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
     case STAGE_PIXEL_SHADER:
         return VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
     case STAGE_VERTEX_SHADER:
