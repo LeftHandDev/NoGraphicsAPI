@@ -179,7 +179,10 @@ enum FORMAT
     FORMAT_RGB32_FLOAT,
     FORMAT_RG32_FLOAT,
     FORMAT_RGBA32_FLOAT,
-    FORMAT_RGBA16_FLOAT /*, ...*/
+    FORMAT_RGBA16_FLOAT,
+    // Single-channel 8-bit unorm: coverage masks (font atlases, rasterized
+    // SVG icons). Appended so existing ordinals stay stable.
+    FORMAT_R8_UNORM /*, ...*/
 };
 enum USAGE_FLAGS
 {

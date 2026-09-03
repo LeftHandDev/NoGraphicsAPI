@@ -156,6 +156,8 @@ FORMAT gpuVkFormatToGpuFormat(VkFormat format)
         return FORMAT_RGBA32_FLOAT;
     case VK_FORMAT_R16G16B16A16_SFLOAT:
         return FORMAT_RGBA16_FLOAT;
+    case VK_FORMAT_R8_UNORM:
+        return FORMAT_R8_UNORM;
     default:
         return FORMAT_NONE;
     }
@@ -183,6 +185,8 @@ VkFormat gpuFormatToVkFormat(FORMAT format)
         return VK_FORMAT_R32G32B32A32_SFLOAT;
     case FORMAT_RGBA16_FLOAT:
         return VK_FORMAT_R16G16B16A16_SFLOAT;
+    case FORMAT_R8_UNORM:
+        return VK_FORMAT_R8_UNORM;
     default:
         return VK_FORMAT_UNDEFINED;
     }
