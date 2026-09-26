@@ -103,6 +103,36 @@ add_custom_target(my_shaders ALL DEPENDS ${NGAPI_SHADER_OUTPUTS})
 `slangc` is picked up from `PATH` or the `VULKAN_SDK` environment variable;
 pass `-DSLANGC=/path/to/slangc` to override.
 
+### Struct layout check
+
+Structs that C++ writes and shaders read (your `Data` structs, anything
+behind their pointers) come from one shared header but are laid out by two
+compilers. They can disagree without any error or validation message:
+`alignas()` padding only exists in C++ (`NoGraphicsAPI.h` defines it away for
+shaders), and `bool` is 1 byte in C++ but 4 on the GPU. The shader then reads
+the wrong bytes.
+
+`compile_shader` catches this automatically. After compiling a shader it reads
+the GPU layout of every struct the shader accesses through a pointer out of the
+SPIR-V, and has the C++ compiler check that the same-named C++ struct matches:
+
+- every member's offset and size, and
+- `sizeof`, if the shader indexes an array of the struct.
+
+A mismatch fails the shader build with a message like
+
+```
+error: static assertion failed: GPU layout mismatch (raytracing/RIS.spv): the shader
+       indexes MeshData arrays with a 8-byte stride (alignas() padding applies only in C++)
+note: the comparison reduces to '(16 == 8)'
+```
+
+Trailing `alignas` padding on a struct that is never indexed as an array is
+harmless and not reported, and structs declared only in shader code are
+skipped. Nothing needs annotating; the check is on by default and can be
+turned off with `-DNGAPI_SHADER_LAYOUT_CHECK=OFF`. It is implemented by the
+small `ngapi-layout-check` tool (`tools/LayoutCheck.cpp`), built on demand.
+
 ## Developing NGAPI itself
 
 `src/PatchDescriptorsSpv.h` is generated from `shaders/PatchDescriptors.slang`

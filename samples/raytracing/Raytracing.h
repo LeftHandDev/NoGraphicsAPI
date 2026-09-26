@@ -16,7 +16,9 @@ struct alignas(16) PrimitiveData
     uint padding[3];
 };
 
-struct alignas(16) MeshData
+// No alignas(16): shaders index meshes[] with the GPU layout's 8-byte stride,
+// and alignas padding exists only in C++ (the layout check enforces this).
+struct MeshData
 {
     PrimitiveData* primitives;
 };

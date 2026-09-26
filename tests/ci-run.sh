@@ -49,6 +49,30 @@ for t in test_api test_heaps test_compute test_graphics test_raytracing test_msd
     fi
 done
 
+# compile_shader's C++/GPU layout check must reject mismatched shared structs:
+# tests/layout/Mismatch.h has one of each kind the check reports.
+echo "==> test_layout_mismatch (must fail to build)"
+if cmake --build "$BUILD" --target test_layout_mismatch > layout_mismatch.log 2>&1; then
+    echo "FAIL [layout]: shader with mismatched C++/GPU structs compiled"
+    status=1
+else
+    missing=0
+    for expected in "indexes Item arrays with a 12-byte stride" \
+                    "Flags::enabled is 4 bytes in the shader" \
+                    "Shifted::item is at byte 4 in the shader"; do
+        if ! grep -q "$expected" layout_mismatch.log; then
+            echo "FAIL [layout]: expected '$expected' in the build output"
+            missing=1
+        fi
+    done
+    if [[ $missing -eq 0 ]]; then
+        echo "PASS [layout]: mismatched structs rejected"
+    else
+        cat layout_mismatch.log
+        status=1
+    fi
+fi
+
 if [[ ${#MODE_ARGS[@]} -gt 0 ]]; then
     echo "==> Goldens written to $ROOT/tests/reference"
 fi

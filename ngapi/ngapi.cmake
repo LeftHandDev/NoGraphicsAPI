@@ -83,5 +83,11 @@ target_include_directories(ngapi PUBLIC "${NGAPI_INCLUDE_DIR}")
 target_include_directories(ngapi PRIVATE "${NGAPI_DIR}/src" "${NGAPI_DIR}/shaders")
 target_link_libraries(ngapi PRIVATE Vulkan::Vulkan vk-bootstrap::vk-bootstrap)
 
+# Host tool behind compile_shader's C++/GPU struct layout check (see
+# tools/LayoutCheck.cpp and NGAPI_SHADER_LAYOUT_CHECK); only built when a
+# shader is compiled with the check enabled.
+add_executable(ngapi-layout-check EXCLUDE_FROM_ALL "${NGAPI_DIR}/tools/LayoutCheck.cpp")
+target_compile_features(ngapi-layout-check PRIVATE cxx_std_17)
+
 # Lets consumers `include(CompileShaders)` for slang -> SPIR-V compilation.
 list(APPEND CMAKE_MODULE_PATH "${NGAPI_DIR}/cmake")
