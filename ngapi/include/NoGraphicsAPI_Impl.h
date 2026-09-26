@@ -486,7 +486,8 @@ void gpuSubmit(GpuQueue queue, Span<GpuCommandBuffer> commandBuffers, GpuSemapho
 
 // Semaphores
 GpuSemaphore gpuCreateSemaphore(GpuDevice device, uint64_t initValue);
-void gpuWaitSemaphore(GpuSemaphore sema, uint64_t value, uint64_t timeout = UINT64_MAX);
+// RESULT_FAILURE if the timeout expires (or the device is lost) first.
+RESULT gpuWaitSemaphore(GpuSemaphore sema, uint64_t value, uint64_t timeout = UINT64_MAX);
 void gpuDestroySemaphore(GpuSemaphore sema);
 
 // Commands

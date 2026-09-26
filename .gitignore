@@ -1,4 +1,6 @@
 build/
 build-*/
 .vs/
-CMakeUserPresets.json*.swp
+CMakeUserPresets.json
+*.swp
+

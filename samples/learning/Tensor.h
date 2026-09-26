@@ -1,6 +1,7 @@
 #ifndef SAMPLES_TENSOR_H
 #define SAMPLES_TENSOR_H
 
+#include <cmath>
 #include <vector>
 #include <string>
 #include <optional>
@@ -131,9 +132,10 @@ public:
     }
 
 private:
-    const float e = 2.718281828459045f;
-    const float pi = 3.1415926535f;
-    const Shape unit = { 1 };
+    // static: const data members would delete Tensor's copy assignment.
+    static constexpr float e = 2.718281828459045f;
+    static constexpr float pi = 3.1415926535f;
+    static inline const Shape unit = { 1 };
     Shape _shape;
     Type _type;
     friend class Device_impl;
@@ -246,7 +248,7 @@ class Linear : public Module
 {
 public:
     Linear(Device* device, unsigned int in, unsigned int out, bool affine)
-        : _weights((device->rand({ in, out }) * 2.f - 1.f) * sqrt(1.f / in)),
+        : _weights((device->rand({ in, out }) * 2.f - 1.f) * std::sqrt(1.f / in)),
           _biases(device->zeros({ 1, out }))
     {
         if (affine)
@@ -330,7 +332,7 @@ public:
           _kernel_size(kernel_size),
           _stride(stride),
           _pad(pad),
-          _weights((device->rand({ static_cast<unsigned int>(in_channels * kernel_size * kernel_size), static_cast<unsigned int>(out_channels) }) * 2.f - 1.f) * sqrt(1.f / (in_channels * kernel_size * kernel_size))),
+          _weights((device->rand({ static_cast<unsigned int>(in_channels * kernel_size * kernel_size), static_cast<unsigned int>(out_channels) }) * 2.f - 1.f) * std::sqrt(1.f / (in_channels * kernel_size * kernel_size))),
           _biases(device->zeros({ 1, static_cast<unsigned int>(out_channels) }))
     {
         if (affine)

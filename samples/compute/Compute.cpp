@@ -91,7 +91,7 @@ int main()
     commandBuffer = gpuStartCommandRecording(queue);
     gpuSetPipeline(commandBuffer, pipeline);
     gpuSetActiveTextureHeapPtr(commandBuffer, textureHeap.gpu);
-    gpuDispatch(commandBuffer, data.gpu, { static_cast<uint32_t>(width / 16), static_cast<uint32_t>(height / 16), 1 });
+    gpuDispatch(commandBuffer, data.gpu, { static_cast<uint32_t>((width + 15) / 16), static_cast<uint32_t>((height + 15) / 16), 1 });
 
     gpuSubmit(queue, Span<GpuCommandBuffer>(&commandBuffer, 1), semaphore, 2);
     gpuWaitSemaphore(semaphore, 2);

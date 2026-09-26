@@ -1,6 +1,8 @@
 #define GPU_EXPOSE_INTERNAL
 #include "window.h"
 
+// Vulkan only: without GLFW_INCLUDE_NONE, glfw3.h also pulls in GL/gl.h.
+#define GLFW_INCLUDE_NONE
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 

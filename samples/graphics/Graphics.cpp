@@ -169,13 +169,21 @@ int main()
     auto indices = allocator.allocate<uint32_t>(cubeIndices.size());
     memcpy(indices.cpu, cubeIndices.data(), sizeof(uint32_t) * cubeIndices.size());
 
-    auto instances = allocator.allocate<Instance>(2);
+    // Per-frame GPU data is ring-buffered by FRAMES_IN_FLIGHT: the CPU writes
+    // frame N's slot while frame N-1 may still be reading its own. The host
+    // copies below (hostInstances, hostTaa) are the state being updated; each
+    // frame copies them into its slot after waiting for the slot to be free.
+    constexpr uint32_t INSTANCE_COUNT = 2;
+    auto instances = allocator.allocate<Instance>(INSTANCE_COUNT * FRAMES_IN_FLIGHT);
+    auto vertexData = allocator.allocate<VertexData>(FRAMES_IN_FLIGHT);
+    for (uint32_t slot = 0; slot < FRAMES_IN_FLIGHT; slot++)
+    {
+        vertexData.cpu[slot].vertices = vertices.gpu;
+        vertexData.cpu[slot].uvs = uvs.gpu;
+        vertexData.cpu[slot].instances = instances.gpu + slot * INSTANCE_COUNT;
+    }
 
-    auto vertexData = allocator.allocate<VertexData>(1);
     auto pixelData = allocator.allocate<PixelData>(1);
-    vertexData.cpu->vertices = vertices.gpu;
-    vertexData.cpu->uvs = uvs.gpu;
-    vertexData.cpu->instances = instances.gpu;
     pixelData.cpu->srcTexture = 0;
 
     auto haltonSeq = haltonSequence();
@@ -188,21 +196,23 @@ int main()
     glm::vec3 translation = glm::vec3(1.5f, 0.0f, 0.0f);
     auto instance0 = glm::rotate(glm::translate(glm::mat4(1.f), translation), xRotation, glm::vec3(1.0f, 0.0f, 0.0f));
     auto instance1 = glm::rotate(glm::translate(glm::mat4(1.f), -translation), yRotation, glm::vec3(0.0f, 1.0f, 0.0f));
-    memcpy(&instances.cpu[0].model, &instance0, sizeof(float4x4));
-    memcpy(&instances.cpu[1].model, &instance1, sizeof(float4x4));
-    memcpy(&instances.cpu[0].prevModel, &instance0, sizeof(float4x4));
-    memcpy(&instances.cpu[1].prevModel, &instance1, sizeof(float4x4));
+    Instance hostInstances[INSTANCE_COUNT];
+    memcpy(&hostInstances[0].model, &instance0, sizeof(float4x4));
+    memcpy(&hostInstances[1].model, &instance1, sizeof(float4x4));
+    memcpy(&hostInstances[0].prevModel, &instance0, sizeof(float4x4));
+    memcpy(&hostInstances[1].prevModel, &instance1, sizeof(float4x4));
 
     // TAA data
-    auto taaData = allocator.allocate<TAAData>(1);
-    taaData.cpu->width = swapchainDesc.dimensions.x;
-    taaData.cpu->height = swapchainDesc.dimensions.y;
-    taaData.cpu->frame = 0;
-    taaData.cpu->srcColor = HeapIndices::INDEX_CURRENT_FRAME;
-    taaData.cpu->srcHistory = HeapIndices::INDEX_HISTORY;
-    taaData.cpu->srcDepth = HeapIndices::INDEX_DEPTH;
-    taaData.cpu->srcMotionVectors = HeapIndices::INDEX_MOTION_VECTORS;
-    taaData.cpu->dstTexture = HeapIndices::INDEX_TAA_OUTPUT;
+    auto taaData = allocator.allocate<TAAData>(FRAMES_IN_FLIGHT);
+    TAAData hostTaa = {};
+    hostTaa.width = swapchainDesc.dimensions.x;
+    hostTaa.height = swapchainDesc.dimensions.y;
+    hostTaa.frame = 0;
+    hostTaa.srcColor = HeapIndices::INDEX_CURRENT_FRAME;
+    hostTaa.srcHistory = HeapIndices::INDEX_HISTORY;
+    hostTaa.srcDepth = HeapIndices::INDEX_DEPTH;
+    hostTaa.srcMotionVectors = HeapIndices::INDEX_MOTION_VECTORS;
+    hostTaa.dstTexture = HeapIndices::INDEX_TAA_OUTPUT;
 
     auto queue = gpuCreateQueue(device);
     auto semaphore = gpuCreateSemaphore(device, 0);
@@ -217,6 +227,14 @@ int main()
         {
             taaOn = !taaOn;
         }
+
+        // Wait until the frame that last used this slot has finished before
+        // writing any of this frame's host-visible data.
+        if (nextFrame > FRAMES_IN_FLIGHT)
+        {
+            gpuWaitSemaphore(semaphore, nextFrame - FRAMES_IN_FLIGHT);
+        }
+        const uint32_t slot = (nextFrame - 1) % FRAMES_IN_FLIGHT;
 
         // Update camera with jitter
         auto prevViewProjectionNj = projection * view;
@@ -237,12 +255,14 @@ int main()
         projectionWithJitter[2][1] += jitterY * 2.0f;
         auto viewProjection = projectionWithJitter * view;
         auto viewProjectionNj = projection * view;
-        memcpy(&vertexData.cpu->viewProjection, &viewProjection, sizeof(float4x4));
-        memcpy(&vertexData.cpu->viewProjectionNj, &viewProjectionNj, sizeof(float4x4));
-        memcpy(&vertexData.cpu->prevViewProjectionNj, &prevViewProjectionNj, sizeof(float4x4));
+        memcpy(&vertexData.cpu[slot].viewProjection, &viewProjection, sizeof(float4x4));
+        memcpy(&vertexData.cpu[slot].viewProjectionNj, &viewProjectionNj, sizeof(float4x4));
+        memcpy(&vertexData.cpu[slot].prevViewProjectionNj, &prevViewProjectionNj, sizeof(float4x4));
+        memcpy(&instances.cpu[slot * INSTANCE_COUNT], hostInstances, sizeof(hostInstances));
 
         // Pass jitter to TAA shader for unjittering
-        taaData.cpu->jitter = { jitterX, jitterY };
+        hostTaa.jitter = { jitterX, jitterY };
+        taaData.cpu[slot] = hostTaa;
 
         auto commandBuffer = gpuStartCommandRecording(queue);
 
@@ -251,11 +271,6 @@ int main()
             // First frame, copy texture data
             gpuCopyToTexture(commandBuffer, upload.gpu, texture);
             gpuBarrier(commandBuffer, STAGE_TRANSFER, STAGE_PIXEL_SHADER);
-        }
-
-        if (nextFrame > FRAMES_IN_FLIGHT)
-        {
-            gpuWaitSemaphore(semaphore, nextFrame - FRAMES_IN_FLIGHT);
         }
 
         auto image = gpuSwapchainImage(swapchain);
@@ -271,14 +286,15 @@ int main()
         gpuSetActiveTextureHeapPtr(commandBuffer, textureHeap.gpu);
         gpuBeginRenderPass(commandBuffer, renderPassDesc);
         gpuSetDepthStencilState(commandBuffer, depthState);
-        gpuDrawIndexedInstanced(commandBuffer, vertexData.gpu, pixelData.gpu, indices.gpu, 36, 2);
+        gpuDrawIndexedInstanced(commandBuffer, vertexData.gpu + slot, pixelData.gpu, indices.gpu, 36, INSTANCE_COUNT);
         gpuEndRenderPass(commandBuffer);
 
         // TAA pass
         gpuBarrier(commandBuffer, STAGE_RASTER_COLOR_OUT, STAGE_COMPUTE, HAZARD_DESCRIPTORS);
         gpuSetPipeline(commandBuffer, taaPipeline);
         gpuSetActiveTextureHeapPtr(commandBuffer, textureHeap.gpu);
-        gpuDispatch(commandBuffer, taaData.gpu, { swapchainDesc.dimensions.x / 16, swapchainDesc.dimensions.y / 16, 1 });
+        // Round up: 1080 is not a multiple of 16 (the shader bounds-checks).
+        gpuDispatch(commandBuffer, taaData.gpu + slot, { (swapchainDesc.dimensions.x + 15) / 16, (swapchainDesc.dimensions.y + 15) / 16, 1 });
 
         // Blit taa output to swapchain and copy to history texture
         gpuBarrier(commandBuffer, STAGE_COMPUTE, STAGE_TRANSFER);
@@ -294,21 +310,21 @@ int main()
         auto instance1 = glm::translate(glm::mat4(1.f), -translation) * glm::rotate(glm::mat4(1.f), yRotation, glm::vec3(0.0f, 1.0f, 0.0f));
 
         // copy current model to previous model
-        memcpy(&instances.cpu[0].prevModel, &instances.cpu[0].model, sizeof(float4x4));
-        memcpy(&instances.cpu[1].prevModel, &instances.cpu[1].model, sizeof(float4x4));
+        hostInstances[0].prevModel = hostInstances[0].model;
+        hostInstances[1].prevModel = hostInstances[1].model;
 
         // update model matrices
-        memcpy(&instances.cpu[0].model, &instance0, sizeof(float4x4));
-        memcpy(&instances.cpu[1].model, &instance1, sizeof(float4x4));
+        memcpy(&hostInstances[0].model, &instance0, sizeof(float4x4));
+        memcpy(&hostInstances[1].model, &instance1, sizeof(float4x4));
 
         // Increment TAA frame counter
         if (taaOn)
         {
-            taaData.cpu->frame++;
+            hostTaa.frame++;
         }
         else
         {
-            taaData.cpu->frame = 0;
+            hostTaa.frame = 0;
         }
     }
 

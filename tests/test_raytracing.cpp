@@ -264,6 +264,13 @@ int main(int argc, char** argv)
 
     for (uint32_t frame = 0; frame < args.frames; frame++)
     {
+        // Wait before touching this frame's ring slot: the host writes below
+        // must not land while the frame that last used the slot is in flight.
+        if (nextFrame > FRAMES_IN_FLIGHT)
+        {
+            gpuWaitSemaphore(semaphore, nextFrame - FRAMES_IN_FLIGHT);
+        }
+
         auto offset = (nextFrame - 1) % FRAMES_IN_FLIGHT;
         setCamera(offset);
         raytracingData.camData = camDataAlloc.gpu + offset;
@@ -283,11 +290,6 @@ int main(int argc, char** argv)
         {
             gpuBuildAccelerationStructures(commandBuffer, Span<GpuAccelerationStructure>(&tlas, 1), scratchPtr, MODE_UPDATE);
             gpuBarrier(commandBuffer, STAGE_ACCELERATION_STRUCTURE_BUILD, STAGE_COMPUTE, HAZARD_ACCELERATION_STRUCTURE);
-        }
-
-        if (nextFrame > FRAMES_IN_FLIGHT)
-        {
-            gpuWaitSemaphore(semaphore, nextFrame - FRAMES_IN_FLIGHT);
         }
 
         gpuSetPipeline(commandBuffer, referencePipeline);
