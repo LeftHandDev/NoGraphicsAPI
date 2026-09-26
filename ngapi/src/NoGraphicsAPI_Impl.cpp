@@ -1240,6 +1240,13 @@ void* gpuMalloc(GpuDevice device, size_t bytes, size_t align, MEMORY memory)
 
 void gpuFree(GpuDevice device, void* ptr)
 {
+    // GPU-only allocations have ptr == nullptr, so without this a null free
+    // would match (and free) the first MEMORY_GPU allocation below.
+    if (ptr == nullptr)
+    {
+        return;
+    }
+
     VulkanDevice* vulkanDevice = device->vulkanDevice;
     Allocation match = {};
     {
@@ -1801,15 +1808,22 @@ VkPipeline gpuCreateGraphicsPipelineInternal(VulkanDevice* vulkanDevice, ByteSpa
     vertexShaderModuleCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     vertexShaderModuleCreateInfo.codeSize = vertexModuleIR.size();
     vertexShaderModuleCreateInfo.pCode = reinterpret_cast<const uint32_t*>(vertexModuleIR.data());
-    VkShaderModule vertexShaderModule;
-    vulkanDevice->dispatchTable.createShaderModule(&vertexShaderModuleCreateInfo, nullptr, &vertexShaderModule);
+    VkShaderModule vertexShaderModule = VK_NULL_HANDLE;
+    if (vulkanDevice->dispatchTable.createShaderModule(&vertexShaderModuleCreateInfo, nullptr, &vertexShaderModule) != VK_SUCCESS)
+    {
+        return VK_NULL_HANDLE;
+    }
 
     VkShaderModuleCreateInfo pixelShaderModuleCreateInfo = {};
     pixelShaderModuleCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     pixelShaderModuleCreateInfo.codeSize = pixelModuleIR.size();
     pixelShaderModuleCreateInfo.pCode = reinterpret_cast<const uint32_t*>(pixelModuleIR.data());
-    VkShaderModule pixelShaderModule;
-    vulkanDevice->dispatchTable.createShaderModule(&pixelShaderModuleCreateInfo, nullptr, &pixelShaderModule);
+    VkShaderModule pixelShaderModule = VK_NULL_HANDLE;
+    if (vulkanDevice->dispatchTable.createShaderModule(&pixelShaderModuleCreateInfo, nullptr, &pixelShaderModule) != VK_SUCCESS)
+    {
+        vulkanDevice->dispatchTable.destroyShaderModule(vertexShaderModule, nullptr);
+        return VK_NULL_HANDLE;
+    }
 
     VkPipelineShaderStageCreateInfo shaderStages[2] = {};
     shaderStages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -1904,7 +1918,9 @@ VkPipeline gpuCreateGraphicsPipelineInternal(VulkanDevice* vulkanDevice, ByteSpa
     VkPipelineRasterizationStateCreateInfo rasterizationState = {};
     rasterizationState.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rasterizationState.polygonMode = VK_POLYGON_MODE_FILL;
-    rasterizationState.cullMode = desc.cull != CULL_NONE ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
+    rasterizationState.cullMode = desc.cull == CULL_NONE  ? VK_CULL_MODE_NONE
+                                  : desc.cull == CULL_ALL ? VK_CULL_MODE_FRONT_AND_BACK
+                                                          : VK_CULL_MODE_BACK_BIT;
     rasterizationState.frontFace = desc.cull == CULL_CW ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rasterizationState.lineWidth = 1.0f;
     rasterizationState.depthClampEnable = VK_FALSE;
@@ -1957,18 +1973,22 @@ VkPipeline gpuCreateGraphicsPipelineInternal(VulkanDevice* vulkanDevice, ByteSpa
     pipelineCreateInfo.pDynamicState = &dynamicState;
     pipelineCreateInfo.stageCount = 2;
 
-    VkPipeline pipeline;
-    vulkanDevice->dispatchTable.createGraphicsPipelines(VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &pipeline);
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkResult result = vulkanDevice->dispatchTable.createGraphicsPipelines(VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &pipeline);
     vulkanDevice->dispatchTable.destroyShaderModule(vertexShaderModule, nullptr);
     vulkanDevice->dispatchTable.destroyShaderModule(pixelShaderModule, nullptr);
 
-    return pipeline;
+    return result == VK_SUCCESS ? pipeline : VK_NULL_HANDLE;
 }
 
 GpuPipeline gpuCreateGraphicsPipeline(GpuDevice device, ByteSpan vertexIR, ByteSpan pixelIR, GpuRasterDesc desc)
 {
     VulkanDevice* vulkanDevice = device->vulkanDevice;
     VkPipeline pipeline = gpuCreateGraphicsPipelineInternal(vulkanDevice, vertexIR, ByteSpan{}, pixelIR, desc);
+    if (pipeline == VK_NULL_HANDLE)
+    {
+        return nullptr;
+    }
     return new GpuPipeline_T{ pipeline, VK_PIPELINE_BIND_POINT_GRAPHICS, device };
 }
 
@@ -1976,11 +1996,20 @@ GpuPipeline gpuCreateGraphicsMeshletPipeline(GpuDevice device, ByteSpan meshletI
 {
     VulkanDevice* vulkanDevice = device->vulkanDevice;
     VkPipeline pipeline = gpuCreateGraphicsPipelineInternal(vulkanDevice, ByteSpan{}, meshletIR, pixelIR, desc);
+    if (pipeline == VK_NULL_HANDLE)
+    {
+        return nullptr;
+    }
     return new GpuPipeline_T{ pipeline, VK_PIPELINE_BIND_POINT_GRAPHICS, device };
 }
 
 void gpuFreePipeline(GpuPipeline pipeline)
 {
+    if (pipeline == nullptr)
+    {
+        return;
+    }
+
     VulkanDevice* vulkanDevice = pipeline->device->vulkanDevice;
     vulkanDevice->dispatchTable.destroyPipeline(pipeline->pipeline, nullptr);
     delete pipeline;
@@ -2130,7 +2159,7 @@ GpuSemaphore gpuCreateSemaphore(GpuDevice device, uint64_t initValue)
     return new GpuSemaphore_T{ semaphore, device };
 }
 
-void gpuWaitSemaphore(GpuSemaphore sema, uint64_t value, uint64_t timeout)
+RESULT gpuWaitSemaphore(GpuSemaphore sema, uint64_t value, uint64_t timeout)
 {
     VulkanDevice* vulkanDevice = sema->device->vulkanDevice;
     VkSemaphoreWaitInfo waitInfo = {};
@@ -2139,7 +2168,12 @@ void gpuWaitSemaphore(GpuSemaphore sema, uint64_t value, uint64_t timeout)
     waitInfo.pSemaphores = &sema->semaphore;
     waitInfo.pValues = &value;
 
-    vulkanDevice->dispatchTable.waitSemaphores(&waitInfo, timeout);
+    if (vulkanDevice->dispatchTable.waitSemaphores(&waitInfo, timeout) != VK_SUCCESS)
+    {
+        // VK_TIMEOUT (or device loss): submissions up to `value` may still be
+        // executing, so their command pools must not be reset and recycled.
+        return RESULT_FAILURE;
+    }
 
     // Retire the command pools for this semaphore value and any earlier ones.
     // Collected under the submit lock, reset outside it, then recycled: the
@@ -2168,6 +2202,7 @@ void gpuWaitSemaphore(GpuSemaphore sema, uint64_t value, uint64_t timeout)
         std::lock_guard lock(vulkanDevice->poolFreeListMutex);
         vulkanDevice->commandPoolFreeList.insert(vulkanDevice->commandPoolFreeList.end(), retired.begin(), retired.end());
     }
+    return RESULT_SUCCESS;
 }
 
 void gpuDestroySemaphore(GpuSemaphore sema)
@@ -2354,105 +2389,118 @@ void gpuSetActiveTextureHeapPtr(GpuCommandBuffer cb, void* ptrGpu)
 void gpuBarrier(GpuCommandBuffer cb, STAGE before, STAGE after, HAZARD_FLAGS hazards)
 {
     VulkanDevice* vulkanDevice = cb->device->vulkanDevice;
-    // At most one barrier per hazard flag plus the base barrier; a fixed
-    // array keeps this hot, per-thread recording path free of heap traffic
-    // (a per-call std::vector here was a malloc-lock convoy under parallel
-    // recording).
-    VkMemoryBarrier memoryBarriers[5];
+    // One VkMemoryBarrier2 for the stage-to-stage dependency plus one per
+    // hazard flag. Each carries its own stage masks, so every access type is
+    // paired with a stage that performs it: a hazard's consumer is often not
+    // `after` itself (indirect arguments are read in DRAW_INDIRECT, depth in
+    // the fragment-test stages), and pairing its access with `after`'s stages
+    // produces an invalid barrier (VUID-*-dstAccessMask-*) that orders nothing.
+    // A fixed array keeps this hot, per-thread recording path free of heap
+    // traffic (a per-call std::vector here was a malloc-lock convoy under
+    // parallel recording).
+    VkMemoryBarrier2 memoryBarriers[5];
     uint32_t memoryBarrierCount = 0;
 
-    auto stageWriteAccess = [](STAGE stage) -> VkAccessFlags
+    auto stageWriteAccess = [](STAGE stage) -> VkAccessFlags2
     {
         switch (stage)
         {
         case STAGE_TRANSFER:
-            return VK_ACCESS_TRANSFER_WRITE_BIT;
+            return VK_ACCESS_2_TRANSFER_WRITE_BIT;
         case STAGE_COMPUTE:
         case STAGE_PIXEL_SHADER:
         case STAGE_VERTEX_SHADER:
-            return VK_ACCESS_SHADER_WRITE_BIT;
+            return VK_ACCESS_2_SHADER_WRITE_BIT;
         case STAGE_RASTER_COLOR_OUT:
-            return VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            // Includes the fragment-test stages (see gpuStageToVkStage), so
+            // depth writes are flushed along with color.
+            return VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
         case STAGE_ACCELERATION_STRUCTURE_BUILD:
-            return VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+            return VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
         default:
-            return VK_ACCESS_MEMORY_WRITE_BIT;
+            return VK_ACCESS_2_MEMORY_WRITE_BIT;
         }
     };
 
-    auto stageReadWriteAccess = [](STAGE stage) -> VkAccessFlags
+    auto stageReadWriteAccess = [](STAGE stage) -> VkAccessFlags2
     {
         switch (stage)
         {
         case STAGE_TRANSFER:
-            return VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+            return VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
         case STAGE_COMPUTE:
         case STAGE_PIXEL_SHADER:
         case STAGE_VERTEX_SHADER:
-            return VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
-                   VK_ACCESS_UNIFORM_READ_BIT;
+            return VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT |
+                   VK_ACCESS_2_UNIFORM_READ_BIT;
         case STAGE_RASTER_COLOR_OUT:
-            return VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            return VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
+                   VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
         case STAGE_ACCELERATION_STRUCTURE_BUILD:
-            return VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR |
-                   VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+            // SHADER_READ: the build's geometry/instance inputs.
+            return VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+                   VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR |
+                   VK_ACCESS_2_SHADER_READ_BIT;
         default:
-            return VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+            return VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
         }
     };
 
+    // Every stage that can read descriptors or acceleration structures. (No
+    // task/mesh bits: those are only valid once the mesh shader features are
+    // enabled, which the device does not do.)
+    constexpr VkPipelineStageFlags2 allShaderStages =
+        VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+
+    const VkPipelineStageFlags2 srcStage = gpuStageToVkStage(before);
+    const VkAccessFlags2 srcAccess = stageWriteAccess(before);
+
+    auto addBarrier = [&](VkPipelineStageFlags2 srcStageMask, VkAccessFlags2 srcAccessMask,
+                          VkPipelineStageFlags2 dstStageMask, VkAccessFlags2 dstAccessMask)
     {
-        VkMemoryBarrier memoryBarrier = {};
-        memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-        memoryBarrier.srcAccessMask = stageWriteAccess(before);
-        memoryBarrier.dstAccessMask = stageReadWriteAccess(after);
+        VkMemoryBarrier2 memoryBarrier = {};
+        memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+        memoryBarrier.srcStageMask = srcStageMask;
+        memoryBarrier.srcAccessMask = srcAccessMask;
+        memoryBarrier.dstStageMask = dstStageMask;
+        memoryBarrier.dstAccessMask = dstAccessMask;
         memoryBarriers[memoryBarrierCount++] = memoryBarrier;
-    }
+    };
+
+    addBarrier(srcStage, srcAccess, gpuStageToVkStage(after), stageReadWriteAccess(after));
 
     if (hazards & HAZARD_DRAW_ARGUMENTS)
     {
-        VkMemoryBarrier memoryBarrier = {};
-        memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-        memoryBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-        memoryBarrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
-        memoryBarriers[memoryBarrierCount++] = memoryBarrier;
+        addBarrier(srcStage, srcAccess, VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT, VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT);
     }
 
     if (hazards & HAZARD_DESCRIPTORS)
     {
-        VkMemoryBarrier memoryBarrier = {};
-        memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-        memoryBarrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
-        memoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        memoryBarriers[memoryBarrierCount++] = memoryBarrier;
+        addBarrier(srcStage, VK_ACCESS_2_MEMORY_WRITE_BIT,
+                   allShaderStages, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_DESCRIPTOR_BUFFER_READ_BIT_EXT);
     }
 
     if (hazards & HAZARD_DEPTH_STENCIL)
     {
-        VkMemoryBarrier memoryBarrier = {};
-        memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-        memoryBarrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        memoryBarrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        memoryBarriers[memoryBarrierCount++] = memoryBarrier;
+        addBarrier(srcStage, srcAccess,
+                   VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                   VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
     }
 
     if (hazards & HAZARD_ACCELERATION_STRUCTURE)
     {
-        VkMemoryBarrier memoryBarrier = {};
-        memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-        memoryBarrier.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
-        memoryBarrier.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
-        memoryBarriers[memoryBarrierCount++] = memoryBarrier;
+        addBarrier(srcStage, srcAccess,
+                   VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | allShaderStages,
+                   VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR);
     }
 
-    vulkanDevice->dispatchTable.cmdPipelineBarrier(
-        cb->commandBuffer,
-        gpuStageToVkStage(before),
-        gpuStageToVkStage(after),
-        0,
-        memoryBarrierCount, memoryBarriers,
-        0, nullptr,
-        0, nullptr);
+    VkDependencyInfo dependencyInfo = {};
+    dependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dependencyInfo.memoryBarrierCount = memoryBarrierCount;
+    dependencyInfo.pMemoryBarriers = memoryBarriers;
+    vulkanDevice->dispatchTable.cmdPipelineBarrier2(cb->commandBuffer, &dependencyInfo);
 }
 
 void gpuBeginMarker(GpuCommandBuffer cb, const char* name, float3 color)
@@ -2504,14 +2552,23 @@ void gpuInsertMarker(GpuCommandBuffer cb, const char* name, float3 color)
     vulkanDevice->cmdInsertDebugUtilsLabel(cb->commandBuffer, &label);
 }
 
+// Declared but not implemented yet. Failing loudly beats a silent no-op: code
+// that relies on these for synchronization or blending would otherwise run
+// and race or render wrong with no indication why.
+[[noreturn]] static void gpuNotImplemented(const char* function)
+{
+    fprintf(stderr, "NoGraphicsAPI: %s is not implemented yet\n", function);
+    abort();
+}
+
 void gpuSignalAfter(GpuCommandBuffer cb, STAGE before, void* ptrGpu, uint64_t value, SIGNAL signal)
 {
-    // TODO: implement
+    gpuNotImplemented("gpuSignalAfter");
 }
 
 void gpuWaitBefore(GpuCommandBuffer cb, STAGE after, void* ptrGpu, uint64_t value, OP op, HAZARD_FLAGS hazards, uint64_t mask)
 {
-    // TODO: implement
+    gpuNotImplemented("gpuWaitBefore");
 }
 
 void gpuSetPipeline(GpuCommandBuffer cb, GpuPipeline pipeline)
@@ -2572,7 +2629,8 @@ void gpuSetDepthStencilState(GpuCommandBuffer cb, GpuDepthStencilState state)
 
 void gpuSetBlendState(GpuCommandBuffer cb, GpuBlendState state)
 {
-    // TODO: implement
+    // Blending is currently baked into the pipeline (GpuRasterDesc::blendState).
+    gpuNotImplemented("gpuSetBlendState");
 }
 
 void gpuDispatch(GpuCommandBuffer cb, void* dataGpu, uint3 gridDimensions)

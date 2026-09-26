@@ -22,3 +22,7 @@ add_render_test(test_compute    test_compute.cpp    samples/compute)
 add_render_test(test_graphics   test_graphics.cpp   samples/graphics)
 add_render_test(test_raytracing test_raytracing.cpp samples/raytracing)
 add_render_test(test_msdf       test_msdf.cpp       samples/common)
+
+# API contract checks: no golden image and no shaders.
+add_executable(test_api test_api.cpp)
+target_link_libraries(test_api PRIVATE test-common)
