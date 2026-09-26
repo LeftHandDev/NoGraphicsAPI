@@ -98,12 +98,10 @@ public:
             pipelines[name][Tensor::Type::float32] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), ("_" + name + "_f32").c_str());
             pipelines[name][Tensor::Type::float16] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), ("_" + name + "_f16").c_str());
         }
-        // Cooperative-matrix matmul is fp16 input / fp32 accumulate only.
-        // The CoopMat ops use Subgroup memory scope and assume a 32-wide
-        // subgroup, so pin the pipeline's required subgroup size to 32.
-        pipelines["matmul_wmma"][Tensor::Type::float16] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_matmul_wmma", 32);
-        // Fused affine (matmul + bias) via cooperative matrices; same 32-wide
-        // subgroup requirement as the wmma matmul.
+        // Fused affine (matmul + bias) via cooperative matrices, fp16 input /
+        // fp32 accumulate. The CoopMat ops use Subgroup memory scope and
+        // assume a 32-wide subgroup, so pin the pipeline's required subgroup
+        // size to 32.
         pipelines["affine"][Tensor::Type::float16] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_affine", 32);
         // Type-conversion kernels, keyed by destination type.
         pipelines["cast"][Tensor::Type::float32] = gpuCreateComputePipeline(device, ByteSpan(tensorIR), "_fp32_fp16");

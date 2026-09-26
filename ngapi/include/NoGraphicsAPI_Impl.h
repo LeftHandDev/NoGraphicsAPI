@@ -343,6 +343,7 @@ struct GpuDeviceDesc
     uint32_t vendorID;
     uint64_t dedicatedMemory;
     bool discrete;
+    bool cooperativeMatrix; // optional: shaders using cooperative matrices (CoopMat) need it
 };
 
 struct GpuTextureSizeAlign

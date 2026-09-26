@@ -376,11 +376,15 @@ struct VulkanInstance
         // Enabled when available so tools (and the test harness) can attach a
         // VK_EXT_debug_utils messenger to observe validation messages.
         optionalInstanceExtensions.push_back("VK_EXT_debug_utils");
+        // The baseline is a modern desktop GPU (the blog's min spec: Turing,
+        // RDNA2, Xe1), which has all of these. VK_KHR_cooperative_matrix is not
+        // part of the API -- only CoopMat shaders use it -- so it is optional
+        // (see GpuDeviceDesc::cooperativeMatrix) rather than hiding every GPU
+        // without it.
         inst->requiredDeviceExtensions = {
             VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME,
             VK_EXT_MESH_SHADER_EXTENSION_NAME,
-            VK_KHR_SHADER_DRAW_PARAMETERS_EXTENSION_NAME,
-            VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME
+            VK_KHR_SHADER_DRAW_PARAMETERS_EXTENSION_NAME
         };
 
 #ifdef GPU_SURFACE_EXTENSION
@@ -455,6 +459,25 @@ struct VulkanInstance
 };
 
 VulkanInstance* vulkanInstance = nullptr;
+
+// Optional VK_KHR_cooperative_matrix: enabled by gpuCreateDevice and reported
+// by gpuDeviceDesc when the device has the extension and its feature.
+static bool supportsCooperativeMatrix(const vkb::PhysicalDevice& physicalDevice)
+{
+    const std::vector<std::string> available = physicalDevice.get_available_extensions();
+    if (std::find(available.begin(), available.end(), VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME) == available.end())
+    {
+        return false;
+    }
+
+    VkPhysicalDeviceCooperativeMatrixFeaturesKHR cooperativeMatrixFeatures = {};
+    cooperativeMatrixFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR;
+    VkPhysicalDeviceFeatures2 features = {};
+    features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    features.pNext = &cooperativeMatrixFeatures;
+    vulkanInstance->instanceDispatchTable.getPhysicalDeviceFeatures2(physicalDevice, &features);
+    return cooperativeMatrixFeatures.cooperativeMatrix == VK_TRUE;
+}
 
 struct VulkanDevice
 {
@@ -585,10 +608,18 @@ struct VulkanDevice
 
         // Cooperative matrix (CoopMat in shaders) is a device feature gated by
         // VK_KHR_cooperative_matrix; it also requires the Vulkan memory model
-        // (enabled in the Vulkan 1.2 feature block below).
+        // (enabled in the Vulkan 1.2 feature block below). Optional.
+        const bool cooperativeMatrix = supportsCooperativeMatrix(vulkanDevice->physicalDevice);
         VkPhysicalDeviceCooperativeMatrixFeaturesKHR cooperativeMatrixFeatures = {};
         cooperativeMatrixFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR;
         cooperativeMatrixFeatures.cooperativeMatrix = VK_TRUE;
+
+        // The mesh shader extension is required, but its features must be
+        // enabled too, or every meshlet pipeline is invalid.
+        VkPhysicalDeviceMeshShaderFeaturesEXT meshShaderFeatures = {};
+        meshShaderFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
+        meshShaderFeatures.meshShader = VK_TRUE;
+        meshShaderFeatures.taskShader = VK_TRUE;
 
         VkPhysicalDeviceVulkan13Features physicalDeviceVulkan13Features = {};
         physicalDeviceVulkan13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
@@ -608,6 +639,8 @@ struct VulkanDevice
         physicalDeviceVulkan12Features.samplerMirrorClampToEdge = VK_TRUE; // MIRROR_CLAMP address mode
         physicalDeviceVulkan12Features.vulkanMemoryModel = VK_TRUE;        // required by VK_KHR_cooperative_matrix
         physicalDeviceVulkan12Features.vulkanMemoryModelDeviceScope = VK_TRUE;
+        physicalDeviceVulkan12Features.drawIndirectCount = VK_TRUE; // gpuDrawIndexedInstancedIndirectMulti
+        physicalDeviceVulkan12Features.shaderFloat16 = VK_TRUE;     // half types in shaders (e.g. fp16 CoopMat inputs)
 #ifndef _WIN32
         physicalDeviceVulkan12Features.storagePushConstant8 = VK_TRUE;
 #endif
@@ -626,18 +659,33 @@ struct VulkanDevice
         vulkanDevice->physicalDeviceProperties2.pNext = &vulkanDevice->descriptorBufferProperties;
         vulkanInstance->instanceDispatchTable.getPhysicalDeviceProperties2(vulkanDevice->physicalDevice, &vulkanDevice->physicalDeviceProperties2);
 
+        if (cooperativeMatrix)
+        {
+            vulkanDevice->physicalDevice.enable_extension_if_present(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
+        }
+
         vkb::DeviceBuilder deviceBuilder{ vulkanDevice->physicalDevice };
         deviceBuilder
             .add_pNext(&physicalDeviceVulkan12Features)
             .add_pNext(&physicalDeviceVulkan13Features)
             .add_pNext(&descriptorBufferFeatures)
-            .add_pNext(&cooperativeMatrixFeatures);
+            .add_pNext(&meshShaderFeatures);
+        if (cooperativeMatrix)
+        {
+            deviceBuilder.add_pNext(&cooperativeMatrixFeatures);
+        }
 #ifdef GPU_RAY_TRACING_EXTENSION
         deviceBuilder
             .add_pNext(&rayQueryFeatures)
             .add_pNext(&accelerationStructureFeatures);
 #endif // GPU_RAY_TRACING_EXTENSION
         auto deviceRet = deviceBuilder.build();
+        if (!deviceRet.has_value())
+        {
+            fprintf(stderr, "NoGraphicsAPI: device creation failed: %s\n", deviceRet.error().message().c_str());
+            delete vulkanDevice;
+            return nullptr;
+        }
         vulkanDevice->device = deviceRet.value();
         vulkanDevice->dispatchTable = vulkanDevice->device.make_table();
 
@@ -1090,6 +1138,7 @@ static void gpuPopulateDeviceDescs()
         desc.vendorID = props.vendorID;
         desc.dedicatedMemory = dedicatedMemory;
         desc.discrete = (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU);
+        desc.cooperativeMatrix = supportsCooperativeMatrix(devices[i]);
         vulkanInstance->deviceDescs.push_back(desc);
     }
 }

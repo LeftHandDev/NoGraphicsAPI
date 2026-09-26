@@ -1,6 +1,7 @@
 #include "stb_image.h"
 #include "stb_image_write.h"
 
+#include "NoGraphicsAPI.h" // gpuDeviceCount / gpuDeviceDesc
 #include "Learning.h"
 #include "Tensor.h"
 
@@ -32,10 +33,33 @@ std::vector<float> load(std::string path)
     return res;
 }
 
+// The tensor shaders use cooperative matrices, so run on a GPU that has them,
+// preferring a discrete one. Returns -1 if there is none.
+static int pickDevice()
+{
+    int picked = -1;
+    for (uint32_t i = 0; i < gpuDeviceCount(); i++)
+    {
+        GpuDeviceDesc desc = gpuDeviceDesc(i);
+        if (desc.cooperativeMatrix && (picked < 0 || (desc.discrete && !gpuDeviceDesc(picked).discrete)))
+        {
+            picked = static_cast<int>(i);
+        }
+    }
+    return picked;
+}
+
 void learningSample()
 {
     Instance instance;
-    auto device = instance.device(1);
+    const int deviceIndex = pickDevice();
+    if (deviceIndex < 0)
+    {
+        std::cerr << "learning: no GPU with cooperative matrix support\n";
+        return;
+    }
+    std::cout << "learning: running on " << gpuDeviceDesc(deviceIndex).name << "\n";
+    auto device = instance.device(deviceIndex);
 
     // try
     // {
@@ -247,7 +271,13 @@ static void check(const std::string& name, std::vector<float> got, std::vector<f
 int tensorTests()
 {
     Instance instance;
-    auto device = instance.device(1); // same GPU index learningSample() uses; change if needed
+    const int deviceIndex = pickDevice(); // same GPU learningSample() uses
+    if (deviceIndex < 0)
+    {
+        std::cerr << "tensorTests: no GPU with cooperative matrix support\n";
+        return 1;
+    }
+    auto device = instance.device(deviceIndex);
 
     const Shape s22 = { 2, 2 };
 

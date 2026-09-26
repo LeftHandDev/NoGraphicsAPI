@@ -14,6 +14,9 @@ int main()
         auto device = gpuCreateDevice(i);
         auto desc = gpuDeviceDesc(i);
         devices.push_back({ device, desc });
+        std::cout << "Device " << i << " (" << desc.name << "): "
+                  << (desc.discrete ? "discrete" : "integrated/other")
+                  << ", cooperative matrix " << (desc.cooperativeMatrix ? "yes" : "no") << std::endl;
     }
 
     // 1 MB round trip transfer test for each device
