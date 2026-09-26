@@ -359,8 +359,8 @@ public:
 
     void reset()
     {
-        Primary::template reset();
-        Fallback::template reset();
+        Primary::reset();
+        Fallback::reset();
     }
 };
 

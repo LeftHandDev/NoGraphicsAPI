@@ -26,10 +26,12 @@ EXTRA_ARGS=("$@")
 # Deterministic floating point from lavapipe's rasteriser.
 export LP_NUM_THREADS="${LP_NUM_THREADS:-1}"
 
-echo "==> Configure (core + tests only, samples off)"
+# The samples are windowed and can't run here, but they are compiled so a
+# change that breaks one (on this compiler) fails CI instead of going unnoticed.
+echo "==> Configure (core + tests + samples)"
 cmake -S "$ROOT" -B "$BUILD" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
-    -DNGAPI_BUILD_SAMPLES=OFF \
+    -DNGAPI_BUILD_SAMPLES=ON \
     -DNGAPI_BUILD_TESTS=ON
 
 echo "==> Build"

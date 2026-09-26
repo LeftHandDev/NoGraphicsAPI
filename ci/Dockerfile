@@ -15,14 +15,17 @@ FROM archlinux:base-devel
 
 # --- Mesa / toolchain, pinned to a single Arch Linux Archive snapshot --------
 # Snapshot 2026-06-09 -> Mesa 26.1.2 (the first lavapipe with the
-# descriptor-buffer fix this project's bindless path depends on).
+# descriptor-buffer fix this project's bindless path depends on). The tests
+# fail without the validation layer; the X11/Wayland headers are for GLFW, so
+# the (windowed) samples compile here too even though only the tests run.
 ARG ALA_SNAPSHOT=2026/06/09
 RUN printf 'Server=https://archive.archlinux.org/repos/%s/$repo/os/$arch\n' "$ALA_SNAPSHOT" \
         > /etc/pacman.d/mirrorlist \
  && sed -i 's/^ *SigLevel.*/SigLevel = Never/' /etc/pacman.conf \
  && pacman -Sy --noconfirm --needed \
         cmake ninja git curl \
-        vulkan-headers vulkan-icd-loader vulkan-swrast \
+        vulkan-headers vulkan-icd-loader vulkan-swrast vulkan-validation-layers \
+        libx11 libxrandr libxinerama libxcursor libxi libxkbcommon wayland \
  && pacman -Scc --noconfirm
 
 # --- slang, pinned to a fixed release for deterministic SPIR-V ----------------
@@ -42,5 +45,11 @@ ENV PATH="/opt/slang/bin:${PATH}" \
 # parallel-raster floating-point nondeterminism (gives byte-identical frames).
 ENV VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json \
     LP_NUM_THREADS=1
+
+# --- Validation: synchronization validation on top of the core checks --------
+# The tests request VK_LAYER_KHRONOS_validation themselves; this adds the
+# hazard checks (transfers, blits, layout transitions). Syncval does not see
+# shader accesses made through descriptor buffers or buffer device addresses.
+ENV VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true
 
 CMD ["bash"]

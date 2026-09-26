@@ -11,6 +11,7 @@
 #include <cstring>
 #include <filesystem>
 #include <iostream>
+#include <vector>
 
 namespace test
 {
@@ -98,9 +99,37 @@ namespace test
         if (severity & (VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT))
         {
             g_validationFailed = true;
-            std::cerr << "[validation] " << (data && data->pMessage ? data->pMessage : "(no message)") << "\n";
+            std::cerr << "[validation] ";
+            if (data && data->pMessageIdName)
+                std::cerr << "[" << data->pMessageIdName << "] ";
+            std::cerr << (data && data->pMessage ? data->pMessage : "(no message)") << "\n";
         }
         return VK_FALSE;
+    }
+
+    // A test that runs without the validation layer passes vacuously:
+    // vk-bootstrap silently skips a requested layer that isn't installed. Treat
+    // that as a failure unless NGAPI_TEST_ALLOW_NO_VALIDATION is set.
+    static void validationUnavailable(const char* reason)
+    {
+        if (std::getenv("NGAPI_TEST_ALLOW_NO_VALIDATION") != nullptr)
+        {
+            std::cerr << "warning: " << reason << "; validation is not being captured\n";
+            return;
+        }
+        std::cerr << "FAIL: " << reason << ". Install the Vulkan validation layers, or set "
+                  << "NGAPI_TEST_ALLOW_NO_VALIDATION=1 to run without them.\n";
+        g_validationFailed = true;
+    }
+
+    static bool validationLayerAvailable()
+    {
+        uint32_t count = 0;
+        vkEnumerateInstanceLayerProperties(&count, nullptr);
+        std::vector<VkLayerProperties> layers(count);
+        vkEnumerateInstanceLayerProperties(&count, layers.data());
+        return std::any_of(layers.begin(), layers.end(), [](const VkLayerProperties& layer)
+                           { return std::strcmp(layer.layerName, "VK_LAYER_KHRONOS_validation") == 0; });
     }
 
     void beginValidationCapture()
@@ -113,9 +142,14 @@ namespace test
         g_destroyMessenger = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
             vkGetInstanceProcAddr(g_instance, "vkDestroyDebugUtilsMessengerEXT"));
 
+        if (!validationLayerAvailable())
+        {
+            validationUnavailable("VK_LAYER_KHRONOS_validation is not installed");
+            return;
+        }
         if (!create)
         {
-            std::cerr << "warning: VK_EXT_debug_utils unavailable; validation is not being captured\n";
+            validationUnavailable("VK_EXT_debug_utils is unavailable");
             return;
         }
 

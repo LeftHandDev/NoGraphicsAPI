@@ -19,10 +19,10 @@ cd "$(dirname "$0")"
 
 IMAGE=ngapi-ci
 
-# The tests only need the core library's submodules; glfw / SDL are samples-only
-# and are skipped (NGAPI_BUILD_SAMPLES=OFF), so don't pull them in.
-echo "==> Fetching core submodules"
-git submodule update --init external/glm external/vk-bootstrap
+# The core library's submodules plus GLFW, the default windowing backend the
+# samples are compiled against. SDL and slang are not needed.
+echo "==> Fetching submodules"
+git submodule update --init external/glm external/vk-bootstrap external/glfw
 
 echo "==> Building $IMAGE image (cached after the first run)"
 docker build -t "$IMAGE" ci
