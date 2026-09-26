@@ -178,15 +178,18 @@ int main()
     auto taaIR = loadIR("shaders/common/TAA.spv");
     auto taaPipeline = gpuCreateComputePipeline(device, ByteSpan(taaIR));
 
-    auto taaData = allocator.allocate<TAAData>();
-    taaData.cpu->width = swapchainDesc.dimensions.x;
-    taaData.cpu->height = swapchainDesc.dimensions.y;
-    taaData.cpu->frame = 0;
-    taaData.cpu->srcColor = INDEX_OUTPUT_SAMPLED;
-    taaData.cpu->srcHistory = INDEX_HISTORY;
-    taaData.cpu->srcDepth = 0;
-    taaData.cpu->srcMotionVectors = INDEX_MV_SAMPLED;
-    taaData.cpu->dstTexture = INDEX_TAA_OUTPUT;
+    // Ring-buffered like rtDataRingBufffer: hostTaa is updated on the CPU and
+    // copied into this frame's slot once the frame that last used it is done.
+    auto taaData = allocator.allocate<TAAData>(FRAMES_IN_FLIGHT);
+    TAAData hostTaa = {};
+    hostTaa.width = swapchainDesc.dimensions.x;
+    hostTaa.height = swapchainDesc.dimensions.y;
+    hostTaa.frame = 0;
+    hostTaa.srcColor = INDEX_OUTPUT_SAMPLED;
+    hostTaa.srcHistory = INDEX_HISTORY;
+    hostTaa.srcDepth = 0;
+    hostTaa.srcMotionVectors = INDEX_MV_SAMPLED;
+    hostTaa.dstTexture = INDEX_TAA_OUTPUT;
 
     auto rtDataRingBufffer = allocator.allocate<RaytracingData>(FRAMES_IN_FLIGHT);
     RaytracingData raytracingData = {};
@@ -430,26 +433,26 @@ int main()
             raytracingData.spatial = raytracingData.spatial == 0 ? 1 : 0;
             raytracingData.frame = 0;
             raytracingData.accumulatedFrames = 0;
-            taaData.cpu->frame = 0;
+            hostTaa.frame = 0;
         }
         if (ngapi::wasKeyPressed(window, ngapi::Key::T))
         {
             raytracingData.temporal = raytracingData.temporal == 0 ? 1 : 0;
             raytracingData.frame = 0;
             raytracingData.accumulatedFrames = 0;
-            taaData.cpu->frame = 0;
+            hostTaa.frame = 0;
         }
         if (ngapi::wasKeyPressed(window, ngapi::Key::R))
         {
             reference = !reference;
             raytracingData.frame = 0;
             raytracingData.accumulatedFrames = 0;
-            taaData.cpu->frame = 0;
+            hostTaa.frame = 0;
         }
         if (ngapi::wasKeyPressed(window, ngapi::Key::X))
         {
             taaOn = !taaOn;
-            taaData.cpu->frame = 0;
+            hostTaa.frame = 0;
         }
 
         // Arrow keys move the camera while held.
@@ -459,6 +462,13 @@ int main()
         velocity.y = ngapi::isKeyDown(window, ngapi::Key::Up)     ? velocityScale
                      : ngapi::isKeyDown(window, ngapi::Key::Down) ? -velocityScale
                                                                   : 0.0f;
+
+        // Wait until the frame that last used this ring slot has finished
+        // before writing any of this frame's host-visible data.
+        if (nextFrame > FRAMES_IN_FLIGHT)
+        {
+            gpuWaitSemaphore(semaphore, nextFrame - FRAMES_IN_FLIGHT);
+        }
 
         auto offset = (nextFrame - 1) % FRAMES_IN_FLIGHT;
 
@@ -471,7 +481,8 @@ int main()
             jitterX = 0.0f;
             jitterY = 0.0f;
         }
-        taaData.cpu->jitter = { jitterX, jitterY };
+        hostTaa.jitter = { jitterX, jitterY };
+        taaData.cpu[offset] = hostTaa;
 
         setCamera(offset, jitterX, jitterY);
         raytracingData.camData = camDataAlloc.gpu + offset;
@@ -496,32 +507,32 @@ int main()
             gpuBarrier(commandBuffer, STAGE_ACCELERATION_STRUCTURE_BUILD, STAGE_COMPUTE, HAZARD_ACCELERATION_STRUCTURE);
         }
 
-        if (nextFrame > FRAMES_IN_FLIGHT)
-        {
-            gpuWaitSemaphore(semaphore, nextFrame - FRAMES_IN_FLIGHT);
-        }
-
         auto image = gpuSwapchainImage(swapchain);
+
+        // Round up so sizes that aren't a multiple of the group size (1080)
+        // are fully covered; the shaders bounds-check.
+        const uint3 rtGroups = { (swapchainDesc.dimensions.x + 7) / 8, (swapchainDesc.dimensions.y + 7) / 8, 1 };
+        const uint3 taaGroups = { (swapchainDesc.dimensions.x + 15) / 16, (swapchainDesc.dimensions.y + 15) / 16, 1 };
 
         if (reference)
         {
             gpuSetPipeline(commandBuffer, referencePipeline);
             gpuSetActiveTextureHeapPtr(commandBuffer, textureHeap.gpu);
-            gpuDispatch(commandBuffer, rtDataRingBufffer.gpu + offset, { (uint32_t)swapchainDesc.dimensions.x / 8, (uint32_t)swapchainDesc.dimensions.y / 8, 1 });
+            gpuDispatch(commandBuffer, rtDataRingBufffer.gpu + offset, rtGroups);
         }
         else // ReSTIR
         {
             gpuSetPipeline(commandBuffer, risPipeline);
             gpuSetActiveTextureHeapPtr(commandBuffer, textureHeap.gpu);
-            gpuDispatch(commandBuffer, rtDataRingBufffer.gpu + offset, { (uint32_t)swapchainDesc.dimensions.x / 8, (uint32_t)swapchainDesc.dimensions.y / 8, 1 });
+            gpuDispatch(commandBuffer, rtDataRingBufffer.gpu + offset, rtGroups);
             gpuBarrier(commandBuffer, STAGE_COMPUTE, STAGE_COMPUTE);
 
             gpuSetPipeline(commandBuffer, reusePipeline);
-            gpuDispatch(commandBuffer, rtDataRingBufffer.gpu + offset, { (uint32_t)swapchainDesc.dimensions.x / 8, (uint32_t)swapchainDesc.dimensions.y / 8, 1 });
+            gpuDispatch(commandBuffer, rtDataRingBufffer.gpu + offset, rtGroups);
             gpuBarrier(commandBuffer, STAGE_COMPUTE, STAGE_COMPUTE);
 
             gpuSetPipeline(commandBuffer, shadePipeline);
-            gpuDispatch(commandBuffer, rtDataRingBufffer.gpu + offset, { (uint32_t)swapchainDesc.dimensions.x / 8, (uint32_t)swapchainDesc.dimensions.y / 8, 1 });
+            gpuDispatch(commandBuffer, rtDataRingBufffer.gpu + offset, rtGroups);
 
             if (taaOn)
             {
@@ -529,7 +540,7 @@ int main()
 
                 // TAA pass
                 gpuSetPipeline(commandBuffer, taaPipeline);
-                gpuDispatch(commandBuffer, taaData.gpu, { swapchainDesc.dimensions.x / 16, swapchainDesc.dimensions.y / 16, 1 });
+                gpuDispatch(commandBuffer, taaData.gpu + offset, taaGroups);
             }
         }
         gpuBarrier(commandBuffer, STAGE_COMPUTE, STAGE_TRANSFER);
@@ -583,9 +594,9 @@ int main()
 
         // Update TAA frame counter
         if (!reference && taaOn)
-            taaData.cpu->frame++;
+            hostTaa.frame++;
         else
-            taaData.cpu->frame = 0;
+            hostTaa.frame = 0;
 
         // update delta time and timestamp
         auto now = std::chrono::high_resolution_clock::now();

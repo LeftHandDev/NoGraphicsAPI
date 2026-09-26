@@ -225,7 +225,7 @@ TextRenderer::TextRenderer(GpuDevice gpuDevice, GpuTextureDesc textureDesc)
 
     std::vector<uint32_t> indices = { 0, 1, 2, 2, 3, 0 };
 
-    vertexData = allocator->allocate<TextVertexData>();
+    vertexData = allocator->allocate<TextVertexData>(vertexSlots);
     pixelData = allocator->allocate<TextPixelData>();
     indexData = allocator->allocate<uint32_t>(6);
     textData = allocator->allocate<uint8_t>(maxTextLength);
@@ -288,13 +288,17 @@ void TextRenderer::renderText(GpuCommandBuffer cmd, GpuTexture target, const std
 
     memcpy(textData.cpu + offset, text.data(), std::min(text.size(), static_cast<size_t>(maxTextLength - offset)));
 
-    vertexData.cpu->width = targetDesc.dimensions.x;
-    vertexData.cpu->height = targetDesc.dimensions.y;
-    vertexData.cpu->textWidth = atlasWidth / 256;
-    vertexData.cpu->textHeight = atlasHeight;
-    vertexData.cpu->atlasWidth = atlasWidth;
-    vertexData.cpu->atlasHeight = atlasHeight;
-    vertexData.cpu->text = textData.gpu + offset;
+    // Each call gets its own vertex data slot, rotating like the text bytes
+    // above: a single shared slot would be rewritten while an earlier frame
+    // (or an earlier call in this frame) still has to read it.
+    TextVertexData* slot = vertexData.cpu + vertexSlot;
+    slot->width = targetDesc.dimensions.x;
+    slot->height = targetDesc.dimensions.y;
+    slot->textWidth = atlasWidth / 256;
+    slot->textHeight = atlasHeight;
+    slot->atlasWidth = atlasWidth;
+    slot->atlasHeight = atlasHeight;
+    slot->text = textData.gpu + offset;
 
     offset += text.size();
 
@@ -310,6 +314,8 @@ void TextRenderer::renderText(GpuCommandBuffer cmd, GpuTexture target, const std
     gpuSetDepthStencilState(cmd, depthStencilState);
     gpuSetActiveTextureHeapPtr(cmd, textureHeap.gpu);
     gpuBeginRenderPass(cmd, renderPassDesc);
-    gpuDrawIndexedInstanced(cmd, vertexData.gpu, pixelData.gpu, indexData.gpu, 6, static_cast<uint32_t>(text.size()));
+    gpuDrawIndexedInstanced(cmd, vertexData.gpu + vertexSlot, pixelData.gpu, indexData.gpu, 6, static_cast<uint32_t>(text.size()));
     gpuEndRenderPass(cmd);
+
+    vertexSlot = (vertexSlot + 1) % vertexSlots;
 }

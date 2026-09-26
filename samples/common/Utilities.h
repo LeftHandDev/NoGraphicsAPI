@@ -651,6 +651,7 @@ private:
     Allocation<uint32_t> indexData;
     Allocation<uint8_t> textData;
     uint offset = 0;
+    uint vertexSlot = 0;
 
     const GpuTextureDesc targetDesc;
 
@@ -661,6 +662,7 @@ private:
     int atlasHeight = 0;
 
     const uint maxTextLength = 1024;
+    static constexpr uint vertexSlots = 16;
 };
 
 std::vector<uint8_t> loadIR(const std::filesystem::path& path);
