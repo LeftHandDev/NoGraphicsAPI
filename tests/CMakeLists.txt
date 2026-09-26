@@ -20,6 +20,7 @@ endfunction()
 
 add_render_test(test_compute    test_compute.cpp    samples/compute)
 add_render_test(test_graphics   test_graphics.cpp   samples/graphics)
+add_render_test(test_heaps      test_heaps.cpp      samples/common) # no golden; texture-heap checks
 add_render_test(test_raytracing test_raytracing.cpp samples/raytracing)
 add_render_test(test_msdf       test_msdf.cpp       samples/common)
 

@@ -35,6 +35,9 @@ struct GpuTexture_T
     // automatically. Images rest in VK_IMAGE_LAYOUT_GENERAL; only swapchain
     // images move to PRESENT_SRC for presentation.
     VkImageLayout currentLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    // Descriptor-patching devices only: this texture's slot in the
+    // device-global sampled [0] / storage [1] descriptor arrays, or UINT32_MAX.
+    uint32_t patchSlots[2] = { UINT32_MAX, UINT32_MAX };
 };
 struct VulkanDevice;
 struct GpuDevice_T
@@ -65,6 +68,10 @@ struct GpuCommandBuffer_T
     VkCommandPool pool = VK_NULL_HANDLE;
     // Recording-local state; a command buffer is owned by one thread at a time.
     GpuPipeline currentPipeline = nullptr;
+    // The compute bind point's pipeline, restored after descriptor patching
+    // (which binds its own compute pipeline) even when currentPipeline is a
+    // graphics pipeline.
+    GpuPipeline computePipeline = nullptr;
 };
 struct GpuSemaphore_T
 {
@@ -533,9 +540,11 @@ struct VulkanDevice
     void* rwDescriptorDataCpu = nullptr;        // the raw read/write descriptor data, possibly out of order
     void* patchedDescriptorDataCpu = nullptr;   // the temporary patched descriptor data
     void* rwPatchedDescriptorDataCpu = nullptr; // the temporary patched read/write descriptor data
-    PatchDescriptorsData* patchDescriptorsDataCpu = nullptr;
-    std::atomic<uint32_t> descriptorsUsed = 0;
-    std::atomic<uint32_t> rwDescriptorsUsed = 0;
+    // Slot allocation in descriptorDataCpu [0] / rwDescriptorDataCpu [1]:
+    // slots are handed out once per texture and returned when it is destroyed.
+    std::mutex patchSlotMutex;
+    uint32_t nextPatchSlot[2] = { 0, 0 };
+    std::vector<uint32_t> freePatchSlots[2];
 
     static VulkanDevice* createVulkan(uint32_t deviceIndex)
     {
@@ -712,11 +721,6 @@ struct VulkanDevice
         if (rwPatchedDescriptorDataCpu != nullptr)
         {
             freeAllocation(findAllocation(rwPatchedDescriptorDataCpu));
-        }
-
-        if (patchDescriptorsDataCpu != nullptr)
-        {
-            freeAllocation(findAllocation(patchDescriptorsDataCpu));
         }
 
         if (samplerDescriptors.buffer != VK_NULL_HANDLE)
@@ -961,10 +965,13 @@ struct VulkanDevice
 
         // Compute
         {
+            // Shaders take one pointer; the internal descriptor-patching shader
+            // takes its whole parameter block (see gpuSetActiveTextureHeapPtr).
+            static_assert(sizeof(PatchDescriptorsData) <= 128, "must fit the guaranteed maxPushConstantsSize");
             VkPushConstantRange pushConstantRange = {};
             pushConstantRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
             pushConstantRange.offset = 0;
-            pushConstantRange.size = sizeof(VkDeviceAddress);
+            pushConstantRange.size = std::max<uint32_t>(sizeof(VkDeviceAddress), sizeof(PatchDescriptorsData));
 
             VkDescriptorSetLayout descriptorSetLayouts[] = { textureSetLayout, rwTextureSetLayout, samplerSetLayout };
 
@@ -1409,6 +1416,53 @@ GpuTexture gpuCreateTexture(GpuDevice device, GpuTextureDesc desc, void* ptrGpu)
     return texture;
 }
 
+// Descriptor-patching devices keep each texture's real descriptor in a
+// device-global array (descriptorDataCpu / rwDescriptorDataCpu) and put its
+// byte offset in the user's heap entry. A texture keeps one slot per type for
+// its lifetime -- GpuViewDesc is not implemented yet, so every view of a
+// texture is the same descriptor -- and gives it back when destroyed; without
+// that, every descriptor call consumed a slot and the arrays overflowed.
+// Returns UINT32_MAX when the slot was already assigned (nothing to write).
+static uint32_t acquirePatchSlot(VulkanDevice* vulkanDevice, GpuTexture texture, uint32_t type)
+{
+    std::lock_guard lock(vulkanDevice->patchSlotMutex);
+    if (texture->patchSlots[type] != UINT32_MAX)
+    {
+        return UINT32_MAX;
+    }
+
+    auto& freeList = vulkanDevice->freePatchSlots[type];
+    if (!freeList.empty())
+    {
+        texture->patchSlots[type] = freeList.back();
+        freeList.pop_back();
+    }
+    else if (vulkanDevice->nextPatchSlot[type] < vulkanDevice->descriptorCount)
+    {
+        texture->patchSlots[type] = vulkanDevice->nextPatchSlot[type]++;
+    }
+    else
+    {
+        fprintf(stderr, "NoGraphicsAPI: more than %u live textures with %s descriptors\n",
+                vulkanDevice->descriptorCount, type == 0 ? "sampled" : "storage");
+        abort();
+    }
+    return texture->patchSlots[type];
+}
+
+static void releasePatchSlots(VulkanDevice* vulkanDevice, GpuTexture texture)
+{
+    std::lock_guard lock(vulkanDevice->patchSlotMutex);
+    for (uint32_t type = 0; type < 2; type++)
+    {
+        if (texture->patchSlots[type] != UINT32_MAX)
+        {
+            vulkanDevice->freePatchSlots[type].push_back(texture->patchSlots[type]);
+            texture->patchSlots[type] = UINT32_MAX;
+        }
+    }
+}
+
 void gpuDestroyTexture(GpuTexture texture)
 {
     if (texture == nullptr)
@@ -1417,6 +1471,7 @@ void gpuDestroyTexture(GpuTexture texture)
     }
 
     VulkanDevice* vulkanDevice = texture->device->vulkanDevice;
+    releasePatchSlots(vulkanDevice, texture);
     vulkanDevice->dispatchTable.destroyImageView(texture->view, nullptr);
     vulkanDevice->dispatchTable.destroyImage(texture->image, nullptr);
     delete texture;
@@ -1442,11 +1497,15 @@ GpuTextureDescriptor gpuTextureViewDescriptor(GpuTexture texture, GpuViewDesc de
 
     if (vulkanDevice->descriptorsNeedPatching())
     {
-        // descriptorDataCpu is created at device creation; the atomic counter
-        // makes concurrent view creation safe.
-        const uint32_t index = vulkanDevice->descriptorsUsed.fetch_add(1);
-        uint8_t* dest = static_cast<uint8_t*>(vulkanDevice->descriptorDataCpu) + index * vulkanDevice->descriptorBufferProperties.sampledImageDescriptorSize;
-        memcpy(dest, buffer.data(), vulkanDevice->descriptorBufferProperties.sampledImageDescriptorSize);
+        // descriptorDataCpu is created at device creation; slot allocation
+        // is locked, so concurrent view creation is safe.
+        const uint32_t newSlot = acquirePatchSlot(vulkanDevice, texture, 0);
+        const uint32_t index = texture->patchSlots[0];
+        if (newSlot != UINT32_MAX)
+        {
+            uint8_t* dest = static_cast<uint8_t*>(vulkanDevice->descriptorDataCpu) + index * vulkanDevice->descriptorBufferProperties.sampledImageDescriptorSize;
+            memcpy(dest, buffer.data(), vulkanDevice->descriptorBufferProperties.sampledImageDescriptorSize);
+        }
         descriptor.data[0] = index * vulkanDevice->descriptorBufferProperties.sampledImageDescriptorSize; // Store byte offset in our internal buffer
         descriptor.data[1] = 0;                                                                           // type 0 for read, 1 for read/write
     }
@@ -1478,9 +1537,13 @@ GpuTextureDescriptor gpuRWTextureViewDescriptor(GpuTexture texture, GpuViewDesc 
 
     if (vulkanDevice->descriptorsNeedPatching())
     {
-        const uint32_t index = vulkanDevice->rwDescriptorsUsed.fetch_add(1);
-        uint8_t* dest = static_cast<uint8_t*>(vulkanDevice->rwDescriptorDataCpu) + index * vulkanDevice->descriptorBufferProperties.storageImageDescriptorSize;
-        memcpy(dest, buffer.data(), vulkanDevice->descriptorBufferProperties.storageImageDescriptorSize);
+        const uint32_t newSlot = acquirePatchSlot(vulkanDevice, texture, 1);
+        const uint32_t index = texture->patchSlots[1];
+        if (newSlot != UINT32_MAX)
+        {
+            uint8_t* dest = static_cast<uint8_t*>(vulkanDevice->rwDescriptorDataCpu) + index * vulkanDevice->descriptorBufferProperties.storageImageDescriptorSize;
+            memcpy(dest, buffer.data(), vulkanDevice->descriptorBufferProperties.storageImageDescriptorSize);
+        }
         descriptor.data[0] = index * vulkanDevice->descriptorBufferProperties.storageImageDescriptorSize; // Store byte offset in our internal buffer
         descriptor.data[1] = 1;                                                                           // type 0 for read, 1 for read/write
     }
@@ -1781,8 +1844,6 @@ void initDeviceResources(GpuDevice device)
             gpuMallocHidden(vulkanDevice, props.sampledImageDescriptorSize * vulkanDevice->descriptorCount, props.descriptorBufferOffsetAlignment, MEMORY_DESCRIPTOR);
         vulkanDevice->rwPatchedDescriptorDataCpu =
             gpuMallocHidden(vulkanDevice, props.storageImageDescriptorSize * vulkanDevice->descriptorCount, props.descriptorBufferOffsetAlignment, MEMORY_DESCRIPTOR);
-        vulkanDevice->patchDescriptorsDataCpu =
-            static_cast<PatchDescriptorsData*>(gpuMallocHidden(vulkanDevice, sizeof(PatchDescriptorsData), GPU_DEFAULT_ALIGNMENT, MEMORY_DEFAULT));
 
         // Embedded at build time (PatchDescriptorsSpv.h) so the library works
         // without a .spv file on disk; copied because ByteSpan is non-const.
@@ -2307,37 +2368,68 @@ void gpuSetActiveTextureHeapPtr(GpuCommandBuffer cb, void* ptrGpu)
 
     if (vulkanDevice->descriptorsNeedPatching())
     {
-        // NOTE: the patch destination heaps and PatchDescriptorsData block are
-        // device-global (created in initDeviceResources). Recording is
-        // thread-safe, but on descriptor-patching devices submissions that
-        // patch concurrently would race these buffers on the GPU — see
-        // docs/multithreading.md.
-        GpuPipeline currentPipeline = cb->currentPipeline;
-
+        // Copy the user's 32-byte heap entries into device-sized descriptors
+        // in the patched heaps, which are then bound instead of ptrGpu.
+        //
+        // The parameters travel as push constants, recorded into this command
+        // buffer: a host-visible parameter block written here, at record time,
+        // would be read at execution time, after a later heap bind in the same
+        // submission had overwritten it with its own heap.
         auto patchedDescriptorDataGpu = gpuHostToDevicePointer(device, vulkanDevice->patchedDescriptorDataCpu);
         auto rwPatchedDescriptorDataGpu = gpuHostToDevicePointer(device, vulkanDevice->rwPatchedDescriptorDataCpu);
 
-        gpuSetPipeline(cb, vulkanDevice->patchDescriptorsPipeline);
+        PatchDescriptorsData patchData = {};
+        patchData.numDescriptors = static_cast<uint32_t>((alloc.size - (address - alloc.address)) / sizeof(GpuTextureDescriptor));
+        patchData.descriptorSize = vulkanDevice->descriptorBufferProperties.sampledImageDescriptorSize;
+        patchData.rwDescriptorSize = vulkanDevice->descriptorBufferProperties.storageImageDescriptorSize;
+        patchData.descriptors = static_cast<Descriptor*>(ptrGpu);
+        patchData.srcDescriptors = static_cast<uint8_t*>(gpuHostToDevicePointer(device, vulkanDevice->descriptorDataCpu));
+        patchData.rwSrcDescriptors = static_cast<uint8_t*>(gpuHostToDevicePointer(device, vulkanDevice->rwDescriptorDataCpu));
+        patchData.dstDescriptors = static_cast<uint8_t*>(patchedDescriptorDataGpu);
+        patchData.rwDstDescriptors = static_cast<uint8_t*>(rwPatchedDescriptorDataGpu);
 
-        vulkanDevice->patchDescriptorsDataCpu->numDescriptors = (alloc.size - (alloc.address - address)) / sizeof(GpuTextureDescriptor);
-        vulkanDevice->patchDescriptorsDataCpu->descriptorSize = vulkanDevice->descriptorBufferProperties.sampledImageDescriptorSize;
-        vulkanDevice->patchDescriptorsDataCpu->rwDescriptorSize = vulkanDevice->descriptorBufferProperties.storageImageDescriptorSize;
-        vulkanDevice->patchDescriptorsDataCpu->descriptors = static_cast<Descriptor*>(ptrGpu);
-        vulkanDevice->patchDescriptorsDataCpu->srcDescriptors = static_cast<uint8_t*>(gpuHostToDevicePointer(device, vulkanDevice->descriptorDataCpu));
-        vulkanDevice->patchDescriptorsDataCpu->rwSrcDescriptors = static_cast<uint8_t*>(gpuHostToDevicePointer(device, vulkanDevice->rwDescriptorDataCpu));
-        vulkanDevice->patchDescriptorsDataCpu->dstDescriptors = static_cast<uint8_t*>(patchedDescriptorDataGpu);
-        vulkanDevice->patchDescriptorsDataCpu->rwDstDescriptors = static_cast<uint8_t*>(rwPatchedDescriptorDataGpu);
+        // Every stage that reads descriptors.
+        constexpr VkPipelineStageFlags2 shaderStages =
+            VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+
+        // The patched heaps are device-global, shared by every heap bind: let
+        // shader reads of their previous contents -- earlier in this command
+        // buffer or in earlier submissions (all on the same queue) -- finish
+        // before overwriting them.
+        VkMemoryBarrier2 barrier = {};
+        barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+        barrier.srcStageMask = shaderStages;
+        barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        VkDependencyInfo dependencyInfo = {};
+        dependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dependencyInfo.memoryBarrierCount = 1;
+        dependencyInfo.pMemoryBarriers = &barrier;
+        vulkanDevice->dispatchTable.cmdPipelineBarrier2(cb->commandBuffer, &dependencyInfo);
+
+        const VkPipelineLayout computeLayout = vulkanDevice->layout[VK_PIPELINE_BIND_POINT_COMPUTE];
+        vulkanDevice->dispatchTable.cmdBindPipeline(cb->commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, vulkanDevice->patchDescriptorsPipeline->pipeline);
+        vulkanDevice->dispatchTable.cmdPushConstants(cb->commandBuffer, computeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(patchData), &patchData);
 
         assert(vulkanDevice->descriptorCount >= 16 && vulkanDevice->descriptorCount % 16 == 0);
-        gpuDispatch(cb, gpuHostToDevicePointer(device, vulkanDevice->patchDescriptorsDataCpu), { vulkanDevice->descriptorCount / 16, 1, 1 });
+        vulkanDevice->dispatchTable.cmdDispatch(cb->commandBuffer, vulkanDevice->descriptorCount / 16, 1, 1);
 
-        gpuBarrier(cb, STAGE_COMPUTE, STAGE_COMPUTE, HAZARD_DESCRIPTORS);
+        // Make the patched descriptors visible to every shader stage that
+        // reads them (not just compute: draws read them too).
+        barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        barrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+        barrier.dstStageMask = shaderStages;
+        barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_DESCRIPTOR_BUFFER_READ_BIT_EXT;
+        vulkanDevice->dispatchTable.cmdPipelineBarrier2(cb->commandBuffer, &dependencyInfo);
+
+        // Restore the compute pipeline the patch displaced.
+        if (cb->computePipeline != nullptr)
+        {
+            vulkanDevice->dispatchTable.cmdBindPipeline(cb->commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, cb->computePipeline->pipeline);
+        }
 
         // Use patched descriptors instead of the ptrGpu
         address = reinterpret_cast<VkDeviceAddress>(patchedDescriptorDataGpu);
         rwAddress = reinterpret_cast<VkDeviceAddress>(rwPatchedDescriptorDataGpu);
-
-        gpuSetPipeline(cb, currentPipeline);
     }
     else
     {
@@ -2376,14 +2468,19 @@ void gpuSetActiveTextureHeapPtr(GpuCommandBuffer cb, void* ptrGpu)
     uint32_t indices[3] = { 0, 1, 2 }; // read, read/write, sampler
     VkDeviceSize offsets[3] = { 0, 0, 0 };
 
-    vulkanDevice->dispatchTable.cmdSetDescriptorBufferOffsetsEXT(
-        cb->commandBuffer,
-        cb->currentPipeline->bindPoint,
-        vulkanDevice->layout[cb->currentPipeline->bindPoint],
-        0,
-        3,
-        indices,
-        offsets);
+    // Both bind points, so the heap stays bound across graphics and compute
+    // work and does not depend on (or need) a pipeline being bound first.
+    for (VkPipelineBindPoint bindPoint : { VK_PIPELINE_BIND_POINT_GRAPHICS, VK_PIPELINE_BIND_POINT_COMPUTE })
+    {
+        vulkanDevice->dispatchTable.cmdSetDescriptorBufferOffsetsEXT(
+            cb->commandBuffer,
+            bindPoint,
+            vulkanDevice->layout[bindPoint],
+            0,
+            3,
+            indices,
+            offsets);
+    }
 }
 
 void gpuBarrier(GpuCommandBuffer cb, STAGE before, STAGE after, HAZARD_FLAGS hazards)
@@ -2580,6 +2677,10 @@ void gpuSetPipeline(GpuCommandBuffer cb, GpuPipeline pipeline)
         pipeline->pipeline);
 
     cb->currentPipeline = pipeline;
+    if (pipeline->bindPoint == VK_PIPELINE_BIND_POINT_COMPUTE)
+    {
+        cb->computePipeline = pipeline;
+    }
 }
 
 void gpuSetDepthStencilState(GpuCommandBuffer cb, GpuDepthStencilState state)
@@ -2961,6 +3062,7 @@ static void destroySwapchainResources(GpuSwapchain swapchain)
     }
     for (auto image : swapchain->images)
     {
+        releasePatchSlots(vulkanDevice, image);
         vulkanDevice->dispatchTable.destroyImageView(image->view, nullptr);
         delete image;
     }

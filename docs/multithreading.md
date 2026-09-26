@@ -51,10 +51,11 @@ the driver.
 ## Known limits
 
 - **Descriptor patching devices** (descriptor size ≠ 32, e.g. lavapipe): the
-  patch *destination* heaps are device-global, so two patching submissions
-  executing concurrently race on the GPU. Recording them is safe; their
-  execution must not overlap. Fix would be per-submission patch buffers —
-  deferred until a patching device matters for multithreaded use.
+  patch *destination* heaps are device-global. Each heap bind's patch first
+  waits for every earlier shader read on the queue, so submissions no longer
+  race on them, but on these devices each heap bind drains the shader stages.
+  Per-submission patch buffers would remove that stall — deferred until a
+  patching device matters for performance.
 - **Remaining recording sub-linearity** (3.4× of 8 ideal) is at sane
   magnitudes (≈ 60M commands/s aggregate into write-combined memory) and sits
   below the API; one genuine NGAPI contributor — a heap-allocated vector per

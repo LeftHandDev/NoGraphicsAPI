@@ -175,6 +175,12 @@ compile_shader(SOURCE samples/learning/Tensor.slang STAGE compute OUTPUT learnin
     "${CMAKE_CURRENT_SOURCE_DIR}/samples/learning/Common.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/samples/common/Random.h")
 
+# Test-only shaders.
+if(NGAPI_BUILD_TESTS)
+    compile_shader(SOURCE tests/shaders/HeapProbe.slang STAGE compute OUTPUT tests/HeapProbe.spv
+        EXTRA_DEPENDS ${COMMON_SHADER_DEPS} "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/HeapProbe.h")
+endif()
+
 add_custom_target(shaders ALL DEPENDS ${NGAPI_SHADER_OUTPUTS})
 
 # The library's internal PatchDescriptors shader is embedded as a checked-in

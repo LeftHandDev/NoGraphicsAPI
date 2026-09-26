@@ -1,7 +1,10 @@
 #include "./PatchDescriptors.h"
 
-[numthreads(16, 1, 1)] void main(uint3 threadId : SV_DispatchThreadID, PatchDescriptorsData* data)
+// The parameters are push constants (by value, not a pointer like other NGAPI
+// shaders take): each gpuSetActiveTextureHeapPtr records its own copy.
+[numthreads(16, 1, 1)] void main(uint3 threadId : SV_DispatchThreadID, uniform PatchDescriptorsData params)
 {
+    PatchDescriptorsData* data = &params;
     uint index = threadId.x;
     if (index >= data->numDescriptors)
         return;
